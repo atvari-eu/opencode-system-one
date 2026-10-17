@@ -293,11 +293,17 @@ const DONE_QUESTION: Question = {
 // latency lever is making that first turn short: a deterministic regex gate
 // (no model call) appends a short hint so the model's FIRST action is the jev
 // call with verbatim inputs, instead of deliberating the judgment itself.
-const ROUTING_PATTERN =
-  /\bjev\b|\bjudge(?:[_ -]?many)?\b|\bsystem[- ]one\b|\bnoul\b|\bverdicts?\b/i
+// Precision-first: the hint is user-visible appended text, so it fires only
+// when the prompt addresses one of the plugin's decision tools by name
+// (jev_decide / jev_judge_many, or "jev judge / jev decide" phrasing). The
+// earlier vocabulary gate (judge / verdict / noul / system-one) matched
+// ordinary prose and skill names ("opencode-system-one") read as requests -
+// visible false positives on the composer. The tool descriptions already
+// carry the first-action imperative for every other phrasing.
+const ROUTING_PATTERN = /\bjev[ _-]?(?:decide|judge(?:[ _-]?many)?)\b/i
 
 const ROUTING_HINT =
-  "\n\n[jev routing] If a jev tool fits this request, make that jev_decide or jev_judge_many call your FIRST action: pass the user's items/context verbatim (state / items) and only interpret the answers it returns - do not pre-analyze, summarize, or rewrite the items yourself, and do not deliberate before calling. If no jev tool fits, ignore this note and proceed normally."
+  "\n\n[jev routing] If a jev tool fits this request, make that jev_decide or jev_judge_many call your FIRST action with the user's items/context verbatim (state / items) - no pre-analysis, summarizing, or rewriting before calling; if no jev tool fits, ignore this note."
 
 // ---------------------------------------------------------------------------
 // Auto effort: jev picks the thinking level (model variant) per prompt
@@ -410,7 +416,16 @@ export default Plugin.define({
       await (ctx as any).session.hook("prompt", (event: any) => {
         try {
           if (typeof event?.prompt?.text !== "string") return
-          if (!ROUTING_PATTERN.test(event.prompt.text)) return
+          // Echoed hint text (quoting the note, pasted logs) must not
+          // re-trigger the gate: remove from the [jev routing] marker
+          // through its fallback line - covers full echoes of old and new
+          // wording; a marker without a fallback tail leaves only harmless
+          // remainder behind.
+          const hay = event.prompt.text.replace(
+            /\[\s*jev[ _-]*routing\s*\][\s\S]{0,800}?ignore this note(?:\s+and proceed normally)?\s*\.?/gi,
+            " ",
+          )
+          if (!ROUTING_PATTERN.test(hay)) return
           event.prompt.text += ROUTING_HINT
           console.log("[jev] routing hint appended - judgment request goes jev-first")
         } catch {}

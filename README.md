@@ -169,9 +169,17 @@ tool. The plugin closes most of that gap mechanically:
   items passed verbatim - no pre-analysis, no rewriting.
 - The `prompt` hook appends a short routing hint whenever a deterministic
   regex (`ROUTING_PATTERN`) matches the prompt: *"make that jev call your
-  FIRST action … do not deliberate before calling; if no jev tool fits, ignore
-  this note."* No model call decides this; the gate is a plain regex like the
-  scrubber, and false positives degrade gracefully to "ignore this note".
+  FIRST action … if no jev tool fits, ignore this note."* The gate is
+  precision-first: it fires only when a prompt addresses one of the decision
+  tools by name (`jev_decide`, `jev_judge_many`, or "jev judge …"). Echoed
+  hint text is stripped before matching - quoting the note in a complaint or
+  pasting plugin logs cannot re-trigger it.
+- What deliberately does not fire: judgment vocabulary in ordinary prose -
+  "judge these", "verdict", skill names like `system-one`. The earlier broad
+  gate matched such mentions into visible false positives on the composer;
+  these phrasings get their first-action guidance from the tool
+  descriptions instead, and the hint's own fallback line ("if no jev tool
+  fits, ignore this note") keeps any rare mismatch harmless.
 
 Turn off with `"routing": { "hints": false }`.
 
