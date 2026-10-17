@@ -32,12 +32,16 @@ import { Plugin } from "@opencode/plugin"
 import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS } from "./compaction"
 import {
   EFFORT_ORDER,
+  NOTIFY_BELOW_DEFAULT,
   clampThreshold,
+  doneTranscript,
+  doneVerdict,
   parseCandidates,
   parseScreenTools,
   routeTurn,
   screenApplies,
   screenRedacts,
+  shouldNotifyIncomplete,
 } from "./logic"
 import { type Candidate } from "./logic"
 import { createHash } from "node:crypto"
@@ -416,6 +420,8 @@ export default Plugin.define({
         '[jev] route: auto enabled without valid candidates - set "route": { "candidates": ["provider/model", ...] }; routing stays off',
       )
     }
+    const doneCheckAuto = o.doneCheck?.auto === true
+    const notifyBelow = clampThreshold(o.doneCheck?.notifyBelow, 0.01, 0.85, NOTIFY_BELOW_DEFAULT)
     const approvalsRaw: any = o.approvals
     const approvalsObj: any = typeof approvalsRaw === "object" && approvalsRaw !== null ? approvalsRaw : {}
     const approvalsMode: "annotate" | "auto" | "off" = (() => {
@@ -1011,31 +1017,12 @@ export default Plugin.define({
             const sessionID = input?.sessionID
             try {
               const messages = await (ctx as any).session.context({ sessionID })
-              const transcript = messages
-                .slice(-24)
-                .map((m: any) => {
-                  const text = typeof m?.info?.text === "string"
-                    ? m.info.text
-                    : typeof m?.text === "string"
-                      ? m.text
-                      : JSON.stringify(m).slice(0, 300)
-                  return text.slice(0, 500)
-                })
-                .join("\n")
-                .slice(-12000)
+              const transcript = doneTranscript(messages).text
               const { reply } = await cachedJudge([DONE_QUESTION], transcript)
               const done = reply.answers?.done?.noul
-              const verdict =
-                typeof done === "number"
-                  ? done >= 0.85
-                    ? "complete"
-                    : done <= 0.5
-                      ? "likely INCOMPLETE (tie or lower) - list what remains"
-                      : "uncertain - surface what is missing before declaring done"
-                  : "unavailable (malformed answer - fail closed)"
               await (ctx as any).session.synthetic({
                 sessionID,
-                text: `[jev-done-check] p(complete)=${fmt(done)} → ${verdict}`,
+                text: `[jev-done-check] p(complete)=${fmt(done)} → ${doneVerdict(done)}`,
               })
             } catch (err: any) {
               await (ctx as any).session.synthetic({
@@ -1046,6 +1033,87 @@ export default Plugin.define({
           },
         })
       })
+    }
+
+    // -- done-check: auto completion probe when the session goes idle --
+    //
+    // Opt-in, because it is the one case where the plugin notices the user
+    // unprompted: instead of /jev-done-check being invoked by hand, the idle
+    // event triggers the same DONE_QUESTION and posts ONE synthetic notice
+    // when completion looks unlikely (probability <= notifyBelow). jev is
+    // reached over HTTP while nothing else is running: no model turn, no
+    // permission, no transcript edit beyond that notice. The judged tail is
+    // scrubbed, excludes our own notices (so one notice can never re-trigger
+    // the check), and its hash is the change detector - an unchanged
+    // transcript is never judged twice.
+
+    if (doneCheckAuto) {
+      const handleIdle = async (sessionID: string): Promise<void> => {
+        try {
+          const messages = await (ctx as any).session.context({ sessionID })
+          const tail = doneTranscript(messages)
+          const key = `done-check/${String(sessionID)}`
+          let seen: any
+          try {
+            seen = await (ctx as any).storage.get(key)
+          } catch {}
+          if (seen?.hash === tail.hash) return
+          const { reply } = await cachedJudge([DONE_QUESTION], tail.text, AbortSignal.timeout(8_000))
+          const done = reply.answers?.done?.noul
+          try {
+            await (ctx as any).storage.set(key, { hash: tail.hash })
+          } catch {}
+          if (shouldNotifyIncomplete(done, notifyBelow)) {
+            await (ctx as any).session.synthetic({
+              sessionID,
+              text: `[jev-done-check] p(complete)=${fmt(done)} → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user`,
+            })
+            console.log(`[jev] done-check: ${sessionID} p=${fmt(done)} - incomplete notice posted`)
+          }
+        } catch (err: any) {
+          console.error(`[jev] done-check: skipped (${String(err?.message ?? err)})`)
+        }
+      }
+      const idleSessionID = (e: any): string | undefined => {
+        const type = String(e?.type ?? e?.name ?? "")
+        if (type !== "session.idle" && !type.endsWith("session.idle")) return undefined
+        const p = e?.properties ?? e?.payload ?? e
+        const sid = p?.sessionID ?? e?.sessionID
+        return typeof sid === "string" && sid ? sid : undefined
+      }
+      const events: any = (ctx as any).event
+      if (typeof events?.subscribe !== "function") {
+        console.log("[jev] done-check: event subscription unavailable on this OpenCode version - skipped")
+      } else {
+        let registered = false
+        try {
+          const stream: any = await events.subscribe()
+          if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
+            registered = true
+            ;(async () => {
+              try {
+                for await (const e of stream as any) {
+                  const sessionID = idleSessionID(e)
+                  if (sessionID) await handleIdle(sessionID)
+                }
+              } catch (err: any) {
+                console.error(`[jev] done-check: subscription ended (${String(err?.message ?? err)})`)
+              }
+            })()
+          } else if (typeof stream === "function") {
+            // Effect-style registration: subscribe(name, handler).
+            await stream("session.idle", (e: any) => {
+              const sessionID = idleSessionID(e)
+              if (sessionID) void handleIdle(sessionID)
+            })
+            registered = true
+          }
+        } catch (err: any) {
+          console.error(`[jev] done-check: subscription failed (${String(err?.message ?? err)})`)
+        }
+        if (!registered) console.log("[jev] done-check: unusable event subscription - skipped")
+        else console.log("[jev] done-check: auto enabled (idle subscription active)")
+      }
     }
 
     // -- compaction: System One decides which history is stale (opt-in) --
@@ -1126,7 +1194,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
