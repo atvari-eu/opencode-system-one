@@ -1,0 +1,13 @@
+{
+  "name": "opencode-system-one",
+  "version": "0.1.0",
+  "description": "OpenCode plugin enforcing the TypeSafe System One (Jev) decision layer",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "latest"
+  },
+  "license": "MIT"
+}
