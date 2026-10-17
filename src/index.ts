@@ -46,7 +46,7 @@
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
 
 import { Plugin } from "@opencode/plugin"
-import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS, messageChars } from "./compaction"
+import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS, messageChars, collectCalls } from "./compaction"
 import { runFind } from "./find"
 import {
   EFFORT_ORDER,
@@ -1716,6 +1716,16 @@ export default Plugin.define({
               )
               const estimated = Math.ceil(chars / 4)
               if (estimated < target) return
+              // Jev-only trigger: never fall through to the built-in summarizer
+              // because of no candidates - if every call is pinned
+              // (preserveRecentMessages) skip instead.
+              const calls = collectCalls(messages, COMPACTION_DEFAULTS.preserveRecentMessages)
+              if (!calls.some((call) => !call.pinned)) {
+                console.log(
+                  `[jev] idle-compaction: transcript past ${target}tok but no unpinned candidates - skipping (native auto-compaction will handle it)`,
+                )
+                return
+              }
               console.log(
                 `[jev] idle-compaction: ~${estimated}tok ≥ ${target} - triggering compaction for ${sessionID}`,
               )
