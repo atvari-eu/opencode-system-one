@@ -3,8 +3,11 @@
 // Mechanically enforces what the `system-one` / `auto-system-one` skills
 // advise, for OpenCode only:
 //
-//   screen  tool.execute.after  - every webfetch result is screened (junk?
-//                                 prompt injection?) before entering context
+//   screen  tool.execute.after  - tool results are screened (junk? prompt
+//                                 injection?) before entering context:
+//                                 webfetch by default, every tool with
+//                                 screen.tools="all" (fail-closed redaction
+//                                 stays scoped to fetched web content)
 //   scrub   execute.before + prompt hook - deterministic redaction of known
 //                                 secret formats in tool inputs and user
 //                                 prompts. ALWAYS regex-based: secrets are
@@ -14,6 +17,16 @@
 //                                 as first-class tools (codemode: false) so
 //                                 each call shows as its own tool row
 //   cache   replies for identical (state, questions, model) via plugin storage
+//   route   prompt hook - jev picks the thinking level (effort variant) and,
+//                                 optionally, the model from a validated
+//                                 candidate list, per prompt (opt-in);
+//                                 manual picks stand auto down until back at
+//                                 the session's base model
+//   done    session.idle - auto completion probe posting one notice when the
+//                                 turn looks incomplete (opt-in)
+//   find    jev_find tool - semantic code-search cascade: lexical prefilter,
+//                                 path judgments, windowed passage judgments
+//                                 (opt-in)
 //   compact System One based history compaction (opt-in) following
 //                                 tamaratran/fast-jev-compaction: tool calls and
 //                                 results are dropped/truncated by jev verdicts,
@@ -30,6 +43,7 @@
 
 import { Plugin } from "@opencode/plugin"
 import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS } from "./compaction"
+import { runFind } from "./find"
 import {
   EFFORT_ORDER,
   NOTIFY_BELOW_DEFAULT,
@@ -422,6 +436,7 @@ export default Plugin.define({
     }
     const doneCheckAuto = o.doneCheck?.auto === true
     const notifyBelow = clampThreshold(o.doneCheck?.notifyBelow, 0.01, 0.85, NOTIFY_BELOW_DEFAULT)
+    const findEnabled = o.find?.enabled === true
     const approvalsRaw: any = o.approvals
     const approvalsObj: any = typeof approvalsRaw === "object" && approvalsRaw !== null ? approvalsRaw : {}
     const approvalsMode: "annotate" | "auto" | "off" = (() => {
@@ -971,6 +986,47 @@ export default Plugin.define({
       })
     }
 
+    // -- find: jev-backed semantic code search (opt-in) --
+    // Registered as its own first-class tool, off by default: the cascade
+    // costs several jev calls per query. Deps are injected so the cascade
+    // itself stays testable without a plugin host.
+
+    if (findEnabled) {
+      await (ctx as any).tool.transform((editor: any) => {
+        editor.add({
+          name: "jev_find",
+          description:
+            'Semantic codebase search for when grep/glob cannot answer "where is this DISCUSSED": ranks files and passages that relate to a natural-language question by meaning - concepts, design notes, config semantics - rather than exact strings. Runs a lexical prefilter, then two jev waves (path judgments, windowed passage judgments); takes seconds and several jev calls, so reach for it only after a failed grep/glob attempt or when the concept is too fuzzy for one command. The report lists ranked files with heat, line ranges and excerpts; they are routing signals only - read the files before citing them.',
+          input: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "Short natural-language question about the codebase (not a file path).",
+              },
+            },
+            required: ["query"],
+            additionalProperties: false,
+          },
+          options: { codemode: false },
+          execute: async (input: any, context: any) => {
+            const report = await runFind(
+              {
+                root: () => location,
+                // cachedJudge resolves to { reply, cached }: unwrap the reply.
+                judge: async (questions: any, state: any, signal: any) =>
+                  (await cachedJudge(questions, state, signal)).reply,
+                scrub: (t: string) => redactText(t).text,
+              },
+              input?.query,
+              { signal: context?.signal },
+            )
+            return { content: report }
+          },
+        })
+      })
+    }
+
     // -- commands: one-shot judgments without loading any skill --
 
     if (commandsEnabled) {
@@ -1194,7 +1250,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
