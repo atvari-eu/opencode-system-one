@@ -198,6 +198,8 @@ optionally, the model. Two toggles, one judgment path:
   *model itself*, from the candidate list you name - typically a cheap fast
   model alongside the expensive one. Candidates may be bare ids as
   `provider/model` strings, or `{ providerID, id }` objects.
+- Instead of naming candidates, or on top of them, you can let the pool come
+  from OpenCode's own state via `"sources"` (see below).
 - With both on, they are one combined decision per prompt (a single
   `(model, level)` question over the candidates that support variants),
   not two competing ones.
@@ -237,12 +239,33 @@ nothing. Each new prompt costs one jev round-trip (capped by the 8 s
 timeout); the payoff is that trivial prompts get a cheaper model and level
 than OpenCode's static selection would give them.
 
+**Candidate sources.** Besides the static `candidates` list, the pool may
+draw from OpenCode's own local state:
+
+- `"sources": { "favorites": true }` merges the models you starred in
+  OpenCode's model picker (the TUI favorites it keeps in
+  `~/.local/state/opencode/model.json`).
+- `"sources": { "goPopular": true }` merges OpenCode Go's most-used models,
+  ranked by the last 30 days of *your own* session usage (steps per model,
+  read locally from OpenCode's session database). A number sets how many:
+  `"goPopular": 5`. Note this ranks by your usage - OpenCode publishes no
+  global most-used leaderboard, so that is the nearest ground truth a
+  plugin can stand on.
+
+Sources are off unless enabled, are additive to `candidates` (explicit
+entries keep their position ahead of sourced ones, duplicates drop out),
+and fail open: a missing favorites file or an unreadable database simply
+yields no candidates from that source. Everything sourced still goes
+through the same catalog validation as a hand-named candidate.
+
 Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `route.auto` | `false` | Off unless explicitly enabled. |
 | `route.candidates` | `[]` | Models jev may route to (`provider/model` strings or `{ providerID, id }`). |
+| `route.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
+| `route.sources.goPopular` | `false` | Merge OpenCode Go's most-used models (30 d local usage); a number sets the count (default 10, max 40). |
 | `route.minConfidence` | `0.6` | Minimum jev answer confidence required to switch model. |
 | `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
 | `effort.minConfidence` | `0.6` | Minimum jev answer confidence required to switch the reasoning variant. |

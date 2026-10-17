@@ -80,6 +80,63 @@ export function parseCandidates(raw: unknown): Candidate[] {
 export const candidateKey = (c: { providerID: string; modelID: string }): string =>
   `${c.providerID}/${c.modelID}`
 
+// ---------------------------------------------------------------------------
+// Dynamic routing sources: candidates read from OpenCode's own local state
+// (TUI model favorites, local usage history) in addition to the static
+// "candidates" list. Parsing and ranking here are pure; the file and DB
+// reads live in index.ts and feed their rows through below.
+// ---------------------------------------------------------------------------
+
+export interface RouteSourcesConfig {
+  /** Models starred in OpenCode's model picker (TUI favorites). */
+  favorites: boolean
+  /** Most-used models of one provider, ranked by local usage history. */
+  goPopular: { enabled: boolean; limit: number }
+}
+
+const GO_POPULAR_LIMIT_DEFAULT = 10
+const GO_POPULAR_LIMIT_MAX = 40
+
+// Accepts the route config's "sources": { "favorites": true,
+// "goPopular": true | <count> }. Sources are off unless explicitly enabled -
+// they widen what routing may switch to, so absent or malformed keys must
+// never turn them on.
+export function parseRouteSources(raw: unknown): RouteSourcesConfig {
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {}
+  let goPopular: RouteSourcesConfig["goPopular"] = { enabled: false, limit: GO_POPULAR_LIMIT_DEFAULT }
+  if (obj.goPopular === true) goPopular = { enabled: true, limit: GO_POPULAR_LIMIT_DEFAULT }
+  else if (typeof obj.goPopular === "number" && Number.isFinite(obj.goPopular) && obj.goPopular >= 1)
+    goPopular = { enabled: true, limit: Math.min(Math.floor(obj.goPopular), GO_POPULAR_LIMIT_MAX) }
+  return { favorites: obj.favorites === true, goPopular }
+}
+
+// Ranks usage rows into same-provider candidates: rows carry flattened
+// json_extract output ({ providerID, modelID, steps }), only the given
+// provider's models count, entries sort by steps (assistant-message count)
+// desc with modelID asc as the deterministic tiebreak, and the first `limit`
+// distinct models survive. Never throws, never returns duplicates.
+export function rankSourcePopular(
+  rows: Array<{ providerID?: unknown; modelID?: unknown; steps?: unknown }>,
+  providerID: string,
+  limit: number,
+): Candidate[] {
+  if (!Number.isFinite(limit) || limit < 1) return []
+  const scored = new Map<string, Candidate & { steps: number }>()
+  for (const row of rows) {
+    if (typeof row.providerID !== "string" || row.providerID !== providerID) continue
+    if (typeof row.modelID !== "string" || row.modelID.trim() === "") continue
+    const modelID = row.modelID.trim()
+    const steps = typeof row.steps === "number" && Number.isFinite(row.steps) ? row.steps : 1
+    const key = candidateKey({ providerID, modelID })
+    const prior = scored.get(key)
+    if (!prior || steps > prior.steps) scored.set(key, { providerID, modelID, steps })
+  }
+  return [...scored.values()]
+    .sort((a, b) => b.steps - a.steps || (a.modelID < b.modelID ? -1 : a.modelID > b.modelID ? 1 : 0))
+    .slice(0, limit)
+    .map(({ providerID, modelID }) => ({ providerID, modelID }))
+}
+
 export const modelKeyOfRef = (ref: any): string => `${String(ref?.providerID ?? "")}/${String(ref?.id ?? "")}`
 
 // "default" is the neutral state: no variant pinned.

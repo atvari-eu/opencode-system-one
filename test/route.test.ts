@@ -11,7 +11,9 @@ import {
   type Candidate,
   MAX_OPTIONS,
   parseCandidates,
+  parseRouteSources,
   pinMatches,
+  rankSourcePopular,
   refKey,
   resolveRouteAnswer,
   routeDecision,
@@ -407,4 +409,93 @@ describe("offline routing fixtures", () => {
       expect(outcome.recordPin).toBeDefined()
     })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Dynamic routing sources (route.sources): parsing + usage ranking.
+// ---------------------------------------------------------------------------
+
+describe("parseRouteSources", () => {
+  test("everything is off by default and for malformed shapes", () => {
+    for (const raw of [undefined, null, true, "x", 7, [], {}]) {
+      const cfg = parseRouteSources(raw)
+      expect(cfg.favorites).toBe(false)
+      expect(cfg.goPopular.enabled).toBe(false)
+      expect(cfg.goPopular.limit).toBe(10)
+    }
+  })
+
+  test("favorites only turns on with an explicit true", () => {
+    expect(parseRouteSources({ favorites: true }).favorites).toBe(true)
+    expect(parseRouteSources({ favorites: "yes" }).favorites).toBe(false)
+    expect(parseRouteSources({ favorites: 1 }).favorites).toBe(false)
+  })
+
+  test("goPopular defaults to 10 when true, accepts a count", () => {
+    const on = parseRouteSources({ goPopular: true })
+    expect(on.goPopular.enabled).toBe(true)
+    expect(on.goPopular.limit).toBe(10)
+    expect(parseRouteSources({ goPopular: 5 }).goPopular).toEqual({ enabled: true, limit: 5 })
+  })
+
+  test("goPopular counts clamp to a sane range", () => {
+    expect(parseRouteSources({ goPopular: 0 }).goPopular.enabled).toBe(false)
+    expect(parseRouteSources({ goPopular: -3 }).goPopular.enabled).toBe(false)
+    expect(parseRouteSources({ goPopular: Number.NaN }).goPopular.enabled).toBe(false)
+    expect(parseRouteSources({ goPopular: 1.7 }).goPopular.limit).toBe(1)
+    expect(parseRouteSources({ goPopular: 999 }).goPopular.limit).toBe(40)
+  })
+})
+
+describe("rankSourcePopular", () => {
+  const usageRows: Array<{ providerID?: unknown; modelID?: unknown; steps?: unknown }> = [
+    { providerID: "opencode-go", modelID: "glm-5.3-flash", steps: 1 },
+    { providerID: "opencode-go", modelID: "deepseek-v4.1-flash", steps: 775 },
+    { providerID: "munito", modelID: "zai-org/glm-5.3-flash", steps: 900_000 },
+    { providerID: "opencode-go", modelID: "beam-free", steps: 3 },
+    { providerID: "other", modelID: "irrelevant", steps: 9 },
+    { providerID: "opencode-go", modelID: "", steps: 5 },
+    { providerID: "opencode-go", modelID: null, steps: 5 },
+    { providerID: "opencode-go", modelID: "unlisted", steps: 2 },
+  ]
+
+  test("filters to one provider, ranks by steps desc, truncates to limit", () => {
+    const out = rankSourcePopular(usageRows, "opencode-go", 3)
+    expect(out.map((c) => `${c.providerID}/${c.modelID}`)).toEqual([
+      "opencode-go/deepseek-v4.1-flash",
+      "opencode-go/beam-free",
+      "opencode-go/unlisted",
+    ])
+  })
+
+  test("non-numeric steps defensively count as 1", () => {
+    const out = rankSourcePopular(
+      [{ providerID: "p", modelID: "m", steps: "9" as any }],
+      "p",
+      10,
+    )
+    expect(out).toEqual([{ providerID: "p", modelID: "m" }])
+  })
+
+  test("ties break deterministically by modelID ascending", () => {
+    const out = rankSourcePopular(
+      [
+        { providerID: "p", modelID: "zeta", steps: 4 },
+        { providerID: "p", modelID: "alpha", steps: 4 },
+        { providerID: "p", modelID: "mid", steps: 4 },
+      ],
+      "p",
+      10,
+    )
+    expect(out.map((c) => c.modelID)).toEqual(["alpha", "mid", "zeta"])
+  })
+
+  test("limits of zero or less yield nothing; duplicates collapse", () => {
+    expect(rankSourcePopular(usageRows, "opencode-go", 0)).toEqual([])
+    const duplicated = [
+      { providerID: "p", modelID: "m", steps: 3 },
+      { providerID: "p", modelID: "m", steps: 9 },
+    ]
+    expect(rankSourcePopular(duplicated, "p", 10)).toEqual([{ providerID: "p", modelID: "m" }])
+  })
 })

@@ -47,11 +47,14 @@ import { runFind } from "./find"
 import {
   EFFORT_ORDER,
   NOTIFY_BELOW_DEFAULT,
+  candidateKey,
   clampThreshold,
   doneTranscript,
   doneVerdict,
   parseCandidates,
+  parseRouteSources,
   parseScreenTools,
+  rankSourcePopular,
   routeTurn,
   screenApplies,
   screenRedacts,
@@ -61,6 +64,7 @@ import { type Candidate } from "./logic"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
+import { join } from "node:path"
 
 const CONSOLE_ENDPOINT = "https://opencode.ai/inference/systemone/v1/systemone"
 
@@ -429,9 +433,16 @@ export default Plugin.define({
     const modelAuto = routeRaw?.auto === true
     const modelCandidates: Candidate[] = parseCandidates(routeRaw?.candidates)
     const modelMinConfidence = clampThreshold(routeRaw?.minConfidence, 0.5, 0.99, 0.6)
-    if (modelAuto && modelCandidates.length === 0) {
+    const routeSources = parseRouteSources(routeRaw?.sources)
+    const routeSourcesTag = [
+      routeSources.favorites ? "favorites" : "",
+      routeSources.goPopular.enabled ? `goPopular(${routeSources.goPopular.limit})` : "",
+    ]
+      .filter(Boolean)
+      .join("+")
+    if (modelAuto && modelCandidates.length === 0 && !routeSourcesTag) {
       console.log(
-        '[jev] route: auto enabled without valid candidates - set "route": { "candidates": ["provider/model", ...] }; routing stays off',
+        '[jev] route: auto enabled without candidates - set "route": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "goPopular": true }; routing stays off',
       )
     }
     const doneCheckAuto = o.doneCheck?.auto === true
@@ -539,6 +550,68 @@ export default Plugin.define({
         return EFFORT_ORDER.filter((level) => listed.includes(level))
       }
 
+      // Dynamic candidate sources (route.sources) - the user's TUI-favorite
+      // models and the most-used OpenCode Go models by local usage. Re-read
+      // at most once a minute. Fail-open throughout: a missing favorites
+      // file or DB read failure only means no candidates from that source,
+      // never an error in the turn.
+      const SOURCE_TTL = 60_000
+      const GO_USAGE_DAYS = 30
+      let sourceCache: { at: number; favorites: Candidate[]; goPopular: Candidate[] } = {
+        at: 0,
+        favorites: [],
+        goPopular: [],
+      }
+      const resolveRouteSources = async (): Promise<{ favorites: Candidate[]; goPopular: Candidate[] } | null> => {
+        if (!routeSources.favorites && !routeSources.goPopular.enabled) return null
+        if (Date.now() - sourceCache.at < SOURCE_TTL) return sourceCache
+        const favorites: Candidate[] = []
+        const goPopular: Candidate[] = []
+        if (routeSources.favorites) {
+          try {
+            const stateDir = process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state")
+            const raw = JSON.parse(readFileSync(join(stateDir, "opencode", "model.json"), "utf8"))
+            favorites.push(...parseCandidates(raw?.favorite))
+          } catch {}
+        }
+        if (routeSources.goPopular.enabled) {
+          try {
+            const dataDir = process.env.XDG_DATA_HOME?.trim() || join(homedir(), ".local", "share")
+            const moduleSpecifier = "bun:sqlite"
+            const { Database } = (await import(moduleSpecifier)) as any
+            const db = new Database(join(dataDir, "opencode", "opencode.db"), { readonly: true })
+            try {
+              const since = Date.now() - GO_USAGE_DAYS * 24 * 60 * 60 * 1000
+              const rows = ((db
+                .query(
+                  `SELECT json_extract(data, '$.model.providerID') AS providerID,
+                          json_extract(data, '$.model.id') AS modelID,
+                          COUNT(*) AS steps
+                    FROM session_message
+                   WHERE type = 'assistant' AND time_created > ?
+                   GROUP BY providerID, modelID
+                   ORDER BY steps DESC`,
+                )
+                .all(since) as any[]) ?? [])
+              goPopular.push(...rankSourcePopular(rows, "opencode-go", routeSources.goPopular.limit))
+            } finally {
+              db.close()
+            }
+          } catch (err) {
+            console.error(`[jev] route: goPopular source failed (routing continues without it):`, err)
+          }
+        }
+        const prev = sourceCache.at === 0 ? null : sourceCache
+        sourceCache = { at: Date.now(), favorites, goPopular }
+        if (
+          favorites.length + goPopular.length > 0 &&
+          (!prev || prev.favorites.length !== favorites.length || prev.goPopular.length !== goPopular.length)
+        ) {
+          console.log(`[jev] route: sources - favorites=${favorites.length} goPopular=${goPopular.length}`)
+        }
+        return sourceCache
+      }
+
       // Newest model-switched message in the transcript ({ model, previous }),
       // or undefined. The TUI's effort/model picker commits through
       // session.switchModel before the prompt is submitted, so a manual pick
@@ -574,7 +647,21 @@ export default Plugin.define({
 
           const usableCandidates: Candidate[] = []
           if (modelAuto) {
-            for (const candidate of modelCandidates) {
+            let combined = modelCandidates
+            const sources = await resolveRouteSources()
+            if (sources) {
+              const seen = new Set(modelCandidates.map((c) => candidateKey(c)))
+              const extra: Candidate[] = []
+              for (const candidate of [...sources.favorites, ...sources.goPopular]) {
+                const key = candidateKey(candidate)
+                if (!seen.has(key)) {
+                  seen.add(key)
+                  extra.push(candidate)
+                }
+              }
+              if (extra.length > 0) combined = [...modelCandidates, ...extra]
+            }
+            for (const candidate of combined) {
               if ((await modelInfo(candidate.providerID, candidate.modelID)) !== null) usableCandidates.push(candidate)
             }
             if (usableCandidates.length === 0) {
@@ -1250,7 +1337,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
