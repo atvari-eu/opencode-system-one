@@ -820,49 +820,44 @@ export function renderSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * A tiny audit-trail summary: one line per judged call (dropped, or kept with a
- * bounded head), no user/assistant replay. Pinned calls (the newest window -
- * also the host's verbatim `recent` context) are excluded so they are never
- * described twice.
+ * A tiny audit-trail summary: counts only - no inputs, no per-call list, no
+ * user/assistant replay. Pinned calls (the newest window - also the host's
+ * verbatim `recent` context) are excluded so they are never described twice.
  */
 export function renderCallReport(
   calls: ReadonlyArray<Call>,
   decisions: ReadonlyMap<string, Decision>,
-  headChars: number,
 ): string {
   const judged = calls.filter((call) => !call.pinned && decisions.has(call.key))
   const judgedOnly = calls.filter((call) => !call.pinned && !decisions.has(call.key))
 
-  const dropped: string[] = []
-  const kept: string[] = []
+  let dropped = 0
+  let keptHeads = 0
+  const droppedKinds = new Map<string, number>()
   for (const call of judged) {
-    let input = ""
-    try {
-      input = JSON.stringify(call.input ?? {}) ?? ""
-    } catch {
-      input = "[unserializable input]"
-    }
     const verdict = decisions.get(call.key)
     if (!verdict) continue
-    const label = `${call.callMsg}:${call.callIndex}`
-    const line = `${truncate(call.name, 40)} ${truncate(input, 120)}`
-    if (verdict.action === "drop_call") dropped.push(`- ${label} ${line} (dropped call+result)`)
-    else {
-      const head = truncatedResult(call.resultText, call.isError, headChars)
-      kept.push(`- ${label} ${line} → head kept:\n  ${head.replace(/\n/g, "\n  ")}`)
+    if (verdict.action === "drop_call") {
+      dropped += 1
+      droppedKinds.set(call.name, (droppedKinds.get(call.name) ?? 0) + 1)
+    } else {
+      keptHeads += 1
     }
   }
 
   const lines: string[] = [
-    "Older history was removed by System One (Jev) compaction. Decisions:",
-    `- ${dropped.length} of ${judged.length} judged tool calls dropped (call+result); ${kept.length} kept with a bounded head.`,
+    "Older history was removed by System One (Jev) compaction.",
+    `- ${dropped} of ${judged.length} judged tool calls dropped (call+result); ${keptHeads} kept with a bounded head.`,
     `- ${judgedOnly.length} newer/pinned tool calls are part of the verbatim recent context.`,
-    "Older user/assistant text is not replayed here; consult the dropped list to re-run anything.",
-    "",
+    "Older user/assistant text is not replayed; re-run a call if its result is needed again.",
   ]
-  if (dropped.length > 0) lines.push("Dropped calls:", ...dropped, "")
-  if (kept.length > 0) lines.push("Kept calls (bounded heads):", ...kept, "")
-  return lines.join("\n").trimEnd()
+  if (droppedKinds.size > 0) {
+    const kinds = [...droppedKinds.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([name, count]) => `${name} ${count}`)
+    lines.push(`- Dropped tool types: ${kinds.join(", ")}.`)
+  }
+  return lines.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -960,7 +955,7 @@ export async function runCompaction(
     if (reduction >= options.minReduction) {
       const base =
         options.summary === "report"
-          ? renderCallReport(calls, decisions, options.truncateHeadChars)
+          ? renderCallReport(calls, decisions)
           : renderSummary(messages, calls, decisions, options.truncateHeadChars)
       const summary = `${base}\n\n(Compaction pass by jev. Run /compact again within one minute of a previous one to get OpenCode's built-in summarizer instead.)`
       const tokens = estimateTokens(summary)

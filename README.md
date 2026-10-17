@@ -464,7 +464,7 @@ Options (all defaults mirror the reference):
 | --- | --- | --- |
 | `enabled` | `false` | Off unless explicitly enabled. |
 | `mode` | `"replace"` | `"replace"` supplies the pruned transcript as the summary; `"clean"` only rewrites messages and keeps OpenCode's summarizer. |
-| `summary` | `"report"` | Shape of the hook-supplied summary. `"report"` collapses it to a per-call audit report - dropped, truncated, kept-with-head calls only, no text replay - which keeps the context footprint minimal and reads like the compaction's decision log. `"transcript"` replays user/assistant text verbatim (plus per-call Jev verdicts) instead. |
+| `summary` | `"report"` | Shape of the hook-supplied summary. `"report"` collapses it to a five-line audit note - counts only: judged calls dropped vs kept-with-head, dropped calls grouped by tool type, nothing per-call and no text replay. `"transcript"` replays user/assistant text verbatim (plus per-call Jev verdicts) instead. |
 | `keepThreshold` | `0.5` | Verdict probability at which call/result survive. |
 | `preserveRecentMessages` | `6` | Newest messages pinned untouched. |
 | `maxStateTokens` | `25000` | Judgment state budget before staged fitting gives up. |

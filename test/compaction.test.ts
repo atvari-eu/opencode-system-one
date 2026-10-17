@@ -106,16 +106,16 @@ describe("renderCallReport", () => {
         [dropped.key, decision(dropped, "drop_call")],
         [kept.key, decision(kept, "keep")],
       ]),
-      300,
     )
-    expect(report).toContain("Dropped calls:")
-    expect(report).toContain("bash")
-    expect(report).toContain("dropped call+result")
-    expect(report).toContain("head kept")
+    expect(report).toContain("1 of 2 judged tool calls dropped")
+    expect(report).toContain("1 kept with a bounded head")
+    // counts of removed item types, no inputs or per-call lines
+    expect(report).toContain("Dropped tool types: bash 1.")
+    expect(report).not.toContain("rm -rf")
+    expect(report).not.toContain("src/main.ts")
     expect(report).not.toContain("grep")
     expect(report).not.toContain("todo")
-    // bounded: kept result head is clamped
-    expect(report.length).toBeLessThan(2400)
+    expect(report).not.toContain("head kept:\n")
     // no transcript replay
     expect(report).not.toContain("[user]")
     expect(report).not.toContain("[assistant]")
@@ -123,8 +123,9 @@ describe("renderCallReport", () => {
 
   test("report mode ignores calls without decisions", () => {
     const undecided = mkCall("d", "execute", { path: "x" }, "result")
-    const report = renderCallReport([undecided], new Map(), 300)
-    expect(report).toContain("0 judged tool calls dropped")
+    const report = renderCallReport([undecided], new Map())
+    expect(report).toContain("0 of 0 judged tool calls dropped")
+    expect(report).toContain("1 newer/pinned tool calls are part of the verbatim recent context.")
   })
 
   test("runCompaction report mode appends the built-in summarizer hint", async () => {
