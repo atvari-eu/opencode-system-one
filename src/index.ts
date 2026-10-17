@@ -46,7 +46,7 @@
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
 
 import { Plugin } from "@opencode/plugin"
-import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS } from "./compaction"
+import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS, messageChars } from "./compaction"
 import { runFind } from "./find"
 import {
   EFFORT_ORDER,
@@ -1607,6 +1607,11 @@ export default Plugin.define({
         mode: c.mode === "clean" ? ("clean" as const) : ("replace" as const),
         summary: c.summary === "transcript" ? ("transcript" as const) : ("report" as const),
       }
+      // Idle-driven auto-compaction: when the transcript exceeds idleTokens
+      // (estimated) at session idle, trigger a compaction the way /compact
+      // does - it runs reason "manual" and therefore through the jev hook
+      // above. 0 (default) keeps the feature off; opt in with a token target.
+      const idleTokens = Math.max(0, Math.floor(num(c.idleTokens, 0)))
 
       const windows = new Map<string, number>()
       // The hook's model is a bare Ref; resolve the context window via the
@@ -1677,10 +1682,76 @@ export default Plugin.define({
           )
         }
       })
+
+      if (idleTokens > 0) {
+        // Idle-driven auto-compaction: on session idle, estimate the whole
+        // transcript (~chars/4, OpenCode's own approximation) and trigger a
+        // compaction via the same API the /compact command posts to. That
+        // request runs reason "manual" through the jev hook above. The
+        // threshold check naturally hystereses: after a compaction the
+        // transcript is well below the target, so idle events do not retrigger
+        // until the conversation grows past it again.
+        const events: any = (ctx as any).event
+        if (typeof events?.subscribe !== "function") {
+          console.log("[jev] idle-compaction: event subscription unavailable on this OpenCode version - skipped")
+        } else {
+          let registered = false
+          const handleIdleCompaction = async (sessionID: string): Promise<void> => {
+            try {
+              const messages: any[] = await (ctx as any).session.context({ sessionID })
+              if (!Array.isArray(messages) || messages.length === 0) return
+              const chars = messages.reduce(
+                (sum: number, message: any) => sum + messageChars(message),
+                0,
+              )
+              const estimated = Math.ceil(chars / 4)
+              if (estimated < idleTokens) return
+              console.log(
+                `[jev] idle-compaction: ~${estimated}tok ≥ ${idleTokens} - triggering compaction for ${sessionID}`,
+              )
+              await (ctx as any).session.compact?.({ sessionID })
+            } catch (err: any) {
+              console.error(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
+            }
+          }
+          const idleOnly = (e: any): string | undefined => {
+            const type = String(e?.type ?? e?.name ?? "")
+            if (type !== "session.idle" && !type.endsWith("session.idle")) return undefined
+            const p = e?.properties ?? e?.payload ?? e
+            const sid = p?.sessionID ?? e?.sessionID
+            return typeof sid === "string" && sid ? sid : undefined
+          }
+          try {
+            const stream: any = await events.subscribe()
+            if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
+              registered = true
+              ;(async () => {
+                try {
+                  for await (const e of stream as any) {
+                    const sessionID = idleOnly(e)
+                    if (sessionID) await handleIdleCompaction(sessionID)
+                  }
+                } catch (err: any) {
+                  console.error(`[jev] idle-compaction: subscription ended (${String(err?.message ?? err)})`)
+                }
+              })()
+            } else if (typeof stream === "function") {
+              await stream("session.idle", (e: any) => {
+                const sessionID = idleOnly(e)
+                if (sessionID) void handleIdleCompaction(sessionID)
+              })
+              registered = true
+            }
+          } catch (err: any) {
+            console.error(`[jev] idle-compaction: subscription failed (${String(err?.message ?? err)})`)
+          }
+          if (!registered) console.log("[jev] idle-compaction: unusable event subscription - skipped")
+        }
+      }
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && idleTokens > 0 ? `+idle(${idleTokens})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
   },
 })

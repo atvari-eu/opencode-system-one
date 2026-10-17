@@ -232,7 +232,7 @@ function messageText(message: LLMMessage): string {
 }
 
 /** Characters of text, tool input and tool output one message holds. */
-function messageChars(message: LLMMessage): number {
+export function messageChars(message: LLMMessage): number {
   let total = 0
   for (const part of message.content ?? []) {
     if (!part || typeof part !== "object") continue

@@ -460,6 +460,7 @@ Options (all defaults mirror the reference):
 | `truncateHeadChars` | `300` | Head kept when a result is pruned. |
 | `minReduction` | `0.25` | Required relative shrink before a hook-supplied summary replaces the built-in one. |
 | `maxSummaryTokens` | half the model window | Cap on the hook-supplied summary (estimated tokens). |
+| `idleTokens` | `0` (off) | When set, compaction triggers outside OpenCode's near-full auto trigger: at session idle, if the transcript (estimated ~chars/4) exceeds this token target, the plugin posts the same compaction request `/compact` uses - which runs through the jev pass. Natural hysteresis: after a pass, the transcript sits well below the target until the conversation grows again. |
 
 ## Skills
 
