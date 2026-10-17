@@ -291,7 +291,10 @@ None needed. This plugin does not depend on and does not pair with any skill -
 the tool descriptions, hooks, routing, and commands above carry the whole job.
 On OpenCode with this plugin, do not load the `system-one` / `auto-system-one`
 skills; nothing in them is consulted, and the plugin only enforces what
-functions can be reached at all.
+functions can be reached at all. The tool descriptions stay deliberately
+compact for the same reason - each budgeted at ~300 tokens since they run on
+every request; fuller guidance belongs in the README or in the skills that
+other agents load, not in the request schema.
 
 For other agents (no plugin): the standalone `jev` CLI is the path, and the
 portable skills in [`atvari-eu/skills`](https://github.com/atvari-eu/skills)
