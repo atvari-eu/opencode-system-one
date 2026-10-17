@@ -156,6 +156,7 @@ describe("renderCallReport", () => {
     expect(plan.replaceSummary).toContain("Older history was removed")
     expect(plan.replaceSummary).toContain("Run /compact again within one minute")
     expect((plan.summaryTokens ?? 0) < 500).toBe(true)
+    expect(plan.tokens).toEqual({ input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } })
   })
 })
 

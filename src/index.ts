@@ -1656,7 +1656,10 @@ export default Plugin.define({
           )
           lastCompactionAt = { sessionID: String(event.sessionID), at: now }
           if (plan.replaceSummary) {
-            event.result = { summary: plan.replaceSummary }
+            event.result = {
+              summary: plan.replaceSummary,
+              ...(plan.tokens ? { tokens: plan.tokens } : {}),
+            }
             console.log(
               `[jev] compaction: supplied the pruned transcript as the summary (~${plan.summaryTokens}tok est, no summarizer call)`,
             )

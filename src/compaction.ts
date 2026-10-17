@@ -43,8 +43,10 @@
 //   - otherwise (insufficient reduction, oversized summary, or mode
 //     "clean"): the decisions are applied to `event.messages` in place and
 //     the built-in summarizer runs over the cleaned transcript
-//   - hook-supplied summaries report no token usage, so the session is
-//     never double-billed; Jev usage is logged to the console instead
+//   - hook-supplied summaries report the real jev token usage (the row's
+//     "N in · N out" title line); the host derives the cost entry from the
+//     compaction model's price table - the jev call itself bills on the jev
+//     model, so that cost line is a documented approximation
 
 // ---------------------------------------------------------------------------
 // Types (structural - matches @opencode/ai message parts at runtime)
@@ -148,6 +150,13 @@ export interface Plan {
   keepMessages?: LLMMessage[]
   stats: Stats
   summaryTokens?: number
+  /**
+   * Real token usage the jev judgment batches consumed. The host shows these in
+   * the compaction row ("N in · N out", parity with the built-in summarizer) and
+   * derives a cost entry from the compaction model's price table - documented
+   * because the actual jev call bills on the jev model.
+   */
+  tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
 }
 
 // ---------------------------------------------------------------------------
@@ -938,6 +947,14 @@ export async function runCompaction(
   )
 
   const plan: Plan = { stats }
+  if (stats.requests > 0) {
+    plan.tokens = {
+      input: stats.inputTokens,
+      output: stats.outputTokens,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    }
+  }
   if (options.mode !== "clean") {
     const reduction = stats.charsBefore === 0 ? 0 : (stats.charsBefore - stats.charsAfter) / stats.charsBefore
     if (reduction >= options.minReduction) {
