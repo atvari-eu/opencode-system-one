@@ -392,9 +392,24 @@ export default Plugin.define({
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
         ? o.effort.minConfidence
         : 0.6
-    const approvalsEnabled = o.approvals === true || (typeof o.approvals === "object" && o.approvals !== null)
-    const approvalsObj: any = typeof o.approvals === "object" && o.approvals !== null ? o.approvals : {}
-    const approvalsAuto = approvalsObj.auto === true
+    const approvalsRaw: any = o.approvals
+    const approvalsObj: any = typeof approvalsRaw === "object" && approvalsRaw !== null ? approvalsRaw : {}
+    const approvalsMode: "annotate" | "auto" | "off" = (() => {
+      if (approvalsRaw === undefined || approvalsRaw === null || approvalsRaw === false) return "off"
+      if (typeof approvalsRaw !== "object") {
+        console.log(
+          '[jev] approvals: unsupported value - use { "mode": "annotate" | "auto" }, or omit for off',
+        )
+        return "off"
+      }
+      if (approvalsRaw.mode === "annotate" || approvalsRaw.mode === "auto") return approvalsRaw.mode
+      console.log(
+        `[jev] approvals: mode must be "annotate" or "auto" (got ${JSON.stringify(approvalsRaw.mode ?? null)}) - falling back to annotate`,
+      )
+      return "annotate"
+    })()
+    const approvalsEnabled = approvalsMode !== "off"
+    const approvalsAuto = approvalsMode === "auto"
     const approvalsMinConfidence =
       typeof approvalsObj.minConfidence === "number" && Number.isFinite(approvalsObj.minConfidence)
         ? Math.min(0.99, Math.max(0.5, approvalsObj.minConfidence))

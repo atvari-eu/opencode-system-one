@@ -43,8 +43,8 @@ System One instead of a lossy summary *(opt-in)*.
   the current level stays. See
   [Auto reasoning effort](#auto-reasoning-effort).
 - **approvals** (opt-in) - permission requests are vetted by jev before
-  they reach you: a verdict line is added to the prompt, and with `"auto"`
-  enabled, high-confidence routine operations are approved outright.
+  they reach you: a verdict line is added to the prompt, and with
+  `"mode": "auto"`, high-confidence routine operations are approved outright.
   Configured deny rules always win. See
   [jev-assisted approvals](#jev-assisted-approvals).
 - **compaction** (opt-in) - replaces the lossy compaction summarizer with
@@ -145,7 +145,7 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
         "effort": { "auto": true }, // per-prompt thinking level; see "Auto reasoning effort"
-        "approvals": { "auto": true }, // see "jev-assisted approvals"
+        "approvals": { "mode": "auto" }, // see "jev-assisted approvals"
         "compaction": {      // see "System One compaction"
           "enabled": true,
           "mode": "replace"  // or "clean"
@@ -212,11 +212,11 @@ Permission requests (tool executions that would otherwise interrupt you) can
 be vetted by jev before they reach you. The feature is opt-in and has two
 stacked modes:
 
-- **Annotate** (enabled with `"approvals": true` or any object form): every
+- **Annotate** (enabled with `"approvals": { "mode": "annotate" }`): every
   `ask` verdict gets a one-line jev opinion added to the prompt you see -
   `[jev] likely safe (0.92)`, `[jev] uncertain (0.63) - review`,
   `[jev] likely risky (0.18) - review`. The decision stays entirely yours.
-- **Auto** (`"approvals": { "auto": true }`): the same judgment, and when it
+- **Auto** (`"approvals": { "mode": "auto" }`): the same judgment, and when it
   clears the confidence bar (default `0.85`, `minConfidence`), the request is
   approved programmatically and logged to the console. Only the allowlisted
   `actions` (default `bash`, `edit`) are candidates; `webfetch`, MCP calls,
@@ -247,7 +247,7 @@ Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `auto` | `false` | Enable programmatic approval on high confidence. |
+| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` also auto-approves requests above `minConfidence`. Omit or `false` keeps the feature off. |
 | `minConfidence` | `0.85` | `auto` threshold, clamped to 0.5-0.99. |
 | `actions` | `["bash", "edit"]` | Actions eligible for `auto`; annotations apply to every prompt-worthy request regardless. |
 
