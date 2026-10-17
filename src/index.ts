@@ -34,7 +34,8 @@
 //
 // Env contract identical to the `jev` CLI and skills:
 //   JEV_ENDPOINT (default: OpenCode Console System One endpoint)
-//   TYPESAFE_API_KEY | OPENCODE_API_KEY | opencode auth store (.opencode.key)
+//   TYPESAFE_API_KEY | OPENCODE_API_KEY | opencode CLI login
+//     (`opencode auth export`) | legacy auth store (.opencode.key), in order
 //   JEV_MODEL (default: jev-1.13-free)
 //   - `model` plugin option wins over JEV_MODEL; both win over the default
 //
@@ -47,11 +48,13 @@ import { runFind } from "./find"
 import {
   EFFORT_ORDER,
   NOTIFY_BELOW_DEFAULT,
+  jevAuthError,
   candidateKey,
   clampThreshold,
   doneTranscript,
   doneVerdict,
   isAvailableModel,
+  parseAuthExport,
   parseCandidates,
   parseRouteSources,
   parseScreenTools,
@@ -62,6 +65,7 @@ import {
   shouldNotifyIncomplete,
 } from "./logic"
 import { type Candidate } from "./logic"
+import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -85,20 +89,75 @@ interface JevReply {
 
 // ---------------------------------------------------------------------------
 // Jev transport (env-resolved per call, key never logged or persisted)
+//
+// Credential priority:
+//   1. TYPESAFE_API_KEY / OPENCODE_API_KEY env - explicit override
+//   2. The OpenCode CLI's credential store (read once per process via
+//      `opencode auth export`, integration "opencode"): a console API key or
+//      the active Console OAuth session, which the CLI keeps refreshed. Only
+//      consulted against the default Console endpoint so key and endpoint
+//      stay one deployment. Cached, and invalidated on 401 so a refreshed
+//      session is re-read exactly once before failing.
+//   3. Legacy opencode auth store (auth.json, field .opencode.key) - V1
+//      installs and hand-planted keys; the V2 CLI no longer updates it.
 // ---------------------------------------------------------------------------
 
-function resolveKey(): string | undefined {
+interface Credential {
+  key: string
+  source: "env" | "cli-store" | "auth-json"
+}
+
+let CLI_CREDENTIAL: Credential | undefined
+let CLI_CREDENTIAL_DEAD = false
+
+function loadCliStoreCredential(): Credential | undefined {
+  if (CLI_CREDENTIAL) return CLI_CREDENTIAL
+  if (CLI_CREDENTIAL_DEAD) return undefined
+  for (const bin of [process.env.OPENCODE_BIN, "opencode", "opencode2"]) {
+    if (!bin) continue
+    try {
+      // stdout only; stderr and the key itself are never logged or persisted
+      const out = execFileSync(bin, ["auth", "export"], {
+        encoding: "utf8",
+        timeout: 15_000,
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+      const key = parseAuthExport(JSON.parse(out))
+      if (key) {
+        CLI_CREDENTIAL = { key, source: "cli-store" }
+        return CLI_CREDENTIAL
+      }
+      break // the CLI ran, but holds no usable "opencode" credential
+    } catch {
+      // missing binary or unusable output - try the next binary name
+    }
+  }
+  CLI_CREDENTIAL_DEAD = true
+  return undefined
+}
+
+function invalidateCliStoreCredential(): void {
+  CLI_CREDENTIAL = undefined
+  CLI_CREDENTIAL_DEAD = false
+}
+
+function resolveKey(): Credential | undefined {
   const envKey = process.env.TYPESAFE_API_KEY || process.env.OPENCODE_API_KEY
-  if (envKey) return envKey
+  if (envKey) return { key: envKey, source: "env" }
+  if (!process.env.JEV_ENDPOINT) {
+    const store = loadCliStoreCredential()
+    if (store) return store
+  }
   try {
     const auth = JSON.parse(
       readFileSync(`${homedir()}/.local/share/opencode/auth.json`, "utf8"),
     )
     const key = auth?.opencode?.key
-    return typeof key === "string" && key.length > 0 ? key : undefined
+    if (typeof key === "string" && key.length > 0) return { key, source: "auth-json" }
   } catch {
-    return undefined
+    // no legacy store - fall through to "no credential"
   }
+  return undefined
 }
 
 function resolveEndpoint(): string {
@@ -124,18 +183,16 @@ function toQuestionMap(questions: Question[]): Record<string, any> {
   return map
 }
 
-async function jevJudge(
+async function jevRequest(
+  cred: Credential,
   questions: Question[],
   state: unknown,
   signal?: AbortSignal,
-): Promise<JevReply> {
-  const key = resolveKey()
-  if (!key) throw new Error("jev: no key (set TYPESAFE_API_KEY or OPENCODE_API_KEY)")
-
-  const response = await fetch(resolveEndpoint(), {
+): Promise<Response> {
+  return fetch(resolveEndpoint(), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${key}`,
+      Authorization: `Bearer ${cred.key}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -145,14 +202,43 @@ async function jevJudge(
     }),
     signal,
   })
+}
+
+async function jevJudgeInner(
+  resolveCred: () => Credential | undefined,
+  questions: Question[],
+  state: unknown,
+  signal?: AbortSignal,
+): Promise<JevReply> {
+  const cred = resolveCred()
+  if (!cred) {
+    throw new Error(
+      "jev: no credential (set TYPESAFE_API_KEY, export OPENCODE_API_KEY, or run `opencode auth login` to sign in to the Console)",
+    )
+  }
+
+  let response = await jevRequest(cred, questions, state, signal)
+  // A cached CLI-store session can rotate between calls; on rejection,
+  // re-read the store once (picking up the session the CLI refreshed) and
+  // retry - never twice, never against a custom endpoint.
+  if (response.status === 401 && cred.source === "cli-store") {
+    invalidateCliStoreCredential()
+    const fresh = resolveCred()
+    if (fresh && fresh.key !== cred.key) {
+      response = await jevRequest(fresh, questions, state, signal)
+    }
+  }
 
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(
-        `jev: ${response.status} - key↔endpoint pairing problem (key and endpoint must come from the same deployment)`,
-      )
+    let detail = ""
+    try {
+      const body = (await response.json()) as any
+      const m = body?.error?.message ?? body?.message
+      detail = typeof m === "string" ? m : ""
+    } catch {
+      // opaque error body - fall back to the status-coded hint
     }
-    throw new Error(`jev: upstream ${response.status}`)
+    throw new Error(jevAuthError(response.status, detail))
   }
 
   const json = (await response.json()) as JevReply
@@ -162,6 +248,14 @@ async function jevJudge(
     throw new Error("jev: malformed response (no answers)")
   }
   return json
+}
+
+async function jevJudge(
+  questions: Question[],
+  state: unknown,
+  signal?: AbortSignal,
+): Promise<JevReply> {
+  return jevJudgeInner(resolveKey, questions, state, signal)
 }
 
 // ---------------------------------------------------------------------------

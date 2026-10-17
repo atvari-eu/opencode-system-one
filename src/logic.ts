@@ -909,3 +909,45 @@ export function fmtFindReport(input: {
     .join("\n")
   return `${head}\nRanked hits are routing signals only - read the files before relying on them:\n${body}`
 }
+
+// ---------------------------------------------------------------------------
+// Jev auth plumbing: parsing `opencode auth export` and status-aware error
+// text. Pure functions; src/index.ts owns resolution order, caching and HTTP.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the Console credential usable against the default System One
+ * endpoint from an `opencode auth export` payload: the active integration
+ * "opencode" entry, either its API key (type "key") or - since the V2 CLI
+ * signs in OAuth - its session access token (type "oauth"), which the CLI
+ * keeps refreshed, so a fresh export is always current. Returns undefined
+ * when the payload has no usable opencode entry (other integrations and
+ * inactive entries are ignored); malformed input yields undefined, never a
+ * throw.
+ */
+export function parseAuthExport(json: unknown): string | undefined {
+  if (!Array.isArray(json)) return undefined
+  for (const entry of json as Array<any>) {
+    if (entry?.integrationID !== "opencode" || entry?.active !== true) continue
+    const v = entry?.value
+    if (v?.type === "key" && typeof v.key === "string" && v.key) return v.key
+    if (v?.type === "oauth" && typeof v.access === "string" && v.access) return v.access
+  }
+  return undefined
+}
+
+/**
+ * Error text for a failed System One call, keyed by HTTP status. The
+ * endpoint's own diagnostic always wins (expired key, insufficient funds,
+ * free-tier gate); the well-known pairing hint ("key and endpoint must come
+ * from the same deployment") is the fallback for responses without detail.
+ */
+export function jevAuthError(status: number, detail: string): string {
+  if (status === 401)
+    return `jev: 401 - ${detail || "credential rejected (expired key or wrong deployment: key and endpoint must come from the same deployment)"}`
+  if (status === 402)
+    return `jev: 402 - ${detail || "insufficient funds on the Console inference account (top up in the OpenCode Console)"}`
+  if (status === 403)
+    return `jev: 403 - ${detail || "endpoint refused the request (key and endpoint must come from the same deployment)"}`
+  return `jev: upstream ${status}${detail ? ` - ${detail}` : ""}`
+}

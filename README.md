@@ -66,10 +66,12 @@ compaction can be decided by System One instead of a lossy summary
 ## Requirements
 
 - [OpenCode 2](https://opencode.ai/v2/docs)
-- Access to a Jev endpoint. With the default OpenCode Console endpoint, run
-  `opencode auth login`, select `opencode`, and paste your API key - or export
-  `OPENCODE_API_KEY` / `TYPESAFE_API_KEY` instead. Key and endpoint must come
-  from the same deployment.
+- Access to a Jev endpoint. With the default OpenCode Console endpoint,
+  credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY` env
+  → the CLI's own login (`opencode auth login` - an API key or your Console
+  OAuth session) → the legacy auth store. Key and endpoint must come from
+  the same deployment. Paid models bill the Console workspace - a call
+  without funds comes back as 402 and is never silently retried elsewhere.
 
 Nothing here depends on a specific model provider; the plugin only adds tools
 and guards around your existing setup.
@@ -457,15 +459,26 @@ $ skills add atvari-eu/skills@auto-system-one -g
 Identical to the `jev` CLI (resolved fresh on every call; the key
 is never logged or persisted):
 
-- `TYPESAFE_API_KEY` → `OPENCODE_API_KEY` → opencode auth store
-  (`~/.local/share/opencode/auth.json`, field `.opencode.key`)
+1. `TYPESAFE_API_KEY` → `OPENCODE_API_KEY` env - explicit override
+2. The OpenCode CLI's credential store, read from `opencode auth export`
+   (integration "opencode"): a console API key or the active Console OAuth
+   session, which the CLI keeps refreshed. Consulted only against the
+   default Console endpoint (so key and endpoint stay one deployment),
+   cached per process, and re-read once if the endpoint rejects a cached
+   session with 401.
+3. Legacy opencode auth store (`~/.local/share/opencode/auth.json`, field
+   `.opencode.key`) - V1 installs and hand-planted keys; the V2 CLI no
+   longer updates this file.
+
 - `JEV_ENDPOINT` (default: OpenCode Console System One endpoint)
 - `JEV_MODEL` (default: `jev-1.13-free`; the plugin's `model` option wins
   over this env, which wins over the default)
 
 A missing key or failed call never produces a "successful" judgment: screen
-marks `unavailable`, tools throw, 401/403 reports the key↔endpoint pairing
-rule. There is no provider degradation chain.
+marks `unavailable`, tools throw. Failures surface the endpoint's own
+diagnostic: 401 reads as credential rejection (expired key or wrong
+deployment), 402 as lack of funds on the Console inference account, 403 as
+the pairing or free-tier gate. There is no provider degradation chain.
 
 ## Guarantees
 
