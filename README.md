@@ -37,24 +37,20 @@ System One instead of a lossy summary *(opt-in)*.
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
   session transcript. Both answer without loading a skill.
-- **effort** (opt-in) - before each turn, jev picks the reasoning effort
-  (thinking level) that prompt deserves - from the levels the selected model
-  actually supports - and switches the model's variant, the same mechanism as
-  the UI's effort picker. Fail-open: if jev is unavailable or uncertain, the
-  current level stays. See [Auto reasoning effort](#auto-reasoning-effort).
-- **approvals** (opt-in) - permission requests are judged by jev before they
-  reach you: the verdict is added to the prompt ("likely safe 0.92",
-  "uncertain - review", gate holds for destructive/sensitive patterns), and
-  with `"auto"` enabled, high-confidence routine operations are approved
-  outright. Configured deny rules always win; low confidence always falls
-  back to the human prompt. See
+- **effort** (opt-in) - before each turn, jev picks the thinking level that
+  prompt deserves and switches the model's variant, the same mechanism as
+  the UI's effort picker. Fail-open: if jev is unavailable or uncertain,
+  the current level stays. See
+  [Auto reasoning effort](#auto-reasoning-effort).
+- **approvals** (opt-in) - permission requests are vetted by jev before
+  they reach you: a verdict line is added to the prompt, and with `"auto"`
+  enabled, high-confidence routine operations are approved outright.
+  Configured deny rules always win. See
   [jev-assisted approvals](#jev-assisted-approvals).
-- **compaction** (opt-in) - replaces the compaction summarizer with System One
-  decisions, following
-  [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction):
-  tool calls and results are dropped or truncated by jev `noul` verdicts,
-  everything kept stays verbatim, and no summarizing model call runs. See
-  [System One compaction](#system-one-compaction).
+- **compaction** (opt-in) - replaces the lossy compaction summarizer with
+  System One decisions: tool calls and results are dropped or truncated by
+  jev verdicts, everything kept stays verbatim, no summarizing model call
+  runs. See [System One compaction](#system-one-compaction).
 
 ## Requirements
 
@@ -148,9 +144,9 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
-        "effort": { "auto": true }, // opt-in per-prompt thinking level; see "Auto reasoning effort"
-        "approvals": { "auto": true }, // opt-in; see "jev-assisted approvals"
-        "compaction": {      // opt-in; see "System One compaction"
+        "effort": { "auto": true }, // per-prompt thinking level; see "Auto reasoning effort"
+        "approvals": { "auto": true }, // see "jev-assisted approvals"
+        "compaction": {      // see "System One compaction"
           "enabled": true,
           "mode": "replace"  // or "clean"
         }
@@ -162,58 +158,46 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
 
 ## Jev-first latency
 
-OpenCode always runs the primary model on a user prompt - a plugin cannot
-skip that turn. What the plugin provides instead:
-
-- The `jev_decide` / `jev_judge_many` descriptions instruct the agent to
-  make an explicit judgment request a **first action** - user items passed
-  verbatim, no pre-analysis, no rewriting. Always on, bundled with the tool
-  schema.
-- The zero-model paths answer entirely outside the agent loop:
-  `/jev-screen` runs the jev call with no model turn at all, and a
-  dedicated agent in `opencode.json` with a tool-first prompt can be
-  switched to for judgment-only turns.
+OpenCode always runs the primary model on a prompt - a plugin cannot skip
+that turn. When latency matters more than flexibility, use the zero-model
+paths instead: `/jev-screen` answers with no model turn at all, and a
+dedicated agent in `opencode.json` with a tool-first prompt can host
+judgment-only turns.
 
 ## Auto reasoning effort
 
-OpenCode models "thinking level" as the model's *reasoning variant*
-(`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). With
-`"effort": { "auto": true }`, the plugin asks jev once per prompt which level
-that prompt deserves and applies it by switching the model's variant - the
-same mechanism the UI's effort picker uses, programmatically, before the
-turn's first request is resolved:
+OpenCode represents thinking level as the model's *reasoning variant*
+(`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) - the same
+levels the UI's effort picker offers. With `"effort": { "auto": true }`,
+jev picks the variant per prompt before the turn starts:
 
 - jev answers a single `choice` question whose options are only the levels
   the selected model's catalog actually lists; for models without reasoning
   variants the feature disables itself.
 - The judgment state is the prompt, truncated to 6 kB and scrubbed of known
   secret formats - same treatment as every other judgment state.
-- Fail-open everywhere: jev unreachable, timeout (8 s), or an uninterpretable
-  answer leaves the current level untouched and the turn proceeds normally.
-- A confidence floor (`minConfidence`, default `0.6`) keeps the current level
-  when jev is unsure - uncertain judgment must not flap between levels. When
-  the picked level equals the current one, nothing happens at all.
-- The question biases toward the *lower* of two plausible levels: a cheap
-  turn can escalate later, wasted thinking cannot be taken back.
+- Fail-open: jev unreachable, timeout (8 s), or an uninterpretable answer
+  leaves the current level untouched and the turn proceeds normally.
+- A confidence floor (`minConfidence`, default `0.6`) keeps the current
+  level when jev is unsure, and an unchanged pick does nothing.
+- Between two plausible levels the question prefers the *lower* one: a
+  cheap turn can escalate later, wasted thinking cannot be taken back.
 
-Each real level change appends OpenCode's native `model-switched` message (a
-small status line in the timeline), so changes are visible and auditable.
+Each real level change appends OpenCode's native `model-switched` message
+(a small status line in the timeline), so changes are visible and auditable.
 
-**Manual picks win.** Your effort picks (and any other model changes) show
-up in the transcript and are detected automatically. The plugin records its
-own switches in durable plugin storage; when the newest switch is not one
-of its own (you picked a level, or changed the model another way), auto stands
-down for that session - no jev call, no switching - until the variant is
-`Default` again, which re-enables it. Repeated prompts log the stand-down
-notice once. A missing attribution record (cleared storage, fresh install)
-errs toward the user and keeps auto off until the next `Default` pick. The
-gate is a plain comparison, no model call.
+**Manual picks win.** Your effort picks show up in the transcript and are
+detected automatically: when the newest switch is not one the plugin made,
+auto stands down for that session (no jev call, no switching) until the
+variant is `Default` again, which re-enables it. A missing attribution
+record (cleared storage, fresh install) errs toward the user and keeps
+auto off until the next `Default` pick. The comparison is a plain
+equality check, no model call.
 
-Like every jev call, the judgment is cached per prompt - repeating the same
-prompt costs nothing. The price is one extra jev round-trip per new prompt
-(capped by the 8 s timeout); the payoff is that
-simple prompts get a cheaper turn than OpenCode's static default would give
-them.
+The judgment is cached per prompt - repeating the same prompt costs
+nothing. Each new prompt costs one jev round-trip (capped by the 8 s
+timeout); the payoff is that simple prompts get a cheaper turn than
+OpenCode's static default would give them.
 
 Options:
 
@@ -250,10 +234,10 @@ deliberately a deny-the-shortcut list, not a security sandbox; a false
 positive only costs automation, never safety - the human prompt remains.
 
 The fail-closed ladder: jev unreachable, a timeout (8 s), or an
-uninterpretable answer leaves the request exactly as OpenCode built it -
-your prompt, unaltered verdict aside. Low confidence never silently
-approves. Configured deny rules and every "always allow" memory you made in
-the UI rule above the feature by construction.
+uninterpretable answer leaves the request exactly as OpenCode built it
+(annotation aside), and low confidence never silently approves. Configured
+deny rules and every "always allow" memory you made in the UI always rank
+above the feature.
 
 One framing matters: auto-approval is an **explicit delegation you opt
 into**, bounded by the deterministic gates above; it never auto-denies,
@@ -265,7 +249,7 @@ Options:
 | --- | --- | --- |
 | `auto` | `false` | Enable programmatic approval on high confidence. |
 | `minConfidence` | `0.85` | `auto` threshold, clamped to 0.5-0.99. |
-| `actions` | `["bash", "edit"]` | Actions eligible for `auto`; others always prompt. Annotations judge every `ask` regardless. |
+| `actions` | `["bash", "edit"]` | Actions eligible for `auto`; annotations apply to every prompt-worthy request regardless. |
 
 ## System One compaction
 
@@ -322,13 +306,11 @@ Options (all defaults mirror the reference):
 
 ## Skills
 
-None needed. This plugin does not depend on and does not pair with any skill -
-the tool descriptions, hooks, and commands above carry the whole job.
-On OpenCode with this plugin, do not load the `system-one` / `auto-system-one`
-skills; nothing in them is consulted. For other agents (no plugin): the
-standalone `jev` CLI is the path, and the portable skills in
-[`atvari-eu/skills`](https://github.com/atvari-eu/skills) can drive it from
-any agent. Install there, not on OpenCode with this plugin:
+None needed, and none should be loaded on OpenCode with this plugin - the
+tool descriptions, hooks, and commands carry the whole job. For other
+agents (no plugin), the standalone `jev` CLI is the path, and the portable
+skills in [`atvari-eu/skills`](https://github.com/atvari-eu/skills) can
+drive it from any agent:
 
 ```console
 $ skills add atvari-eu/skills@system-one -g
@@ -349,7 +331,7 @@ A missing key or failed call never produces a "successful" judgment: screen
 marks `unavailable`, tools throw, 401/403 reports the key↔endpoint pairing
 rule. There is no provider degradation chain.
 
-## Design rules preserved
+## Guarantees
 
 - Secret scrubbing is **always deterministic regex** - never a Jev call -
   and applies to screening, tool inputs, prompts, and the compaction
