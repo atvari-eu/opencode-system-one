@@ -427,6 +427,11 @@ from Claude Code to the OpenCode plugin hook:
    summary), applies the decisions to the transcript and lets the built-in
    summarizer run over the cleaned history.
 
+Host-injected `system` blocks (Code Mode tool-catalog updates and friends)
+are excluded from both the judged state and the hook-supplied summary: the
+host regenerates them every turn, so replaying them would only duplicate
+what arrives fresh after compaction.
+
 Fail-closed: a missing key, a jev failure, a malformed answer, or a history
 that cannot be fitted leaves compaction entirely to OpenCode's built-in
 summarizer, on the unmodified transcript. Nothing is half-applied.
