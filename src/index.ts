@@ -299,6 +299,31 @@ const ROUTING_PATTERN =
 const ROUTING_HINT =
   "\n\n[jev routing] If a jev tool fits this request, make that jev_decide or jev_judge_many call your FIRST action: pass the user's items/context verbatim (state / items) and only interpret the answers it returns - do not pre-analyze, summarize, or rewrite the items yourself, and do not deliberate before calling. If no jev tool fits, ignore this note and proceed normally."
 
+// ---------------------------------------------------------------------------
+// Auto effort: jev picks the thinking level (model variant) per prompt
+// ---------------------------------------------------------------------------
+
+// OpenCode models reasoning effort as the model's reasoning variant
+// (Model.Ref#variant). Overlays for it are applied when the LanguageModel is
+// resolved, and the runner reads the variant from the session's model
+// selection - so the prompt hook, which runs before the runner resolves,
+// asks jev and switches the variant via session.switchModel (what the UI's
+// effort picker does). Only variants the catalog lists may be used: an
+// unknown variant fails the whole turn at resolve time.
+const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+const EFFORT_CRITERIA: Record<string, string> = {
+  none: "No reasoning needed: a trivial lookup, formatting, one-line edit, or a follow-up with an obvious next action",
+  minimal:
+    "Barely any reasoning: an explicit, unambiguous instruction with a directly known answer",
+  low: "Light reasoning: a clear, bounded task with an obvious next action and no open design questions",
+  medium:
+    "Normal multi-step work: several files or steps, some uncertainty, moderate planning - the typical coding request",
+  high: "Hard work: complex debugging, architecture or interface design, broad refactors, or unfamiliar territory needing careful analysis",
+  xhigh: "Very hard: deep multi-system reasoning where getting it wrong is costly",
+  max: "Maximum thinking: the hardest problems with the highest stakes",
+}
+
 // Normalizes score/choice answers; returns a mean numeric when possible.
 function numericOf(answer: any): number | undefined {
   if (!answer || typeof answer !== "object") return undefined
@@ -324,6 +349,11 @@ export default Plugin.define({
     const commandsEnabled = o.commands !== false
     const cacheEnabled = o.cache !== false
     const routingHint = o.routing?.hints !== false
+    const effortAuto = o.effort?.auto === true
+    const effortMinConfidence =
+      typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
+        ? o.effort.minConfidence
+        : 0.6
     const location = (ctx as any).location?.directory ?? ""
 
     async function cachedJudge(
@@ -384,6 +414,71 @@ export default Plugin.define({
           event.prompt.text += ROUTING_HINT
           console.log("[jev] routing hint appended - judgment request goes jev-first")
         } catch {}
+      })
+    }
+
+    // -- effort: jev decides the thinking level per prompt (opt-in) --
+
+    if (effortAuto) {
+      // Reasoning variants the model's catalog lists, in ascending order.
+      const effortLevels = async (providerID: any, modelID: any): Promise<string[]> => {
+        try {
+          const info: any = await (ctx as any).model?.get?.(providerID, modelID)
+          const listed = (info?.variants ?? []).map((variant: any) =>
+            typeof variant?.id === "string" ? variant.id : String(variant),
+          )
+          return EFFORT_ORDER.filter((level) => listed.includes(level))
+        } catch {}
+        return []
+      }
+
+      await (ctx as any).session.hook("prompt", async (event: any) => {
+        try {
+          const text = typeof event?.prompt?.text === "string" ? event.prompt.text : ""
+          if (text.trim().length === 0) return
+          const session: any = await (ctx as any).session.get({ sessionID: event.sessionID })
+          const model = session?.model
+          if (!model?.providerID || !model?.id) return
+          const levels = await effortLevels(model.providerID, model.id)
+          if (levels.length === 0) return
+          // The routing hook (registered before this one) may have appended
+          // its hint; that judgment-flavored text is not the user's message.
+          const judged = text.endsWith(ROUTING_HINT) ? text.slice(0, -ROUTING_HINT.length) : text
+
+          const state =
+            "A user message in an OpenCode coding session is quoted below. Decide how much reasoning effort the assistant's turn for it should use.\n\n<user>\n" +
+            redactText(judged.slice(0, 6000)).text +
+            "\n</user>"
+          const question: Question = {
+            id: "effort",
+            type: "choice",
+            instructions:
+              "Which reasoning effort should this turn use? Pick the level matching the work the message asks for; between two levels prefer the LOWER one - a cheap turn can escalate later, but wasted thinking cannot be taken back.",
+            criteria: Object.fromEntries(levels.map((level) => [level, EFFORT_CRITERIA[level] ?? level])),
+          }
+          const { reply } = await cachedJudge([question], state, AbortSignal.timeout(8_000))
+          const answer: any = reply.answers?.effort
+          const choice = typeof answer?.choice === "string" ? answer.choice.trim().toLowerCase() : ""
+          const current = typeof model.variant === "string" ? model.variant.toLowerCase() : "default"
+          if (!levels.includes(choice)) {
+            console.log(`[jev] effort: uninterpretable answer (${String(answer?.choice)}) - keeping ${current}`)
+            return
+          }
+          if (choice === current) return
+          if (typeof answer?.confidence === "number" && answer.confidence < effortMinConfidence) {
+            console.log(
+              `[jev] effort: ${choice} uncertain (${fmt(answer.confidence)}) - keeping ${current}`,
+            )
+            return
+          }
+          await (ctx as any).session.switchModel({
+            sessionID: event.sessionID,
+            model: { providerID: model.providerID, id: model.id, variant: choice },
+          })
+          console.log(`[jev] effort: ${current} → ${choice} (jev pick, confidence ${fmt(answer.confidence)})`)
+        } catch (err: any) {
+          console.error(`[jev] effort: skipped for this prompt (${String(err?.message ?? err)})`)
+        }
       })
     }
 
@@ -763,7 +858,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} routing=${routingHint ? "on" : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} routing=${routingHint ? "on" : "off"} effort=${effortAuto ? "auto" : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })

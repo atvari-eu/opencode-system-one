@@ -5,8 +5,8 @@ judgments into OpenCode automatically: every `webfetch` result is checked for
 junk and prompt injection before it enters context, known secret formats are
 redacted from tool inputs and user prompts, the agent gets `jev_decide` /
 `jev_judge_many` tools with caching, judgment prompts are routed tool-first,
-and context compaction can be decided by System One instead of a lossy
-summary.
+each turn's reasoning effort can be picked by System One from the prompt, and
+context compaction can be decided by System One instead of a lossy summary.
 
 ## What it does
 
@@ -39,6 +39,11 @@ summary.
   `jev_decide` / `jev_judge_many` call its **first action** with verbatim
   inputs, instead of thinking the judgment through itself first. See
   [Fast routing of judgment prompts](#fast-routing-of-judgment-prompts).
+- **effort** (opt-in) - before each turn, jev picks the reasoning effort
+  (thinking level) that prompt deserves - from the levels the selected model
+  actually supports - and switches the model's variant, the same mechanism as
+  the UI's effort picker. Fail-open: if jev is unavailable or uncertain, the
+  current level stays. See [Auto reasoning effort](#auto-reasoning-effort).
 - **compaction** (opt-in) - replaces the compaction summarizer with System One
   decisions, following
   [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction):
@@ -124,7 +129,8 @@ home.file.".config/opencode/jev-plugin/index.ts".source =
 
 ### Options
 
-Everything is on by default; turn parts off with the object form:
+Everything is on by default except `effort` and `compaction` (both opt-in);
+turn parts off with the object form:
 
 ```jsonc
 {
@@ -138,6 +144,7 @@ Everything is on by default; turn parts off with the object form:
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
         "routing": { "hints": true }, // tool-first hints for judgment prompts
+        "effort": { "auto": true }, // opt-in per-prompt thinking level; see "Auto reasoning effort"
         "compaction": {      // opt-in; see "System One compaction"
           "enabled": true,
           "mode": "replace"  // or "clean"
@@ -172,6 +179,44 @@ for user prompts. When latency matters more than flexibility, use the
 zero-model paths instead: `/jev-screen` (runs the jev call with no agent
 loop at all), or define a dedicated agent in `opencode.json` with a
 tool-first prompt and switch to it for judgment-only turns.
+
+## Auto reasoning effort
+
+OpenCode models "thinking level" as the model's *reasoning variant*
+(`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). With
+`"effort": { "auto": true }`, the plugin asks jev once per prompt which level
+that prompt deserves and applies it by switching the model's variant - the
+same mechanism the UI's effort picker uses, programmatically, before the
+turn's first request is resolved:
+
+- jev answers a single `choice` question whose options are only the levels
+  the selected model's catalog actually lists. Switching to an unlisted
+  variant would fail the whole turn at model-resolve time, so the feature
+  disables itself for models without reasoning variants.
+- The judgment state is the prompt, truncated to 6 kB and scrubbed of known
+  secret formats - same treatment as every other judgment state.
+- Fail-open everywhere: jev unreachable, timeout (8 s), or an uninterpretable
+  answer leaves the current level untouched and the turn proceeds normally.
+- A confidence floor (`minConfidence`, default `0.6`) keeps the current level
+  when jev is unsure - uncertain judgment must not flap between levels. When
+  the picked level equals the current one, nothing happens at all.
+- The question biases toward the *lower* of two plausible levels: a cheap
+  turn can escalate later, wasted thinking cannot be taken back.
+
+Each real level change appends OpenCode's native `model-switched` message (a
+small status line in the timeline), so changes are visible and auditable.
+Like every jev call, the judgment is cached per prompt - repeating the same
+prompt costs nothing. The price is one extra jev round-trip per new prompt
+(inside prompt admission, capped by the 8 s timeout); the payoff is that
+simple prompts get a cheaper turn than OpenCode's static default would give
+them.
+
+Options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `auto` | `false` | Off unless explicitly enabled. |
+| `minConfidence` | `0.6` | Minimum jev answer confidence required to switch levels. |
 
 ## System One compaction
 
