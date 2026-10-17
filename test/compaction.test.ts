@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { renderSummary, collectCalls, renderCallReport, runCompaction, DEFAULTS } from "../src/compaction"
+import { parseIdleAuto } from "../src/logic"
 
 const message = (role: "user" | "assistant" | "system", text: string): any => ({
   role,
@@ -157,6 +158,27 @@ describe("renderCallReport", () => {
     expect(plan.replaceSummary).toContain("Run /compact again within one minute")
     expect((plan.summaryTokens ?? 0) < 500).toBe(true)
     expect(plan.tokens).toEqual({ input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } })
+  })
+})
+
+describe("parseIdleAuto", () => {
+  test("off by default and for nonsense shapes", () => {
+    expect(parseIdleAuto(undefined)).toEqual({ tokens: 0, share: 0 })
+    expect(parseIdleAuto(false)).toEqual({ tokens: 0, share: 0 })
+    expect(parseIdleAuto("yes")).toEqual({ tokens: 0, share: 0 })
+    expect(parseIdleAuto(["share"])).toEqual({ tokens: 0, share: 0 })
+  })
+
+  test("true means compact at half the window", () => {
+    expect(parseIdleAuto(true)).toEqual({ tokens: 0, share: 0.5 })
+  })
+
+  test("object form parses tokens/share, clamps share, rejects bad values", () => {
+    expect(parseIdleAuto({ share: 0.4 })).toEqual({ tokens: 0, share: 0.4 })
+    expect(parseIdleAuto({ tokens: 60000, share: 0.2 })).toEqual({ tokens: 60000, share: 0.2 })
+    expect(parseIdleAuto({ share: 2 })).toEqual({ tokens: 0, share: 0.95 })
+    expect(parseIdleAuto({ tokens: -5 })).toEqual({ tokens: 0, share: 0 })
+    expect(parseIdleAuto({})).toEqual({ tokens: 0, share: 0 })
   })
 })
 

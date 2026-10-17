@@ -8,6 +8,36 @@
 import { createHash } from "node:crypto"
 
 // ---------------------------------------------------------------------------
+// Idle auto-compaction trigger options (compaction.auto)
+// ---------------------------------------------------------------------------
+
+export interface IdleAutoOptions {
+  /** Absolute token target for the estimated transcript at idle. */
+  tokens: number
+  /** Fraction of the session model context window (0.01-0.95); used when tokens is 0. */
+  share: number
+}
+
+/**
+ * Accepts the compaction "auto" option: an object with tokens/share knobs, or
+ * `true` for the sensible default (share 0.5, mirroring "compact at half the
+ * window"), or anything else as off. Absolute tokens win over the share.
+ */
+export function parseIdleAuto(raw: unknown): IdleAutoOptions {
+  if (raw === true) return { tokens: 0, share: 0.5 }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const value = raw as Record<string, unknown>
+    const tokens =
+      typeof value.tokens === "number" && Number.isFinite(value.tokens) && value.tokens > 0
+        ? Math.floor(value.tokens)
+        : 0
+    const share = clampThreshold(value.share, 0.01, 0.95, 0)
+    return { tokens, share }
+  }
+  return { tokens: 0, share: 0 }
+}
+
+// ---------------------------------------------------------------------------
 // Shared question shape (structurally compatible with index.ts's Question)
 // ---------------------------------------------------------------------------
 
