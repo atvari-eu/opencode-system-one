@@ -4,9 +4,10 @@ An [OpenCode](https://opencode.ai) plugin that wires System One (Jev)
 judgments into OpenCode automatically: every `webfetch` result is checked for
 junk and prompt injection before it enters context, known secret formats are
 redacted from tool inputs and user prompts, the agent gets `jev_decide` /
-`jev_judge_many` tools with caching, judgment prompts are routed tool-first,
-each turn's reasoning effort can be picked by System One from the prompt, and
-context compaction can be decided by System One instead of a lossy summary.
+`jev_judge_many` tools with caching, each turn's reasoning effort can be
+picked by System One from the prompt *(opt-in)*, permission requests can be
+vetted by System One *(opt-in)*, and context compaction can be decided by
+System One instead of a lossy summary *(opt-in)*.
 
 ## What it does
 
@@ -24,15 +25,12 @@ context compaction can be decided by System One instead of a lossy summary.
   Replaced with `[REDACTED:<label>]`.
 - **tools** - `jev_decide`: one request = one state + typed questions
   (noul/choice/score); `jev_judge_many`: one judgment per item, launched in
-  parallel, aggregated in code (weighted mean + low-confidence flags). No
-  multi-state batch endpoint is ever simulated. Both are registered as
-  first-class tools (not Code Mode nested calls), so every judgment shows as
-  its own tool row (`Running jev_decide…`) in the timeline, and their
-  descriptions carry the judgment-moment guidance and call discipline - when
-  to reach for jev proactively (screening, claim verification, ranking,
-  bounded choices, scoring, and self-contained classification questions where
-  nothing needs to be read first), when to skip, and the confidence
-  thresholds - no companion skill is needed.
+  parallel and aggregated in code (weighted mean + low-confidence flags).
+  Every judgment shows as its own tool row (`Running jev_decide…`) in the
+  timeline, and the tool descriptions carry the when-to-call guidance -
+  screening, claim verification, ranking, bounded choices, scoring, and
+  self-contained classification questions (nothing to read first) - plus the
+  skip rules and confidence thresholds. No companion skill is needed.
 - **cache** - replies for identical (endpoint, model, state, questions) are
   served from durable plugin storage; only answers are persisted, never the
   state text.
@@ -164,28 +162,17 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
 
 ## Jev-first latency
 
-OpenCode always runs the primary model on a user prompt, and the plugin
-cannot skip that turn - OpenCode exposes result-skips only for the
-compaction, title, and generate flows, not for user prompts. The levers the
-plugin does have:
+OpenCode always runs the primary model on a user prompt - a plugin cannot
+skip that turn. What the plugin provides instead:
 
-- The `jev_decide` / `jev_judge_many` descriptions state that an explicit
-  judgment request makes the tool call the **first action**, with the
-  user's items passed verbatim - no pre-analysis, no rewriting. Always on,
-  bundled with the tool schema.
+- The `jev_decide` / `jev_judge_many` descriptions instruct the agent to
+  make an explicit judgment request a **first action** - user items passed
+  verbatim, no pre-analysis, no rewriting. Always on, bundled with the tool
+  schema.
 - The zero-model paths answer entirely outside the agent loop:
   `/jev-screen` runs the jev call with no model turn at all, and a
   dedicated agent in `opencode.json` with a tool-first prompt can be
   switched to for judgment-only turns.
-
-Prompt-append notes were tried here (a deterministic vocabulary gate, then
-a precision-first tool-name gate) and removed: they were user-visible
-edits to the prompt that kept producing noise (vocabulary false positives,
-echoed notes re-triggering themselves), and they co-existed with the
-description guidance in every session - so no evidence ever separated
-what each one contributed. The rule that survives across the plugin:
-**invisible guidance is always on (tool descriptions); user-visible
-injection of instructions does not happen.**
 
 ## Auto reasoning effort
 
@@ -197,9 +184,8 @@ same mechanism the UI's effort picker uses, programmatically, before the
 turn's first request is resolved:
 
 - jev answers a single `choice` question whose options are only the levels
-  the selected model's catalog actually lists. Switching to an unlisted
-  variant would fail the whole turn at model-resolve time, so the feature
-  disables itself for models without reasoning variants.
+  the selected model's catalog actually lists; for models without reasoning
+  variants the feature disables itself.
 - The judgment state is the prompt, truncated to 6 kB and scrubbed of known
   secret formats - same treatment as every other judgment state.
 - Fail-open everywhere: jev unreachable, timeout (8 s), or an uninterpretable
@@ -213,10 +199,9 @@ turn's first request is resolved:
 Each real level change appends OpenCode's native `model-switched` message (a
 small status line in the timeline), so changes are visible and auditable.
 
-**Manual picks win.** The picker commits through the same `session.switchModel`
-the feature uses, so a manual effort pick shows up as the newest
-`model-switched` message before the next prompt is judged. The plugin records
-its own switches in durable plugin storage; when the newest switch is not one
+**Manual picks win.** Your effort picks (and any other model changes) show
+up in the transcript and are detected automatically. The plugin records its
+own switches in durable plugin storage; when the newest switch is not one
 of its own (you picked a level, or changed the model another way), auto stands
 down for that session - no jev call, no switching - until the variant is
 `Default` again, which re-enables it. Repeated prompts log the stand-down
@@ -226,7 +211,7 @@ gate is a plain comparison, no model call.
 
 Like every jev call, the judgment is cached per prompt - repeating the same
 prompt costs nothing. The price is one extra jev round-trip per new prompt
-(inside prompt admission, capped by the 8 s timeout); the payoff is that
+(capped by the 8 s timeout); the payoff is that
 simple prompts get a cheaper turn than OpenCode's static default would give
 them.
 
@@ -253,9 +238,8 @@ stacked modes:
   `actions` (default `bash`, `edit`) are candidates; `webfetch`, MCP calls,
   and everything else still prompt you.
 
-Every judgment only happens on `ask` state - already-allowed and explicitly
-denied requests remain free of any jev call, since OpenCode short-circuits
-denials before plugins run.
+Every judgment only happens when a request would already prompt you -
+already-allowed and explicitly denied requests stay free of any jev call.
 
 Deterministic gates decide before any model does: requests containing secret
 scans or `[REDACTED:]` markers, destructive patterns (`rm -rf`, `sudo`,
@@ -271,12 +255,9 @@ your prompt, unaltered verdict aside. Low confidence never silently
 approves. Configured deny rules and every "always allow" memory you made in
 the UI rule above the feature by construction.
 
-One deliberate deviation from the System One guideline "a probability is
-never permission by itself": the guideline targets an agent improvising
-approvals around the human. Here the delegation is explicit in your config,
-bounded by deterministic gates, never auto-denies, and every machine-approved
-operation is logged - the probability is one input to a declared policy, not
-the policy.
+One framing matters: auto-approval is an **explicit delegation you opt
+into**, bounded by the deterministic gates above; it never auto-denies,
+and every automatic approval is logged.
 
 Options:
 
@@ -344,15 +325,10 @@ Options (all defaults mirror the reference):
 None needed. This plugin does not depend on and does not pair with any skill -
 the tool descriptions, hooks, and commands above carry the whole job.
 On OpenCode with this plugin, do not load the `system-one` / `auto-system-one`
-skills; nothing in them is consulted, and the plugin only enforces what
-functions can be reached at all. The tool descriptions stay deliberately
-compact for the same reason - each budgeted at ~300 tokens since they run on
-every request; fuller guidance belongs in the README or in the skills that
-other agents load, not in the request schema.
-
-For other agents (no plugin): the standalone `jev` CLI is the path, and the
-portable skills in [`atvari-eu/skills`](https://github.com/atvari-eu/skills)
-can drive it from any agent. Install there, not on OpenCode with this plugin:
+skills; nothing in them is consulted. For other agents (no plugin): the
+standalone `jev` CLI is the path, and the portable skills in
+[`atvari-eu/skills`](https://github.com/atvari-eu/skills) can drive it from
+any agent. Install there, not on OpenCode with this plugin:
 
 ```console
 $ skills add atvari-eu/skills@system-one -g
@@ -375,9 +351,9 @@ rule. There is no provider degradation chain.
 
 ## Design rules preserved
 
-- Secret scrubbing is **always deterministic regex** (`SECRET_PATTERNS` in
-  `src/index.ts`) - never a Jev call - and applies to screening, tool inputs,
-  prompts, and the compaction judgment state alike.
+- Secret scrubbing is **always deterministic regex** - never a Jev call -
+  and applies to screening, tool inputs, prompts, and the compaction
+  judgment state alike.
 - Cached entries store **answers + usage only**, never the state text
   (compaction judgments included).
 - No synthetic auto-"done" checks run behind the agent's back;
@@ -386,11 +362,13 @@ rule. There is no provider degradation chain.
 - Compaction never rewrites user/assistant text and never applies partial
   decisions; any failure falls back to the untouched built-in flow.
 - User prompt text is never edited for instructions (scrub redaction
-  aside): first-action guidance lives in the tool descriptions; the former
-  routing note was removed for this reason.
+  aside): first-action guidance lives in the tool descriptions.
 - Approvals never override configured deny rules, never auto-deny, and
   fall back to the human prompt on every failure mode; the deterministic
   gate list (destructive/secret patterns) is checked before any jev call.
+
+Architecture and decision-history notes for contributors live in
+[DESIGN.md](DESIGN.md).
 
 ## License
 
