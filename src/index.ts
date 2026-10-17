@@ -1612,6 +1612,11 @@ export default Plugin.define({
       // does - it runs reason "manual" and therefore through the jev hook
       // above. 0 (default) keeps the feature off; opt in with a token target.
       const idleTokens = Math.max(0, Math.floor(num(c.idleTokens, 0)))
+      // Window-relative alternative: fraction of the session model's context
+      // window (e.g. 0.5 = compact at half the window). Useful when routing
+      // swaps between models with different windows. idleTokens wins when both
+      // are set.
+      const idleShare = clampThreshold(c.idleShare, 0.01, 0.95, 0)
 
       const windows = new Map<string, number>()
       // The hook's model is a bare Ref; resolve the context window via the
@@ -1683,7 +1688,7 @@ export default Plugin.define({
         }
       })
 
-      if (idleTokens > 0) {
+      if (idleTokens > 0 || idleShare > 0) {
         // Idle-driven auto-compaction: on session idle, estimate the whole
         // transcript (~chars/4, OpenCode's own approximation) and trigger a
         // compaction via the same API the /compact command posts to. That
@@ -1698,6 +1703,15 @@ export default Plugin.define({
           let registered = false
           const handleIdleCompaction = async (sessionID: string): Promise<void> => {
             try {
+              // Absolute target wins; else derive from the session model's window.
+              let target = idleTokens
+              if (target === 0 && idleShare > 0) {
+                const session: any = await (ctx as any).session.get({ sessionID })
+                const model = session?.model
+                if (!model?.providerID || !model?.id) return
+                target = Math.floor(idleShare * (await windowOf(model)))
+              }
+              if (target <= 0) return
               const messages: any[] = await (ctx as any).session.context({ sessionID })
               if (!Array.isArray(messages) || messages.length === 0) return
               const chars = messages.reduce(
@@ -1705,9 +1719,9 @@ export default Plugin.define({
                 0,
               )
               const estimated = Math.ceil(chars / 4)
-              if (estimated < idleTokens) return
+              if (estimated < target) return
               console.log(
-                `[jev] idle-compaction: ~${estimated}tok ≥ ${idleTokens} - triggering compaction for ${sessionID}`,
+                `[jev] idle-compaction: ~${estimated}tok ≥ ${target} - triggering compaction for ${sessionID}`,
               )
               await (ctx as any).session.compact?.({ sessionID })
             } catch (err: any) {
@@ -1751,7 +1765,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && idleTokens > 0 ? `+idle(${idleTokens})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleTokens > 0 || idleShare > 0) ? `+idle(${idleTokens > 0 ? idleTokens : `${idleShare}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
   },
 })
