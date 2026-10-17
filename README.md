@@ -1,23 +1,28 @@
 # OpenCode plugin for the System One decision layer
 
 An [OpenCode](https://opencode.ai) plugin that wires System One (Jev)
-judgments into OpenCode automatically: every `webfetch` result is checked for
-junk and prompt injection before it enters context, known secret formats are
-redacted from tool inputs and user prompts, the agent gets `jev_decide` /
-`jev_judge_many` tools with caching, each turn's reasoning effort can be
-picked by System One from the prompt *(opt-in)*, permission requests can be
-vetted by System One *(opt-in)*, and context compaction can be decided by
-System One instead of a lossy summary *(opt-in)*.
+judgments into OpenCode automatically: tool results are checked for junk and
+prompt injection before they enter context (`webfetch` by default, every tool
+optional), known secret formats are redacted from tool inputs and user
+prompts, the agent gets `jev_decide` / `jev_judge_many` tools with caching,
+each turn can have its model and reasoning effort picked by System One from
+the prompt *(opt-in)*, a completion probe can run when the session goes idle
+*(opt-in)*, `jev_find` offers jev-backed semantic code search *(opt-in)*,
+permission requests can be vetted by System One *(opt-in)*, and context
+compaction can be decided by System One instead of a lossy summary
+*(opt-in)*.
 
 ## What it does
 
-- **screen** - every `webfetch` result is judged (junk? prompt injection?)
-  before it enters context. Mode `annotate` (default) prefixes the result with
-  `jev-screen: junk=… injection=…` (plus `⚠ do-not-rely` over threshold); mode
-  `redact` replaces unsafe content fail-closed. Screened state is
-  regex-scrubbed, sampled to 12 kB, and cached per (url, content hash).
-  Flagged fetches additionally surface as a visible
-  `[jev-screen] ⚠ … do-not-rely` notice row in the timeline.
+- **screen** - tool results are judged (junk? prompt injection?) before they
+  enter context: `webfetch` by default, every tool with
+  `"screen": { "tools": "all" }`. Mode `annotate` (default) prefixes the
+  result with `jev-screen: junk=… injection=…` (plus `⚠ do-not-rely` over
+  threshold); mode `redact` replaces unsafe **webfetch** content fail-closed
+  (other tools are only annotated). Screened state is regex-scrubbed, sampled
+  to 12 kB, and cached per (tool, url, content hash). The plugin's own
+  judgment tools are never screened. Flagged results additionally surface as
+  a visible `[jev-screen] ⚠ … do-not-rely` notice row in the timeline.
 - **scrub** - deterministic redaction (pure regex, never a model call) of
   known secret formats in **tool inputs** and **user prompts**: PEM private
   keys, `sk-…` API keys, GitHub tokens (`ghp_`/`github_pat_`), AWS `AKIA…`,
@@ -37,11 +42,17 @@ System One instead of a lossy summary *(opt-in)*.
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
   session transcript. Both answer without loading a skill.
-- **effort** (opt-in) - before each turn, jev picks the thinking level that
-  prompt deserves and switches the model's variant, the same mechanism as
-  the UI's effort picker. Fail-open: if jev is unavailable or uncertain,
-  the current level stays. See
-  [Auto reasoning effort](#auto-reasoning-effort).
+- **route** (opt-in) - before each turn, jev picks which model runs the turn
+  and/or how much reasoning effort it gets, in one judgment, applied through
+  the same switch mechanism as the UI's model/effort picker. Fail closed to
+  the base model on judge failure, and a manual pick always wins. See
+  [Auto model routing](#auto-model-routing).
+- **done-check** (opt-in) - after each turn goes idle, the completion probe
+  of `/jev-done-check` runs on its own; it posts one notice only when
+  completion looks unlikely. See [Auto done-check](#auto-done-check).
+- **find** (opt-in) - `jev_find`, a jev-backed semantic code-search cascade:
+  lexical prefilter → path judgments → windowed passage judgments, ranked
+  hits with line ranges. See [jev_find](#jev_find).
 - **approvals** (opt-in) - permission requests are vetted by jev before
   they reach you: a verdict line is added to the prompt, and with
   `"mode": "auto"`, high-confidence routine operations are approved outright.
@@ -130,8 +141,11 @@ home.file.".config/opencode/jev-plugin/index.ts".source =
 
 ### Options
 
-Everything is on by default except `effort`, `approvals`, and `compaction`
-(all opt-in); turn parts off with the object form:
+Everything is on by default except `route`, `effort.auto`, `doneCheck`,
+`find`, `approvals`, and `compaction` (all opt-in); turn parts off with the
+object form. The judgment-model override is the string form of `"model"`;
+model-routing options live under their own `"route"` key so the two
+meanings never share one ambiguous key:
 
 ```jsonc
 {
@@ -139,13 +153,20 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
     {
       "package": "github:atvari-eu/opencode-system-one",
       "options": {
-        "screen": { "enabled": true, "mode": "annotate" }, // or "redact"
+        "screen": { "enabled": true, "mode": "annotate", "tools": "all" },
         "model": "jev-1.13", // optional; overrides JEV_MODEL and the default
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
-        "effort": { "auto": true }, // per-prompt thinking level; see "Auto reasoning effort"
+        "route": {           // auto model (+ effort) routing; see "Auto model routing"
+          "auto": true,
+          "candidates": ["openrouter/anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4"],
+          "minConfidence": 0.6
+        },
+        "effort": { "auto": true }, // per-prompt thinking level (pairs with route)
+        "doneCheck": { "auto": true }, // see "Auto done-check"
+        "find": { "enabled": true },   // see "jev_find"
         "approvals": { "mode": "auto" }, // see "jev-assisted approvals"
         "compaction": {      // see "System One compaction"
           "enabled": true,
@@ -165,47 +186,128 @@ paths instead: `/jev-screen` answers with no model turn at all, and a
 dedicated agent in `opencode.json` with a tool-first prompt can host
 judgment-only turns.
 
-## Auto reasoning effort
+## Auto model routing
 
-OpenCode represents thinking level as the model's *reasoning variant*
-(`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) - the same
-levels the UI's effort picker offers. With `"effort": { "auto": true }`,
-jev picks the variant per prompt before the turn starts:
+Before every turn, jev can pick how the turn runs: the thinking level and,
+optionally, the model. Two toggles, one judgment path:
 
-- jev answers a single `choice` question whose options are only the levels
-  the selected model's catalog actually lists; for models without reasoning
-  variants the feature disables itself.
-- The judgment state is the prompt, truncated to 6 kB and scrubbed of known
-  secret formats - same treatment as every other judgment state.
-- Fail-open: jev unreachable, timeout (8 s), or an uninterpretable answer
-  leaves the current level untouched and the turn proceeds normally.
-- A confidence floor (`minConfidence`, default `0.6`) keeps the current
-  level when jev is unsure, and an unchanged pick does nothing.
-- Between two plausible levels the question prefers the *lower* one: a
-  cheap turn can escalate later, wasted thinking cannot be taken back.
+- `"effort": { "auto": true }` routes only the *reasoning variant*
+  (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - the levels
+  the UI's effort picker offers) of the session's current model.
+- `"route": { "auto": true, "candidates": [...] }` additionally routes the
+  *model itself*, from the candidate list you name - typically a cheap fast
+  model alongside the expensive one. Candidates may be bare ids as
+  `provider/model` strings, or `{ providerID, id }` objects.
+- With both on, they are one combined decision per prompt (a single
+  `(model, level)` question over the candidates that support variants),
+  not two competing ones.
 
-Each real level change appends OpenCode's native `model-switched` message
-(a small status line in the timeline), so changes are visible and auditable.
+How a turn is routed:
 
-**Manual picks win.** Your effort picks show up in the transcript and are
-detected automatically: when the newest switch is not one the plugin made,
-auto stands down for that session (no jev call, no switching) until the
-variant is `Default` again, which re-enables it. A missing attribution
-record (cleared storage, fresh install) errs toward the user and keeps
-auto off until the next `Default` pick. The comparison is a plain
-equality check, no model call.
+- Candidates are validated against OpenCode's catalog before they are ever
+  offered; unusable ones are dropped whole (up to 12 options), and routing
+  stays off when nothing usable remains. Price hints from the catalog are
+  woven into the option criteria.
+- Fail-safe: jev unreachable, timeout (8 s), or an uninterpretable answer
+  reverts to the session's base model - a no-op unless a routed switch is
+  already active. Low confidence keeps the current model, routed switch
+  included (no revert).
+- Between two plausible picks the question prefers the *lower/cheaper*
+  one: a cheap turn can escalate later, wasted thinking cannot be taken
+  back.
+- Each real switch appends OpenCode's native `model-switched` message (a
+  small status line in the timeline), so routing decisions are visible and
+  auditable.
+
+**Manual picks win.** Every switch lands in the transcript, so your own
+picks are detected automatically: when the newest switch is not one the
+plugin made, auto stands down for that session (no jev call, no switching)
+until the model/variant returns to the session's base, which re-arms it. A
+missing attribution record (cleared storage, fresh install) errs toward
+the user and keeps auto off until then. The comparison is a plain equality
+check, no model call.
+
+**Judge failure reverts.** If routing picked a candidate but the model
+cannot be resolved at turn time (bad catalog name, provider outage), the
+session is switched back to its base model before the turn fails, and the
+candidate is not offered again for that prompt.
 
 The judgment is cached per prompt - repeating the same prompt costs
 nothing. Each new prompt costs one jev round-trip (capped by the 8 s
-timeout); the payoff is that simple prompts get a cheaper turn than
-OpenCode's static default would give them.
+timeout); the payoff is that trivial prompts get a cheaper model and level
+than OpenCode's static selection would give them.
+
+Options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `route.auto` | `false` | Off unless explicitly enabled. |
+| `route.candidates` | `[]` | Models jev may route to (`provider/model` strings or `{ providerID, id }`). |
+| `route.minConfidence` | `0.6` | Minimum jev answer confidence required to switch model. |
+| `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
+| `effort.minConfidence` | `0.6` | Minimum jev answer confidence required to switch the reasoning variant. |
+
+The routing options live under `route` instead of `model` because the
+judgment-model override is the string form of `"model"` (see Options
+above); sharing one key for a string and a routing object would be
+ambiguous.
+
+## Auto done-check
+
+`"doneCheck": { "auto": true }` runs the completion self-check when your
+session goes idle: was the last turn *genuinely* done, or did the agent
+stop early? It is opt-in because it is the one place where the plugin
+notices you unprompted - rules that keep it polite:
+
+- Triggered by the session-idle event, never by model turns; the check
+  runs while nothing else is executing.
+- At most one notice per transcript change: the judged transcript tail is
+  hashed, and an unchanged transcript is never judged twice. The tail
+  excludes the plugin's own notices, so a notice can never re-trigger the
+  check.
+- jev answers the same `noul` question as `/jev-done-check`
+  (p(task complete), 0-1). One synthetic notice is posted only when
+  completion looks unlikely - probability at or below `notifyBelow`
+  (default `0.35`): a prompt to continue the remaining work or list it.
+  When jev says done, you hear nothing.
+- The judged tail is scrubbed (secret redaction) before leaving the
+  process, and a notification is posted, not a model turn - no read
+  receipt, no comment storm.
 
 Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `auto` | `false` | Off unless explicitly enabled. |
-| `minConfidence` | `0.6` | Minimum jev answer confidence required to switch levels. |
+| `notifyBelow` | `0.35` | Post the incomplete-notice at or below this p(complete). |
+
+## jev_find
+
+`"find": { "enabled": true }` registers a `jev_find` tool: semantic
+codebase search for questions grep cannot phrase - "where is this
+*discussed*?", "which file decides how config X behaves?". The cascade:
+
+1. Walk the workspace tree (respects .gitignore trimming and a secret-path
+   skip list); a lexical prefilter ranks candidate files cheaply.
+2. jev judges the ranked shortlist *by name* (one `noul` call) - which
+   files could plausibly relate to the question.
+3. Promising files are cut into windows; jev judges the windows by
+   content (batched `noul` calls).
+4. A final jev pass judges the surviving passages and the report ranks
+   files with heat, line ranges and excerpts.
+
+The report is a routing signal, not proof: it tells you which files to
+*read*, not what they say - excerpts are cut mid-function and ranked by
+relevance to the question, not by correctness. It costs several jev calls
+and takes seconds, so it is a last resort after a failed grep, not a
+default first try. Results reuse the normal cache key (same question on
+the same tree costs nothing on repeat).
+
+Options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Off unless explicitly enabled. |
 
 ## jev-assisted approvals
 
@@ -340,9 +442,11 @@ rule. There is no provider degradation chain.
   judgment state alike.
 - Cached entries store **answers + usage only**, never the state text
   (compaction judgments included).
-- No synthetic auto-"done" checks run behind the agent's back;
-  `/jev-done-check` runs only when invoked - and the only notices the plugin
-  posts on its own are screen verdicts for flagged fetches.
+- Auto done-check runs only at session idle, judges a scrubbed transcript
+  tail, dedupes by tail hash, and posts at most one notice per change -
+  and only when completion looks unlikely (`notifyBelow`). The only other
+  notices the plugin posts on its own are screen verdicts and
+  routing stand-down/re-arm lines.
 - Compaction never rewrites user/assistant text and never applies partial
   decisions; any failure falls back to the untouched built-in flow.
 - User prompt text is never edited for instructions (scrub redaction
