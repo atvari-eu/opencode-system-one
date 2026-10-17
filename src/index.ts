@@ -1639,13 +1639,36 @@ export default Plugin.define({
       // actually ran, so the very first compaction is never affected.
       let lastCompactionAt: { sessionID: string; at: number } | undefined
       const YIELD_WINDOW_MS = 60_000
+      // The hook cannot see the trigger reason, so the idle watcher marks the
+      // session when IT posts a compaction request. A hook failure on such a
+      // request aborts the compaction entirely (no built-in summarizer); for
+      // user /compact and native auto triggers the same failure falls back to
+      // the built-in pass. Markers older than a few minutes are stale entries
+      // of compactions that either completed or were re-triggered.
+      const IDLE_POSTED = new Map<string, number>()
+      const IDLE_POSTED_MAX_MS = 300_000
 
       await (ctx as any).session.hook("compaction", async (event: any) => {
+        const sid = String(event?.sessionID ?? "")
+        const idlePostedAt = IDLE_POSTED.get(sid)
+        IDLE_POSTED.delete(sid)
+        if (idlePostedAt !== undefined && Date.now() - idlePostedAt > IDLE_POSTED_MAX_MS) {
+          console.log("[jev] compaction: ignoring a stale idle-trigger flag")
+        }
+        const idleOrigin = idlePostedAt !== undefined && Date.now() - idlePostedAt <= IDLE_POSTED_MAX_MS
         try {
           if (!Array.isArray(event?.messages) || event.messages.length === 0) return
           if (event.result) return // another hook already supplied a summary
           const now = Date.now()
-          if (lastCompactionAt?.sessionID === String(event.sessionID) && now - lastCompactionAt.at < YIELD_WINDOW_MS) {
+          if (lastCompactionAt?.sessionID === sid && now - lastCompactionAt.at < YIELD_WINDOW_MS) {
+            if (idleOrigin) {
+              // A duplicate idle request queued just after a completed pass:
+              // nothing to do - failing keeps idle-triggered compactions
+              // jev-only (no built-in summarizer run).
+              throw new Error(
+                "jev idle compaction skipped: a jev pass ran moments ago",
+              )
+            }
             console.log(
               `[jev] compaction: a jev pass ran ${Math.round((now - lastCompactionAt.at) / 1000)}s ago in this session - yielding to the built-in summarizer`,
             )
@@ -1660,7 +1683,7 @@ export default Plugin.define({
             compactionOptions,
             () => window,
           )
-          lastCompactionAt = { sessionID: String(event.sessionID), at: now }
+          lastCompactionAt = { sessionID: sid, at: now }
           if (plan.replaceSummary) {
             event.result = {
               summary: plan.replaceSummary,
@@ -1671,6 +1694,17 @@ export default Plugin.define({
             )
             return
           }
+          if (idleOrigin) {
+            // Idle-triggered request: only a jev-supplied summary counts. A
+            // guard shortfall (insufficient reduction, oversized summary) also
+            // means no compaction - not a built-in summarizer run - and the
+            // next idle retries while the threshold holds.
+            throw new Error(
+              plan.keepMessages
+                ? "jev idle compaction skipped: summary guards failed"
+                : "jev idle compaction skipped: nothing stale enough to act on",
+            )
+          }
           if (plan.keepMessages) {
             event.messages = plan.keepMessages
             console.log("[jev] compaction: decisions applied in place - built-in summarizer runs on the cleaned transcript")
@@ -1678,6 +1712,16 @@ export default Plugin.define({
             console.log("[jev] compaction: nothing stale enough to act on - built-in compaction continues")
           }
         } catch (err: any) {
+          if (idleOrigin) {
+            // Idle-triggered request: no jev judgment means no compaction at
+            // all. Throwing fails the compaction (marked as failed in the
+            // transcript); the next idle will retry once the threshold still
+            // holds, and OpenCode's native near-full auto trigger remains the
+            // no-jev-needed backstop.
+            throw new Error(
+              `jev idle compaction failed: ${String(err?.message ?? err)}`,
+            )
+          }
           console.error(
             `[jev] compaction: jev pass failed (${String(err?.message ?? err)}) - built-in compaction runs unmodified`,
           )
@@ -1730,6 +1774,7 @@ export default Plugin.define({
                 `[jev] idle-compaction: ~${estimated}tok ≥ ${target} - triggering compaction for ${sessionID}`,
               )
               await (ctx as any).session.compact?.({ sessionID })
+              IDLE_POSTED.set(sessionID, Date.now())
             } catch (err: any) {
               console.error(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
             }
