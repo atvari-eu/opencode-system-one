@@ -464,7 +464,9 @@ default stays `"opencode"`:
   (zero-cost, restricted by the Console to OpenCode clients).
 - **`"opencode-go"`** - the OpenCode Go subscription provider. Useful when
   your Go key is entitled to the model you point at; the credential chain
-  switches to the Go login, the endpoint stays the Console System One one.
+  switches to the `OPENCODE_GO_API_KEY` env and the legacy store's
+  `."opencode-go".key` entry (the CLI login level and the endpoint stay
+  the Console ones).
 
 ```jsonc
 {
@@ -478,10 +480,11 @@ default stays `"opencode"`:
 ```
 
 Unknown values log a warning and keep the default. The provider changes
-which credential is sent and where it comes from - the endpoint, the
-request shape and the model catalog stay the Console's, and billing is up
-to the deployment: today a paid jev call bills Console credits, and an
-OpenCode Go subscription covers the chat model catalog, not jev.
+which env key and legacy store entry are used - the CLI login level, the
+endpoint, the request shape and the model catalog stay the Console's, and
+billing is up to the deployment: today a paid jev call bills Console
+credits, and an OpenCode Go subscription covers the chat model catalog,
+not jev.
 
 ## Environment
 
@@ -490,12 +493,14 @@ is never logged or persisted):
 
 1. `TYPESAFE_API_KEY` → `OPENCODE_API_KEY` env (opencode provider) or
    `OPENCODE_GO_API_KEY` env (opencode-go provider) - explicit override
-2. The OpenCode CLI's credential store, read from `opencode auth export`
-   for the integration the `provider` option names ("opencode" or
-   "opencode-go"): an API key or the active OAuth session, which the CLI
-   keeps refreshed. Consulted only against the default Console endpoint
-   (so key and endpoint stay one deployment), cached per process, and
-   re-read once if the endpoint rejects a cached session with 401.
+2. The OpenCode CLI's credential store, read from `opencode auth export`:
+   an API key or the active OAuth session (integration `opencode` - the V2
+   CLI exposes only this one Console integration; the jev deployment is
+   picked by the key↔endpoint pairing, not a separate CLI integration),
+   which the CLI keeps refreshed. Consulted only against the default
+   Console endpoint (so key and endpoint stay one deployment), cached per
+   process, and re-read once if the endpoint rejects a cached session
+   with 401.
 3. Legacy opencode auth store (`~/.local/share/opencode/auth.json`) - the
    entry matching the provider (`."opencode".key` / `."opencode-go".key`);
    V1 installs and hand-planted keys; the V2 CLI no longer updates this

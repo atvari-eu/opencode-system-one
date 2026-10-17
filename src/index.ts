@@ -119,15 +119,19 @@ interface ToolContext {
 // Jev transport (env-resolved per call, key never logged or persisted)
 //
 // Credential priority:
-//   1. TYPESAFE_API_KEY / OPENCODE_API_KEY env - explicit override
+//   1. Provider env key - TYPESAFE_API_KEY / OPENCODE_API_KEY (opencode)
+//      or OPENCODE_GO_API_KEY (opencode-go) - explicit override
 //   2. The OpenCode CLI's credential store (read once per process via
-//      `opencode auth export`, integration "opencode"): a console API key or
-//      the active Console OAuth session, which the CLI keeps refreshed. Only
+//      `opencode auth export`, always integration "opencode" - the V2 CLI
+//      exposes only this one Console integration; the jev deployment is
+//      selected by the key/endpoint pairing): a console API key or the
+//      active Console OAuth session, which the CLI keeps refreshed. Only
 //      consulted against the default Console endpoint so key and endpoint
 //      stay one deployment. Cached, and invalidated on 401 so a refreshed
 //      session is re-read exactly once before failing.
-//   3. Legacy opencode auth store (auth.json, field .opencode.key) - V1
-//      installs and hand-planted keys; the V2 CLI no longer updates it.
+//   3. Legacy opencode auth store (auth.json, entry matching the provider -
+//      .opencode.key / .opencode-go.key) - V1 installs and hand-planted
+//      keys; the V2 CLI no longer updates it.
 // ---------------------------------------------------------------------------
 
 interface Credential {
@@ -137,9 +141,10 @@ interface Credential {
   integration: string
 }
 
-// One cache slot per provider integration; entries are module-level so the
-// `opencode auth export` subprocess runs at most once per provider per
-// process (and once more after a 401-triggered invalidation).
+// Credential cache, keyed by integration id; module-level so the
+// `opencode auth export` subprocess runs at most once per process (and
+// once more after a 401-triggered invalidation). Only the "opencode"
+// integration is queried today.
 const CLI_CREDENTIALS: Record<string, Credential | undefined> = {}
 const CLI_CREDENTIALS_DEAD: Record<string, boolean> = {}
 
