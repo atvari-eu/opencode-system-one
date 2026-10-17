@@ -3,16 +3,19 @@
 An [OpenCode](https://opencode.ai) plugin that wires System One (Jev)
 judgments into OpenCode automatically: every `webfetch` result is checked for
 junk and prompt injection before it enters context, known secret formats are
-redacted from tool inputs and user prompts, and the agent gets `jev_decide` /
-`jev_judge_many` tools with caching.
+redacted from tool inputs and user prompts, the agent gets `jev_decide` /
+`jev_judge_many` tools with caching, and context compaction can be decided by
+System One instead of a lossy summary.
 
 ## What it does
 
 - **screen** - every `webfetch` result is judged (junk? prompt injection?)
   before it enters context. Mode `annotate` (default) prefixes the result with
   `jev-screen: junk=… injection=…` (plus `⚠ do-not-rely` over threshold); mode
-  `redact` replaces unsafe content fail-closed. Screening state is
+  `redact` replaces unsafe content fail-closed. Screened state is
   regex-scrubbed, sampled to 12 kB, and cached per (url, content hash).
+  Flagged fetches additionally surface as a visible
+  `[jev-screen] ⚠ … do-not-rely` notice row in the timeline.
 - **scrub** - deterministic redaction (pure regex, never a model call) of
   known secret formats in **tool inputs** and **user prompts**: PEM private
   keys, `sk-…` API keys, GitHub tokens (`ghp_`/`github_pat_`), AWS `AKIA…`,
@@ -21,13 +24,21 @@ redacted from tool inputs and user prompts, and the agent gets `jev_decide` /
 - **tools** - `jev_decide`: one request = one state + typed questions
   (noul/choice/score); `jev_judge_many`: one judgment per item, launched in
   parallel, aggregated in code (weighted mean + low-confidence flags). No
-  multi-state batch endpoint is ever simulated.
+  multi-state batch endpoint is ever simulated. Both are registered as
+  first-class tools (not Code Mode nested calls), so every judgment shows as
+  its own tool row (`Running jev_decide…`) in the timeline.
 - **cache** - replies for identical (endpoint, model, state, questions) are
   served from durable plugin storage; only answers are persisted, never the
   state text.
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
   session transcript. Both answer without loading a skill.
+- **compaction** (opt-in) - replaces the compaction summarizer with System One
+  decisions, following
+  [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction):
+  tool calls and results are dropped or truncated by jev `noul` verdicts,
+  everything kept stays verbatim, and no summarizing model call runs. See
+  [System One compaction](#system-one-compaction).
 
 ## Requirements
 
@@ -119,12 +130,69 @@ Everything is on by default; turn parts off with the object form:
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
-        "cache": true
+        "cache": true,
+        "compaction": {      // opt-in; see "System One compaction"
+          "enabled": true,
+          "mode": "replace"  // or "clean"
+        }
       },
     },
   ],
 }
 ```
+
+## System One compaction
+
+Default OpenCode compaction asks a model to summarize older turns; a summary
+is lossy. The `compaction` option swaps that for Jev decisions, porting the
+approach of [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
+from Claude Code to the OpenCode plugin hook:
+
+1. Tool calls are paired with their results by id. Calls in the first message
+   of the compacted range (usually the previous checkpoint) or in the newest
+   `preserveRecentMessages` messages are pinned and never touched. User and
+   assistant text is never rewritten.
+2. The judgment state is the whole transcript - oldest first, tool outputs
+   replaced by short size notes (`ok, 4213 chars (omitted)`), inputs included
+   - regex-scrubbed first, then fitted into `maxStateTokens` in stages
+   (inputs truncated 1000→200→60 chars, old texts abridged, collapsed,
+   one-lined, dropped, merged).
+3. Every non-pinned call gets two `noul` questions: does the call still
+   matter, does its result still need to stay verbatim? Questions are batched
+   under `maxRequestTokens`; batches run concurrently and are cached like
+   every other jev reply.
+4. Decisions: result ≥ `keepThreshold` → keep both; else call ≥
+   `keepThreshold` → keep the call, truncate the result to
+   `truncateHeadChars` plus a note; else drop call and result together.
+5. The hook then either **supplies the compaction summary itself** - the
+   pruned transcript rendered verbatim, so no summarizer model call runs
+   (`mode: "replace"`, the reference behavior) - or, when the guards don't
+   allow that yet (mode `"clean"`, insufficient reduction, oversized
+   summary), applies the decisions to the transcript and lets the built-in
+   summarizer run over the cleaned history.
+
+Fail-closed: a missing key, a jev failure, a malformed answer, or a history
+that cannot be fitted leaves compaction entirely to OpenCode's built-in
+summarizer, on the unmodified transcript. Nothing is half-applied.
+
+Privacy note: judging needs to see the conversation, so enabling compaction
+sends the older transcript (scrubbed of known secret formats) to your Jev
+endpoint - the same trade the reference makes. Verdicts are cached; the state
+text is never persisted.
+
+Options (all defaults mirror the reference):
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Off unless explicitly enabled. |
+| `mode` | `"replace"` | `"replace"` supplies the pruned transcript as the summary; `"clean"` only rewrites messages and keeps OpenCode's summarizer. |
+| `keepThreshold` | `0.5` | Verdict probability at which call/result survive. |
+| `preserveRecentMessages` | `6` | Newest messages pinned untouched. |
+| `maxStateTokens` | `25000` | Judgment state budget before staged fitting gives up. |
+| `maxRequestTokens` | `30000` | Per-request budget (state + questions); splits into batches. |
+| `truncateHeadChars` | `300` | Head kept when a result is pruned. |
+| `minReduction` | `0.25` | Required relative shrink before a hook-supplied summary replaces the built-in one. |
+| `maxSummaryTokens` | half the model window | Cap on the hook-supplied summary (estimated tokens). |
 
 ## Companion skills
 
@@ -175,10 +243,15 @@ rule. There is no provider degradation chain.
 ## Design rules preserved
 
 - Secret scrubbing is **always deterministic regex** (`SECRET_PATTERNS` in
-  `src/index.ts`) - never a Jev call.
-- Cached entries store **answers + usage only**, never the state text.
+  `src/index.ts`) - never a Jev call - and applies to screening, tool inputs,
+  prompts, and the compaction judgment state alike.
+- Cached entries store **answers + usage only**, never the state text
+  (compaction judgments included).
 - No synthetic auto-"done" checks run behind the agent's back;
-  `/jev-done-check` runs only when invoked.
+  `/jev-done-check` runs only when invoked - and the only notices the plugin
+  posts on its own are screen verdicts for flagged fetches.
+- Compaction never rewrites user/assistant text and never applies partial
+  decisions; any failure falls back to the untouched built-in flow.
 
 ## License
 
