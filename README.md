@@ -27,7 +27,9 @@ context compaction can be decided by System One instead of a lossy summary.
   parallel, aggregated in code (weighted mean + low-confidence flags). No
   multi-state batch endpoint is ever simulated. Both are registered as
   first-class tools (not Code Mode nested calls), so every judgment shows as
-  its own tool row (`Running jev_decide…`) in the timeline.
+  its own tool row (`Running jev_decide…`) in the timeline, and their
+  descriptions carry the judgment-moment guidance and call discipline - no
+  companion skill is needed.
 - **cache** - replies for identical (endpoint, model, state, questions) are
   served from durable plugin storage; only answers are persisted, never the
   state text.
@@ -283,38 +285,37 @@ Options (all defaults mirror the reference):
 | `minReduction` | `0.25` | Required relative shrink before a hook-supplied summary replaces the built-in one. |
 | `maxSummaryTokens` | half the model window | Cap on the hook-supplied summary (estimated tokens). |
 
-## Companion skills
+## Do you still need the skills?
 
-This plugin implements the same System One contract as two skills from
-[atvari-eu/skills](https://github.com/atvari-eu/skills), a collection of agent
-skills published to the open [skills](https://skills.sh/) ecosystem. The
-division of labor: the skills carry portable *advice* (usable with any agent
-and the `jev` CLI), while the plugin is OpenCode's native mechanism and
-*enforces* what can be mechanical - hooks like screening, scrubbing, and the
-fail-safe routing gate are things advice alone cannot guarantee.
+Short answer on OpenCode running this plugin: **no**. The plugin carries the
+judgment-moment guidance natively - the `jev_decide` / `jev_judge_many` tool
+descriptions state when to reach for a judgment proactively (screen pasted
+content before reading it in, verify cited claims, rank by meaning, score
+against described levels), when to skip (a regex or exact comparison decides;
+no criterion in view; state would carry sensitive content), and the call
+discipline is built into the tools (verbatim inputs, batch questions,
+confidence thresholds, malformed answers fail). The plugin also enforces what
+advice cannot guarantee: hooks like screening, scrubbing, and the fail-safe
+routing gate.
+
+The two skills remain the portable pair for everywhere else:
 
 | Skill | Adds |
 | --- | --- |
-| [`auto-system-one`](https://github.com/atvari-eu/skills/blob/main/skills/auto-system-one/SKILL.md) | The judgment-moment guidance: *when* to call for a decision, plus call discipline (batch one request, never re-ask a rephrased question, route on confidence) and the hard privacy line. Useful everywhere, including OpenCode with this plugin. |
-| [`system-one`](https://github.com/atvari-eu/skills/blob/main/skills/system-one/SKILL.md) | The portable mechanics: HTTP shapes, `jev` CLI, auth pairing, thresholds, models. Mostly redundant on OpenCode with this plugin; still the reference for the `jev` CLI in shell, non-Console endpoints, and threshold tuning. |
+| [`auto-system-one`](https://github.com/atvari-eu/skills/blob/main/skills/auto-system-one/SKILL.md) | *When* to call for a judgment, call discipline, and the hard privacy line - for other agents and plugin-less OpenCode. |
+| [`system-one`](https://github.com/atvari-eu/skills/blob/main/skills/system-one/SKILL.md) | HTTP shapes, `jev` CLI, auth pairing, thresholds, models - the reference for shell scripts, non-Console endpoints, and threshold tuning, even next to this plugin. |
 
-Install with the `skills` CLI:
+Install (other agents, or OpenCode *without* this plugin):
 
 ```console
 $ skills add atvari-eu/skills@system-one -g
 $ skills add atvari-eu/skills@auto-system-one -g
 ```
 
-### Recommended pairing
-
-- **OpenCode always running with this plugin:** keep `auto-system-one`, skip
-  `system-one`. The plugin already enforces the mechanics - the same auth
-  chain (env keys to OpenCode's auth store), typed request/response shapes,
-  one call = one state, per-item batching with in-code aggregation, durable
-  cache, secret scrubbing of every judgment state, and the screening.
-- **Anywhere else** (other agents, the `jev` CLI, plugin-less OpenCode): load
-  `system-one` first and `auto-system-one` second, as the portable pair - the
-  documented contract is what this plugin implements on OpenCode.
+If the plugin's tool descriptions ever prove too thin - say the agent still
+pre-analyzes judgment requests or skips screening pastes - the next step would
+be a small OpenCode-specific skill tuned to these tools, not a bundle of the
+generic pair.
 
 ## Environment
 
