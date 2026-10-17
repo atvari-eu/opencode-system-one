@@ -1080,7 +1080,7 @@ export default Plugin.define({
           if (text0) {
             const flag = unsafe ? ` ⚠ do-not-rely` : ""
             const scrubHint = scrubbed.hits ? ` scrubbed=${scrubbed.hits}` : ""
-            setPrimaryText(event.result, `[${tag}${scrubHint}${flag}] ` + text0)
+            setPrimaryText(event.result, `[${tag}${scrubHint}${flag}]\n\n` + text0)
             if (unsafe) {
               await notice(
                 `[jev-screen] ⚠ ${url || tool} flagged (${tag}) - result annotated, do not rely on it`,
@@ -1092,7 +1092,7 @@ export default Plugin.define({
           const fallback = readResultText(event.result)
           setPrimaryText(
             event.result,
-            `[jev-screen unavailable: ${message}] ` + fallback.slice(0, 3000) +
+            `[jev-screen unavailable: ${message}]\n\n` + fallback.slice(0, 3000) +
               (fallback.length > 3000 ? " …[truncated]" : ""),
           )
         }
