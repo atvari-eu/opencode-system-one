@@ -4,8 +4,9 @@ An [OpenCode](https://opencode.ai) plugin that wires System One (Jev)
 judgments into OpenCode automatically: every `webfetch` result is checked for
 junk and prompt injection before it enters context, known secret formats are
 redacted from tool inputs and user prompts, the agent gets `jev_decide` /
-`jev_judge_many` tools with caching, and context compaction can be decided by
-System One instead of a lossy summary.
+`jev_judge_many` tools with caching, judgment prompts are routed tool-first,
+and context compaction can be decided by System One instead of a lossy
+summary.
 
 ## What it does
 
@@ -33,6 +34,11 @@ System One instead of a lossy summary.
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
   session transcript. Both answer without loading a skill.
+- **routing** - prompts that explicitly ask for a judgment get a short
+  deterministic append telling the agent to make the matching
+  `jev_decide` / `jev_judge_many` call its **first action** with verbatim
+  inputs, instead of thinking the judgment through itself first. See
+  [Fast routing of judgment prompts](#fast-routing-of-judgment-prompts).
 - **compaction** (opt-in) - replaces the compaction summarizer with System One
   decisions, following
   [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction):
@@ -131,6 +137,7 @@ Everything is on by default; turn parts off with the object form:
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
+        "routing": { "hints": true }, // tool-first hints for judgment prompts
         "compaction": {      // opt-in; see "System One compaction"
           "enabled": true,
           "mode": "replace"  // or "clean"
@@ -140,6 +147,31 @@ Everything is on by default; turn parts off with the object form:
   ],
 }
 ```
+
+## Fast routing of judgment prompts
+
+When the user's prompt explicitly asks for a judgment ("judge these", "give a
+verdict", mentions `jev`, …), OpenCode still runs the primary model first, and
+that model tends to deliberate the question itself before reaching for the
+tool. The plugin closes most of that gap mechanically:
+
+- The `jev_decide` / `jev_judge_many` tool descriptions state that an explicit
+  judgment request makes the tool call the **first action**, with the user's
+  items passed verbatim - no pre-analysis, no rewriting.
+- The `prompt` hook appends a short routing hint whenever a deterministic
+  regex (`ROUTING_PATTERN`) matches the prompt: *"make that jev call your
+  FIRST action … do not deliberate before calling; if no jev tool fits, ignore
+  this note."* No model call decides this; the gate is a plain regex like the
+  scrubber, and false positives degrade gracefully to "ignore this note".
+
+Turn off with `"routing": { "hints": false }`.
+
+Not possible plugin-side: skipping the primary model turn entirely - OpenCode
+exposes result-skips only for the compaction, title, and generate flows, not
+for user prompts. When latency matters more than flexibility, use the
+zero-model paths instead: `/jev-screen` (runs the jev call with no agent
+loop at all), or define a dedicated agent in `opencode.json` with a
+tool-first prompt and switch to it for judgment-only turns.
 
 ## System One compaction
 

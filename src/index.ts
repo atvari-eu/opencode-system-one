@@ -285,6 +285,20 @@ const DONE_QUESTION: Question = {
     "Based ONLY on the evidence in this state (what was requested and what was actually produced and verified): is the task genuinely COMPLETE - all requested steps finished, results verified where promised, nothing left half-done or stale? Answer 'no' for premature stops.",
 }
 
+// ---------------------------------------------------------------------------
+// Fast routing: get explicit judgment requests into a jev tool immediately
+// ---------------------------------------------------------------------------
+
+// OpenCode always runs the primary model on a prompt, so the only plugin-side
+// latency lever is making that first turn short: a deterministic regex gate
+// (no model call) appends a short hint so the model's FIRST action is the jev
+// call with verbatim inputs, instead of deliberating the judgment itself.
+const ROUTING_PATTERN =
+  /\bjev\b|\bjudge(?:[_ -]?many)?\b|\bsystem[- ]one\b|\bnoul\b|\bverdicts?\b/i
+
+const ROUTING_HINT =
+  "\n\n[jev routing] If a jev tool fits this request, make that jev_decide or jev_judge_many call your FIRST action: pass the user's items/context verbatim (state / items) and only interpret the answers it returns - do not pre-analyze, summarize, or rewrite the items yourself, and do not deliberate before calling. If no jev tool fits, ignore this note and proceed normally."
+
 // Normalizes score/choice answers; returns a mean numeric when possible.
 function numericOf(answer: any): number | undefined {
   if (!answer || typeof answer !== "object") return undefined
@@ -309,6 +323,7 @@ export default Plugin.define({
     const toolsEnabled = o.tools !== false
     const commandsEnabled = o.commands !== false
     const cacheEnabled = o.cache !== false
+    const routingHint = o.routing?.hints !== false
     const location = (ctx as any).location?.directory ?? ""
 
     async function cachedJudge(
@@ -356,6 +371,19 @@ export default Plugin.define({
         } catch (err) {
           console.error("[jev] prompt scrub failed (proceding unscrubbed):", err)
         }
+      })
+    }
+
+    // -- routing: explicit judgment requests go tool-first (deterministic) --
+
+    if (routingHint) {
+      await (ctx as any).session.hook("prompt", (event: any) => {
+        try {
+          if (typeof event?.prompt?.text !== "string") return
+          if (!ROUTING_PATTERN.test(event.prompt.text)) return
+          event.prompt.text += ROUTING_HINT
+          console.log("[jev] routing hint appended - judgment request goes jev-first")
+        } catch {}
       })
     }
 
@@ -438,7 +466,7 @@ export default Plugin.define({
         editor.add({
           name: "decide",
           description:
-            "Make typed decisions with the System One endpoint (Jev). ONE call = state + typed questions (noul/choice/score); they run in parallel and answer independently. Batch independent questions here in one call. Thresholds: auto at confidence >= 0.85 (+wide winner margin for choices), 0.5–0.85 act-with-flag, below 0.5 ask a human. A malformed or missing answer FAILS the call - never treat it as a decision. Never put personal data, credentials, or secrets in state (input is also scrubbed before sending).",
+            "For any explicit judgment/decision request this is your FIRST action: put the user's context verbatim into state and let Jev judge - do not reason the judgment out yourself before calling. Make typed decisions with the System One endpoint (Jev). ONE call = state + typed questions (noul/choice/score); they run in parallel and answer independently. Batch independent questions here in one call. Thresholds: auto at confidence >= 0.85 (+wide winner margin for choices), 0.5–0.85 act-with-flag, below 0.5 ask a human. A malformed or missing answer FAILS the call - never treat it as a decision. Never put personal data, credentials, or secrets in state (input is also scrubbed before sending).",
           input: {
             type: "object",
             properties: {
@@ -486,7 +514,7 @@ export default Plugin.define({
         editor.add({
           name: "judge_many",
           description:
-            "Judge MANY items against ONE question set: one request per item (identical questions), in parallel, aggregated in code. There is no multi-state batch endpoint - never paste many items into one giant state. Long items are the state; chunk them yourself before calling.",
+            "If the user explicitly asks to judge, rank, or compare items, call this as your FIRST action and pass the items VERBATIM - never pre-analyze, summarize, or rewrite them before judging. Judge MANY items against ONE question set: one request per item (identical questions), in parallel, aggregated in code. There is no multi-state batch endpoint - never paste many items into one giant state. Long items are the state; chunk them yourself before calling.",
           input: {
             type: "object",
             properties: {
@@ -735,7 +763,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} routing=${routingHint ? "on" : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
