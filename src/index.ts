@@ -10,7 +10,9 @@
 //                                 prompts. ALWAYS regex-based: secrets are
 //                                 never sent to any model to be classified
 //   tools   jev_decide (single call, cached) + jev_judge_many (per-item
-//                                 batch with in-code aggregation)
+//                                 batch with in-code aggregation), registered
+//                                 as first-class tools (codemode: false) so
+//                                 each call shows as its own tool row
 //   cache   replies for identical (state, questions, model) via plugin storage
 //
 // Env contract identical to the `jev` CLI and skills:
@@ -361,6 +363,14 @@ export default Plugin.define({
         const text0 = readResultText(event.result)
         if (!text0) return
 
+        // Visible notice for flagged screens (plugin-only UI surface: a
+        // timeline row, like the /jev-screen command output).
+        const notice = async (text: string) => {
+          try {
+            await (ctx as any).session?.synthetic?.({ sessionID: event?.sessionID, text })
+          } catch {}
+        }
+
         const sample = text0.slice(0, 12000)
         const scrubbed = redactText(sample)
         try {
@@ -386,6 +396,7 @@ export default Plugin.define({
             const note = `[jev-screen withheld this content (fail-closed): ${tag}. Read the page manually or set screen.enabled=false in the jev plugin options to override.]` +
               (scrubbed.hits ? `\n(${scrubbed.hits} secret-like token(s) were redacted before screening.)` : "")
             setPrimaryText(event.result, note)
+            await notice(`[jev-screen] ✗ ${url || "(no url)"}: content withheld (fail-closed) - ${tag}`)
             return
           }
 
@@ -393,6 +404,11 @@ export default Plugin.define({
             const flag = unsafe ? ` ⚠ do-not-rely` : ""
             const scrubHint = scrubbed.hits ? ` scrubbed=${scrubbed.hits}` : ""
             setPrimaryText(event.result, `[${tag}${scrubHint}${flag}] ` + text0)
+            if (unsafe) {
+              await notice(
+                `[jev-screen] ⚠ ${url || "(no url)"} flagged (${tag}) - result annotated, do not rely on it`,
+              )
+            }
           }
         } catch (err: any) {
           const message = String(err?.message ?? err)
@@ -452,7 +468,7 @@ export default Plugin.define({
             required: ["state", "questions"],
             additionalProperties: false,
           },
-          options: { namespace: "jev", codemode: true },
+          options: { namespace: "jev", codemode: false },
           execute: async (input: any, context: any) => {
             const { reply, cached } = await cachedJudge(input.questions, input.state, context?.signal)
             await context?.progress?.({ status: `jev ${cached ? "(cached)" : ""}` })
@@ -500,7 +516,7 @@ export default Plugin.define({
             required: ["items", "question"],
             additionalProperties: false,
           },
-          options: { namespace: "jev", codemode: true },
+          options: { namespace: "jev", codemode: false },
           execute: async (input: any, context: any) => {
             const question: Question = {
               id: "value",
