@@ -265,9 +265,9 @@ export function collectCalls(
   const calls: Call[] = []
   messages.forEach((message, callMsg) => {
     message.content?.forEach((part: any, callIndex: number) => {
-      if (!part || part.type !== "tool-call" || typeof part.id !== "string") continue
+      if (!part || part.type !== "tool-call" || typeof part.id !== "string") return
       const found = results.get(part.id)
-      if (!found) continue
+      if (!found) return
       const text = resultTextOf(found.part.result)
       calls.push({
         key: `t${calls.length + 1}`,
