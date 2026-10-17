@@ -286,28 +286,6 @@ const DONE_QUESTION: Question = {
 }
 
 // ---------------------------------------------------------------------------
-// Fast routing: get explicit judgment requests into a jev tool immediately
-// ---------------------------------------------------------------------------
-
-// OpenCode always runs the primary model on a prompt, so the only plugin-side
-// latency lever is making that first turn short: a deterministic regex gate
-// (no model call) appends a short hint so the model's FIRST action is the jev
-// call with verbatim inputs, instead of deliberating the judgment itself.
-// Precision-first: the hint is user-visible appended text, so it fires only
-// when the prompt addresses one of the plugin's decision tools by name
-// (jev_decide / jev_judge_many, or "jev judge / jev decide" phrasing). The
-// earlier vocabulary gate (judge / verdict / noul / system-one) matched
-// ordinary prose and skill names ("opencode-system-one") read as requests -
-// visible false positives on the composer. The tool descriptions already
-// carry the first-action imperative for every other phrasing. Opt-in
-// (`routing.hints`, default off): the note is the only surface where the
-// plugin edits the user's prompt, so it stays off unless enabled.
-const ROUTING_PATTERN = /\bjev[ _-]?(?:decide|judge(?:[ _-]?many)?)\b/i
-
-const ROUTING_HINT =
-  "\n\n[jev routing] If a jev tool fits this request, make that jev_decide or jev_judge_many call your FIRST action with the user's items/context verbatim (state / items) - no pre-analysis, summarizing, or rewriting before calling; if no jev tool fits, ignore this note."
-
-// ---------------------------------------------------------------------------
 // Auto effort: jev picks the thinking level (model variant) per prompt
 // ---------------------------------------------------------------------------
 
@@ -409,12 +387,6 @@ export default Plugin.define({
     const toolsEnabled = o.tools !== false
     const commandsEnabled = o.commands !== false
     const cacheEnabled = o.cache !== false
-    // Opt-in: the jev tools' descriptions already carry the first-action
-    // imperative on every request; the note is a recency-positioned
-    // reinforcement for the highest-intent prompts only (names a decision
-    // tool). Off by default so the description evidence stands on its own
-    // - re-enable if the model is observed deliberating before calling.
-    const routingHint = o.routing?.hints === true
     const effortAuto = o.effort?.auto === true
     const effortMinConfidence =
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
@@ -477,28 +449,6 @@ export default Plugin.define({
         } catch (err) {
           console.error("[jev] prompt scrub failed (proceding unscrubbed):", err)
         }
-      })
-    }
-
-    // -- routing: explicit judgment requests go tool-first (deterministic) --
-
-    if (routingHint) {
-      await (ctx as any).session.hook("prompt", (event: any) => {
-        try {
-          if (typeof event?.prompt?.text !== "string") return
-          // Echoed hint text (quoting the note, pasted logs) must not
-          // re-trigger the gate: remove from the [jev routing] marker
-          // through its fallback line - covers full echoes of old and new
-          // wording; a marker without a fallback tail leaves only harmless
-          // remainder behind.
-          const hay = event.prompt.text.replace(
-            /\[\s*jev[ _-]*routing\s*\][\s\S]{0,800}?ignore this note(?:\s+and proceed normally)?\s*\.?/gi,
-            " ",
-          )
-          if (!ROUTING_PATTERN.test(hay)) return
-          event.prompt.text += ROUTING_HINT
-          console.log("[jev] routing hint appended - judgment request goes jev-first")
-        } catch {}
       })
     }
 
@@ -587,13 +537,9 @@ export default Plugin.define({
             }
           }
 
-          // The routing hook (registered before this one) may have appended
-          // its hint; that judgment-flavored text is not the user's message.
-          const judged = text.endsWith(ROUTING_HINT) ? text.slice(0, -ROUTING_HINT.length) : text
-
           const state =
             "A user message in an OpenCode coding session is quoted below. Decide how much reasoning effort the assistant's turn for it should use.\n\n<user>\n" +
-            redactText(judged.slice(0, 6000)).text +
+            redactText(text.slice(0, 6000)).text +
             "\n</user>"
           const question: Question = {
             id: "effort",
@@ -1102,7 +1048,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} routing=${routingHint ? "on" : "off"} effort=${effortAuto ? "auto" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })

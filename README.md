@@ -39,15 +39,6 @@ context compaction can be decided by System One instead of a lossy summary.
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
   session transcript. Both answer without loading a skill.
-- **routing** (opt-in) - prompts that explicitly name a decision tool get a
-  short deterministic append telling the agent to make that
-  `jev_decide` / `jev_judge_many` call its **first action** with verbatim
-  inputs. It is off by default: the tool descriptions carry the same
-  first-action imperative on every request, and the note is the one place
-  where the plugin touches the user's prompt - enable
-  (`"routing": { "hints": true }`) only if you observe the model deliberating
-  before calling. See
-  [Fast routing of judgment prompts](#fast-routing-of-judgment-prompts).
 - **effort** (opt-in) - before each turn, jev picks the reasoning effort
   (thinking level) that prompt deserves - from the levels the selected model
   actually supports - and switches the model's variant, the same mechanism as
@@ -145,9 +136,8 @@ home.file.".config/opencode/jev-plugin/index.ts".source =
 
 ### Options
 
-Everything is on by default except the prompt-touching and behavior-shifting
-surfaces: `routing`, `effort`, `approvals`, and `compaction` (all opt-in);
-turn parts off with the object form:
+Everything is on by default except `effort`, `approvals`, and `compaction`
+(all opt-in); turn parts off with the object form:
 
 ```jsonc
 {
@@ -160,7 +150,6 @@ turn parts off with the object form:
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
-        "routing": { "hints": true }, // opt-in: append the tool-first note on prompts naming a jev tool
         "effort": { "auto": true }, // opt-in per-prompt thinking level; see "Auto reasoning effort"
         "approvals": { "auto": true }, // opt-in; see "jev-assisted approvals"
         "compaction": {      // opt-in; see "System One compaction"
@@ -173,40 +162,30 @@ turn parts off with the object form:
 }
 ```
 
-## Fast routing of judgment prompts
+## Jev-first latency
 
-When the user's prompt explicitly asks for a judgment by naming one of the
-plugin's decision tools (`jev_decide`, `jev_judge_many`, "jev judge …"),
-OpenCode still runs the primary model first, and that model may deliberate
-the question itself before reaching for the tool. The first-action
-imperative lives in the tool descriptions, which run on every request:
+OpenCode always runs the primary model on a user prompt, and the plugin
+cannot skip that turn - OpenCode exposes result-skips only for the
+compaction, title, and generate flows, not for user prompts. The levers the
+plugin does have:
 
 - The `jev_decide` / `jev_judge_many` descriptions state that an explicit
   judgment request makes the tool call the **first action**, with the
-  user's items passed verbatim - no pre-analysis, no rewriting.
+  user's items passed verbatim - no pre-analysis, no rewriting. Always on,
+  bundled with the tool schema.
+- The zero-model paths answer entirely outside the agent loop:
+  `/jev-screen` runs the jev call with no model turn at all, and a
+  dedicated agent in `opencode.json` with a tool-first prompt can be
+  switched to for judgment-only turns.
 
-On top of that, an opt-in `prompt` hook appends a short routing note
-(`"routing": { "hints": true }`): *"make that jev call your FIRST action …
-if no jev tool fits, ignore this note."* The note is the only place where
-the plugin edits the user's prompt text, so it is off by default - the
-descriptions carry the same instruction on every request, and any
-deterministic gate can only approximate intent (history lesson: a broad
-vocabulary gate matched ordinary prose and the plugin's own skill names;
-echoed notes re-triggered themselves). Keep the note for the rare case you
-actually observe the model deliberating despite the descriptions; its gate
-is precision-first (fires only on tool-name mentions) and strips echoed
-hint text before matching.
-
-The shape is deliberately asymmetric: **invisible guidance (descriptions)
-is always on; visible prompt edits are opt-in** - the same rule that keeps
-the routing note, effort switching, and approvals out of the default path.
-
-Not possible plugin-side: skipping the primary model turn entirely - OpenCode
-exposes result-skips only for the compaction, title, and generate flows, not
-for user prompts. When latency matters more than flexibility, use the
-zero-model paths instead: `/jev-screen` (runs the jev call with no agent
-loop at all), or define a dedicated agent in `opencode.json` with a
-tool-first prompt and switch to it for judgment-only turns.
+Prompt-append notes were tried here (a deterministic vocabulary gate, then
+a precision-first tool-name gate) and removed: they were user-visible
+edits to the prompt that kept producing noise (vocabulary false positives,
+echoed notes re-triggering themselves), and they co-existed with the
+description guidance in every session - so no evidence ever separated
+what each one contributed. The rule that survives across the plugin:
+**invisible guidance is always on (tool descriptions); user-visible
+injection of instructions does not happen.**
 
 ## Auto reasoning effort
 
@@ -363,7 +342,7 @@ Options (all defaults mirror the reference):
 ## Skills
 
 None needed. This plugin does not depend on and does not pair with any skill -
-the tool descriptions, hooks, routing, and commands above carry the whole job.
+the tool descriptions, hooks, and commands above carry the whole job.
 On OpenCode with this plugin, do not load the `system-one` / `auto-system-one`
 skills; nothing in them is consulted, and the plugin only enforces what
 functions can be reached at all. The tool descriptions stay deliberately
@@ -406,6 +385,9 @@ rule. There is no provider degradation chain.
   posts on its own are screen verdicts for flagged fetches.
 - Compaction never rewrites user/assistant text and never applies partial
   decisions; any failure falls back to the untouched built-in flow.
+- User prompt text is never edited for instructions (scrub redaction
+  aside): first-action guidance lives in the tool descriptions; the former
+  routing note was removed for this reason.
 - Approvals never override configured deny rules, never auto-deny, and
   fall back to the human prompt on every failure mode; the deterministic
   gate list (destructive/secret patterns) is checked before any jev call.
