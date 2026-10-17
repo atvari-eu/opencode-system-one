@@ -1618,6 +1618,16 @@ export default Plugin.define({
     // The handler NEVER throws: a jev failure means the built-in compaction
     // runs on an unmodified transcript (hook failures would defect otherwise).
 
+    // Idle-driven auto-compaction: when the transcript exceeds idleTokens
+    // (estimated) at session idle, trigger a compaction the way /compact
+    // does - it runs reason "manual" and therefore through the jev hook
+    // above. 0 (default) keeps the feature off; opt in with a token target.
+    // Declared unconditionally: the plugin-loaded log line below references
+    // it outside the compaction block, and a scoped reference would die
+    // there (ReferenceError) for every compaction-enabled config, killing
+    // the whole plugin's setup (all hooks and tools) after registration.
+    const idleAuto = parseIdleAuto(o.compaction?.auto)
+
     if (o.compaction?.enabled === true) {
       const c: any = o.compaction ?? {}
       const num = (v: unknown, d: number) =>
@@ -1638,11 +1648,6 @@ export default Plugin.define({
         mode: c.mode === "clean" ? ("clean" as const) : ("replace" as const),
         summary: c.summary === "transcript" ? ("transcript" as const) : ("report" as const),
       }
-      // Idle-driven auto-compaction: when the transcript exceeds idleTokens
-      // (estimated) at session idle, trigger a compaction the way /compact
-      // does - it runs reason "manual" and therefore through the jev hook
-      // above. 0 (default) keeps the feature off; opt in with a token target.
-      const idleAuto = parseIdleAuto(c.auto)
 
       const windows = new Map<string, number>()
       // The hook's model is a bare Ref; resolve the context window via the
