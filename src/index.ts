@@ -676,7 +676,7 @@ export default Plugin.define({
     const effortMinConfidence =
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
         ? o.effort.minConfidence
-        : 0.6
+        : 0.45
     const screenTools = parseScreenTools(o.screen?.tools)
     // Routing config lives under "route" so that the judgment-model override
     // ("model": "<id>" string) and the model-routing options never share one
@@ -684,7 +684,7 @@ export default Plugin.define({
     const routeRaw: any = (o as any).route
     const modelAuto = routeRaw?.auto === true
     const modelCandidates: Candidate[] = parseCandidates(routeRaw?.candidates)
-    const modelMinConfidence = clampThreshold(routeRaw?.minConfidence, 0.5, 0.99, 0.6)
+    const modelMinConfidence = clampThreshold(routeRaw?.minConfidence, 0.25, 0.99, 0.45)
     const routeSources = parseRouteSources(routeRaw?.sources)
     const routeSourcesTag = [
       routeSources.favorites ? "favorites" : "",

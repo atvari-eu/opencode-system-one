@@ -416,7 +416,7 @@ export function resolveRouteAnswer(
 }
 
 export const ROUTE_PAIR_INSTRUCTIONS =
-  "Pick the (model, reasoning level) pair the assistant's turn should use: WHICH model runs the turn and HOW MUCH effort it gets. Prefer the CHEAPER model and the LOWER level that can still do the job - a cheap turn can be escalated later, but wasted effort cannot be taken back; escalate the model only when the message clearly demands a stronger one."
+  "Pick the (model, reasoning level) pair the assistant's turn should use: WHICH model runs the turn and HOW MUCH effort it gets. For the model: prefer the cheaper one that can still do the job; escalate only when the message clearly needs more capability. For the level: judge the WORK, not the phrasing - multi-step tasks, open design questions, debugging in unfamiliar code, or changes across several files justify medium or high even when the request sounds brief; prefer a lower level only when the message plainly fits the lower tier."
 
 export const ROUTE_MODEL_INSTRUCTIONS =
   "Pick which model the assistant's turn should run on. The current model is one of the options - keep it unless another option clearly fits better. Prefer the cheaper model that can still do the job; escalate only when the message clearly needs more capability."
