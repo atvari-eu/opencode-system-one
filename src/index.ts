@@ -151,22 +151,7 @@ async function loadCliStoreCredential(integration: string): Promise<Credential |
     if (!bin) continue
     try {
       // stdout only; stderr and the key itself are never logged or persisted
-      const out = await new Promise<string>((resolve, reject) => {
-        let stdout = ""
-        const child = execFile(bin, ["auth", "export"], {
-          encoding: "utf8",
-          timeout: 15_000,
-          stdio: ["ignore", "pipe", "ignore"],
-        })
-        child.stdout?.on("data", (chunk: string) => {
-          stdout += chunk
-        })
-        child.on("error", reject)
-        child.on("close", (code) => {
-          if (code === 0) resolve(stdout)
-          else reject(new Error(`exit ${code}`))
-        })
-      })
+      const out = await execText(bin, ["auth", "export"])
       const key = parseAuthExport(JSON.parse(out), integration)
       if (key) {
         CLI_CREDENTIALS[integration] = { key, source: "cli-store", integration }
@@ -243,17 +228,112 @@ function toQuestionMap(questions: Question[]): Record<string, any> {
   return map
 }
 
+// System One gate: the free tier only answers requests whose User-Agent is
+// `opencode/<host version>` - case-sensitive, exact version, verified against
+// the live endpoint (opencode/2.0.30 → 200; opencode/9.9.9, bare, upper-case,
+// suffixed, or library-default UAs all → 403 FreeTierError). opencode's own
+// inference calls carry that UA, so judgment calls from a plugin must too.
+// Resolution order, cached once per process:
+//   1. OPENCODE_VERSION env (explicit override)
+//   2. the running service's state file - accepted only when its pid is THIS
+//      process (shared-service hooks run inside that server), so a stale
+//      record from a dead service can never speak for us
+//   3. CLI `--version` fallback (standalone/private servers)
+// Wrong/absent versions fail the call with the endpoint's own 403 - fail
+// closed, same as a bad credential.
+const VERSION_PATTERN = /^\d+\.\d+(\.\d+)?/
+
+const CONFIG_SERVICE_FILE = join(
+  process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state"),
+  "opencode",
+  "service.json",
+)
+
+let HOST_UA: Promise<string | undefined> | undefined
+
+function hostClientUA(): Promise<string | undefined> {
+  HOST_UA ??= hostClientUARead()
+  return HOST_UA
+}
+
+interface ServiceRecord {
+  version?: unknown
+  pid?: unknown
+}
+
+function parseServiceFile(raw: string): ServiceRecord {
+  // Local shape read of a host-written file; unknown/absent fields are fine.
+  const value: unknown = JSON.parse(raw)
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  const record: ServiceRecord = {}
+  if ("version" in value) record.version = value.version
+  if ("pid" in value) record.pid = value.pid
+  return record
+}
+
+async function hostClientUARead(): Promise<string | undefined> {
+  const env = process.env.OPENCODE_VERSION
+  if (env) return `opencode/${env.trim()}`
+
+  try {
+    const service = parseServiceFile(readFileSync(CONFIG_SERVICE_FILE, "utf8"))
+    if (
+      typeof service.version === "string" &&
+      VERSION_PATTERN.test(service.version.trim()) &&
+      service.pid === process.pid
+    ) {
+      return `opencode/${service.version.trim()}`
+    }
+  } catch {
+    // missing or unreadable state file - try the CLI
+  }
+
+  for (const bin of [process.env.OPENCODE_BIN, "opencode", "opencode2"]) {
+    if (!bin) continue
+    try {
+      const raw = await execText(bin, ["--version"])
+      const version = raw.trim().split(/\s+/).find((token) => VERSION_PATTERN.test(token))
+      if (version) return `opencode/${version}`
+    } catch {
+      // missing binary or unusable output - try the next binary name
+    }
+  }
+  return undefined
+}
+
+/** Small bounded helper for `--version` calls; stdout only. */
+function execText(bin: string, args: string[]): Promise<string> {
+  const { promise, resolve, reject } = Promise.withResolvers<string>()
+  let stdout = ""
+  const child = execFile(bin, args, {
+    encoding: "utf8",
+    timeout: 15_000,
+    stdio: ["ignore", "pipe", "ignore"],
+  })
+  child.stdout?.on("data", (chunk: string) => {
+    stdout += chunk
+  })
+  child.on("error", reject)
+  child.on("close", (code) => {
+    if (code === 0) resolve(stdout)
+    else reject(new Error(`exit ${code}`))
+  })
+  return promise
+}
+
 async function jevRequest(
   cred: Credential,
   questions: Question[],
   state: unknown,
   signal?: AbortSignal,
 ): Promise<Response> {
+  const ua = await hostClientUA()
   return fetch(resolveEndpoint(), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${cred.key}`,
       "Content-Type": "application/json",
+      ...(ua ? { "User-Agent": ua } : {}),
     },
     body: JSON.stringify({
       model: resolveModel(),
