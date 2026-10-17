@@ -289,7 +289,7 @@ Options:
 | `route.candidates` | `[]` | Models jev may route to (`provider/model` strings or `{ providerID, id }`). |
 | `route.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
 | `route.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
-| `route.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model. 0.6 was structurally unreachable in pair mode: with 8-12 (model, level) options splitting the probability mass, winning picks landed 0.2-0.5 and were discarded, so the session never moved off its first pick. Clamped to 0.25-0.99. |
+| `route.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
 | `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
 | `effort.minConfidence` | `0.45` | Minimum jev answer confidence required to switch the reasoning variant. |
 
