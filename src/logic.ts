@@ -87,27 +87,64 @@ export const candidateKey = (c: { providerID: string; modelID: string }): string
 // reads live in index.ts and feed their rows through below.
 // ---------------------------------------------------------------------------
 
+export interface OpencodeSourceConfig {
+  enabled: boolean
+  /** Which OpenCode plan's models to rank: "zen" (the `opencode` provider,
+   * default) or "go" (the OpenCode Go subscription). */
+  plan: "zen" | "go"
+  /** Top-N count of the ranking ("popular" - the only mode and the default
+   * when the source is enabled). */
+  limit: number
+}
+
 export interface RouteSourcesConfig {
   /** Models starred in OpenCode's model picker (TUI favorites). */
   favorites: boolean
-  /** Most-used models of one provider, ranked by local usage history. */
-  goPopular: { enabled: boolean; limit: number }
+  /** OpenCode's own models, ranked by local usage history. */
+  opencode: OpencodeSourceConfig
 }
 
-const GO_POPULAR_LIMIT_DEFAULT = 10
-const GO_POPULAR_LIMIT_MAX = 40
+const POPULAR_LIMIT_DEFAULT = 10
+const POPULAR_LIMIT_MAX = 40
 
-// Accepts the route config's "sources": { "favorites": true,
-// "goPopular": true | <count> }. Sources are off unless explicitly enabled -
-// they widen what routing may switch to, so absent or malformed keys must
-// never turn them on.
+// A clamped magnitude - counts never disable the source.
+function parsePopularLimit(raw: unknown): number {
+  if (typeof raw === "number" && Number.isFinite(raw))
+    return Math.max(1, Math.min(Math.floor(raw), POPULAR_LIMIT_MAX))
+  return POPULAR_LIMIT_DEFAULT
+}
+
+// Accepts the route config's "sources":
+//   { "favorites": true,
+//     "opencode": true | { "plan"?: "zen" | "go", "popular"?: true | <count> } }
+// "opencode" toggles the source; "popular" is its default mode ("zen" plan,
+// top 10). Sources are off unless explicitly enabled - they widen what
+// routing may switch to, so absent or malformed keys must never turn them
+// on: an unrecognized plan or a non-numeric/non-boolean "popular" leaves the
+// source off instead of guessing. An explicit "popular": false idles it
+// (recognized, no other mode exists yet).
 export function parseRouteSources(raw: unknown): RouteSourcesConfig {
   const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {}
-  let goPopular: RouteSourcesConfig["goPopular"] = { enabled: false, limit: GO_POPULAR_LIMIT_DEFAULT }
-  if (obj.goPopular === true) goPopular = { enabled: true, limit: GO_POPULAR_LIMIT_DEFAULT }
-  else if (typeof obj.goPopular === "number" && Number.isFinite(obj.goPopular) && obj.goPopular >= 1)
-    goPopular = { enabled: true, limit: Math.min(Math.floor(obj.goPopular), GO_POPULAR_LIMIT_MAX) }
-  return { favorites: obj.favorites === true, goPopular }
+  let opencode: OpencodeSourceConfig = { enabled: false, plan: "zen", limit: POPULAR_LIMIT_DEFAULT }
+  const src = obj.opencode
+  if (src === true) {
+    opencode = { enabled: true, plan: "zen", limit: POPULAR_LIMIT_DEFAULT }
+  } else if (src && typeof src === "object" && !Array.isArray(src)) {
+    const planKnown = src.plan === undefined || src.plan === "zen" || src.plan === "go"
+    const modeKnown =
+      src.popular === undefined ||
+      src.popular === true ||
+      src.popular === false ||
+      (typeof src.popular === "number" && Number.isFinite(src.popular))
+    if (planKnown && modeKnown) {
+      opencode = {
+        enabled: src.popular !== false,
+        plan: (src.plan as "zen" | "go") ?? "zen",
+        limit: parsePopularLimit(src.popular),
+      }
+    }
+  }
+  return { favorites: obj.favorites === true, opencode }
 }
 
 // Ranks usage rows into same-provider candidates: rows carry flattened
@@ -135,6 +172,26 @@ export function rankSourcePopular(
     .sort((a, b) => b.steps - a.steps || (a.modelID < b.modelID ? -1 : a.modelID > b.modelID ? 1 : 0))
     .slice(0, limit)
     .map(({ providerID, modelID }) => ({ providerID, modelID }))
+}
+
+// Catalog entries can exist and still be unusable in the current session:
+// explicitly disabled, deprecated/retired, or (defensively) newer host
+// versions may annotate other end-of-life states. Only known-bad markers are
+// treated as unavailable - an unrecognized status (beta, preview, ...) or a
+// missing flag fails open, and a model absent from the session's domain is
+// already filtered by the caller's null check. The catalog itself is
+// session-scoped (provider auth and workspace enablement decide membership),
+// so this check only refines, never widens, that domain.
+const UNAVAILABLE_STATUSES = new Set(["deprecated", "disabled", "removed", "retired", "eol"])
+
+export function isAvailableModel(info: unknown): boolean {
+  if (!info || typeof info !== "object") return false
+  const entry = info as Record<string, any>
+  if (entry.enabled === false) return false
+  const status = typeof entry.status === "string" ? entry.status.trim().toLowerCase() : ""
+  if (status && UNAVAILABLE_STATUSES.has(status)) return false
+  if (entry.time && typeof entry.time === "object" && "deprecated" in entry.time) return false
+  return true
 }
 
 export const modelKeyOfRef = (ref: any): string => `${String(ref?.providerID ?? "")}/${String(ref?.id ?? "")}`

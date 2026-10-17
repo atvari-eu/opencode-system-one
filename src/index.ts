@@ -51,6 +51,7 @@ import {
   clampThreshold,
   doneTranscript,
   doneVerdict,
+  isAvailableModel,
   parseCandidates,
   parseRouteSources,
   parseScreenTools,
@@ -436,13 +437,13 @@ export default Plugin.define({
     const routeSources = parseRouteSources(routeRaw?.sources)
     const routeSourcesTag = [
       routeSources.favorites ? "favorites" : "",
-      routeSources.goPopular.enabled ? `goPopular(${routeSources.goPopular.limit})` : "",
+      routeSources.opencode.enabled ? `opencode(${routeSources.opencode.plan}:${routeSources.opencode.limit})` : "",
     ]
       .filter(Boolean)
       .join("+")
     if (modelAuto && modelCandidates.length === 0 && !routeSourcesTag) {
       console.log(
-        '[jev] route: auto enabled without candidates - set "route": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "goPopular": true }; routing stays off',
+        '[jev] route: auto enabled without candidates - set "route": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "opencode": true }; routing stays off',
       )
     }
     const doneCheckAuto = o.doneCheck?.auto === true
@@ -551,22 +552,28 @@ export default Plugin.define({
       }
 
       // Dynamic candidate sources (route.sources) - the user's TUI-favorite
-      // models and the most-used OpenCode Go models by local usage. Re-read
-      // at most once a minute. Fail-open throughout: a missing favorites
-      // file or DB read failure only means no candidates from that source,
-      // never an error in the turn.
+      // models and OpenCode's own most-used models ("popular" mode, zen or
+      // go plan) by local usage. Re-read at most once a minute. Fail-open
+      // throughout: a missing favorites file or DB read failure only means
+      // no candidates from that source, never an error in the turn.
       const SOURCE_TTL = 60_000
-      const GO_USAGE_DAYS = 30
-      let sourceCache: { at: number; favorites: Candidate[]; goPopular: Candidate[] } = {
+      const USAGE_DAYS = 30
+      // Flagged-unavailable candidates noticed so far, logged once per
+      // process so the filter is observable without spamming every prompt.
+      const noticedDrops = new Set<string>()
+      let sourceCache: { at: number; favorites: Candidate[]; opencode: Candidate[] } = {
         at: 0,
         favorites: [],
-        goPopular: [],
+        opencode: [],
       }
-      const resolveRouteSources = async (): Promise<{ favorites: Candidate[]; goPopular: Candidate[] } | null> => {
-        if (!routeSources.favorites && !routeSources.goPopular.enabled) return null
+      const resolveRouteSources = async (): Promise<{
+        favorites: Candidate[]
+        opencode: Candidate[]
+      } | null> => {
+        if (!routeSources.favorites && !routeSources.opencode.enabled) return null
         if (Date.now() - sourceCache.at < SOURCE_TTL) return sourceCache
         const favorites: Candidate[] = []
-        const goPopular: Candidate[] = []
+        const opencode: Candidate[] = []
         if (routeSources.favorites) {
           try {
             const stateDir = process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state")
@@ -574,14 +581,14 @@ export default Plugin.define({
             favorites.push(...parseCandidates(raw?.favorite))
           } catch {}
         }
-        if (routeSources.goPopular.enabled) {
+        if (routeSources.opencode.enabled) {
           try {
             const dataDir = process.env.XDG_DATA_HOME?.trim() || join(homedir(), ".local", "share")
             const moduleSpecifier = "bun:sqlite"
             const { Database } = (await import(moduleSpecifier)) as any
             const db = new Database(join(dataDir, "opencode", "opencode.db"), { readonly: true })
             try {
-              const since = Date.now() - GO_USAGE_DAYS * 24 * 60 * 60 * 1000
+              const since = Date.now() - USAGE_DAYS * 24 * 60 * 60 * 1000
               const rows = ((db
                 .query(
                   `SELECT json_extract(data, '$.model.providerID') AS providerID,
@@ -593,21 +600,24 @@ export default Plugin.define({
                    ORDER BY steps DESC`,
                 )
                 .all(since) as any[]) ?? [])
-              goPopular.push(...rankSourcePopular(rows, "opencode-go", routeSources.goPopular.limit))
+              const planProvider = routeSources.opencode.plan === "go" ? "opencode-go" : "opencode"
+              opencode.push(...rankSourcePopular(rows, planProvider, routeSources.opencode.limit))
             } finally {
               db.close()
             }
           } catch (err) {
-            console.error(`[jev] route: goPopular source failed (routing continues without it):`, err)
+            console.error(`[jev] route: opencode source failed (routing continues without it):`, err)
           }
         }
         const prev = sourceCache.at === 0 ? null : sourceCache
-        sourceCache = { at: Date.now(), favorites, goPopular }
-        if (
-          favorites.length + goPopular.length > 0 &&
-          (!prev || prev.favorites.length !== favorites.length || prev.goPopular.length !== goPopular.length)
-        ) {
-          console.log(`[jev] route: sources - favorites=${favorites.length} goPopular=${goPopular.length}`)
+        sourceCache = { at: Date.now(), favorites, opencode }
+        const changed =
+          favorites.length + opencode.length > 0 &&
+          (!prev || prev.favorites.length !== favorites.length || prev.opencode.length !== opencode.length)
+        if (changed) {
+          console.log(
+            `[jev] route: sources - favorites=${favorites.length} opencode(${routeSources.opencode.plan})=${opencode.length}`,
+          )
         }
         return sourceCache
       }
@@ -652,7 +662,7 @@ export default Plugin.define({
             if (sources) {
               const seen = new Set(modelCandidates.map((c) => candidateKey(c)))
               const extra: Candidate[] = []
-              for (const candidate of [...sources.favorites, ...sources.goPopular]) {
+              for (const candidate of [...sources.favorites, ...sources.opencode]) {
                 const key = candidateKey(candidate)
                 if (!seen.has(key)) {
                   seen.add(key)
@@ -662,7 +672,22 @@ export default Plugin.define({
               if (extra.length > 0) combined = [...modelCandidates, ...extra]
             }
             for (const candidate of combined) {
-              if ((await modelInfo(candidate.providerID, candidate.modelID)) !== null) usableCandidates.push(candidate)
+              const info = await modelInfo(candidate.providerID, candidate.modelID)
+              // Absent from the session's domain entirely (provider not
+              // connected, workspace-disabled there) ...
+              if (info === null) continue
+              // ... or present but marked unusable (disabled, deprecated).
+              // Logged once per candidate so silent filtering stays visible
+              // when someone stares at the logs.
+              if (!isAvailableModel(info)) {
+                const key = candidateKey(candidate)
+                if (!noticedDrops.has(key)) {
+                  noticedDrops.add(key)
+                  console.log(`[jev] route: candidate unavailable in this session - dropped: ${key}`)
+                }
+                continue
+              }
+              usableCandidates.push(candidate)
             }
             if (usableCandidates.length === 0) {
               console.log("[jev] route: no usable candidates - effort handling continues without routing")

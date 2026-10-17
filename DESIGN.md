@@ -95,17 +95,26 @@ pin storage). Rationale worth remembering when extending it:
   every config merger, not just OpenCode's. `effort-pin/...` keys are read
   as fallbacks so upgrades from the pre-rename storage keep working.
 - **Candidate sources** (`route.sources`): the pool may extend past the
-  static `candidates` list with OpenCode's own state - TUI favorites
-  (`~/.local/state/opencode/model.json` under `XDG_STATE_HOME`) and the
-  most-used OpenCode Go models (`session_message` rows read read-only via
-  `bun:sqlite`, ranked by assistant-message count over 30 days). Baked
-  decisions: sources are opt-in (they widen what routing may switch to),
-  additive-only (explicit candidates stay ahead of sourced ones),
-  re-read at most once a minute (a TTL cache, since the prompt hook runs
-  per prompt), and fail-open (missing file / failed DB read = no
-  candidates from that source, logged once on change). Catalog validation
-  after merging is what keeps a source from ever offering a model the
-  session could not resolve; the 30-day local-usage window is the honest
+  static `candidates` list with what the session itself knows - TUI
+  favorites (`~/.local/state/opencode/model.json` under `XDG_STATE_HOME`)
+  and OpenCode's own most-used models (`session_message` rows read
+  read-only via `bun:sqlite`, ranked by assistant-message count over 30
+  days). The `opencode` source's single ranking mode is "popular" (top 10
+  by default - hence `"opencode": true` is shorthand), and `plan` picks
+  the model family: `"zen"` (the `opencode` provider, default) or `"go"`
+  (the OpenCode Go subscription). Baked decisions: sources are opt-in
+  (they widen what routing may switch to) and additive-only (explicit
+  candidates stay ahead of sourced ones); the prompt hook runs per
+  prompt, so sources re-read at most once a minute (TTL cache); they fail
+  open (missing file / failed DB read = no candidates from that source,
+  logged once on change), and malformed shapes disable rather than guess
+  (bar a clamped count). Availability gating happens twice: after
+  merging, every candidate is checked against *this session's* catalog -
+  provider auth and workspace enablement decide membership, so an
+  unavailable provider's models vanish from the domain entirely - and
+  known-bad flags (`enabled: false`, `deprecated`/`disabled`/... status,
+  `time.deprecated`) drop the entry with a once-per-candidate log, while
+  unknown statuses fail open. The 30-day local-usage window is the honest
   proxy for "most used" because OpenCode publishes no global ranking.
 - **`.reply` unwrap**: `cachedJudge` returns `{ reply, cached }`; every
   injected judge must unwrap `.reply` (a former direct pass-through typed

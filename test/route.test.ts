@@ -9,6 +9,7 @@ import {
   buildPairOptions,
   candidateKey,
   type Candidate,
+  isAvailableModel,
   MAX_OPTIONS,
   parseCandidates,
   parseRouteSources,
@@ -420,8 +421,9 @@ describe("parseRouteSources", () => {
     for (const raw of [undefined, null, true, "x", 7, [], {}]) {
       const cfg = parseRouteSources(raw)
       expect(cfg.favorites).toBe(false)
-      expect(cfg.goPopular.enabled).toBe(false)
-      expect(cfg.goPopular.limit).toBe(10)
+      expect(cfg.opencode.enabled).toBe(false)
+      expect(cfg.opencode.plan).toBe("zen")
+      expect(cfg.opencode.limit).toBe(10)
     }
   })
 
@@ -431,19 +433,46 @@ describe("parseRouteSources", () => {
     expect(parseRouteSources({ favorites: 1 }).favorites).toBe(false)
   })
 
-  test("goPopular defaults to 10 when true, accepts a count", () => {
-    const on = parseRouteSources({ goPopular: true })
-    expect(on.goPopular.enabled).toBe(true)
-    expect(on.goPopular.limit).toBe(10)
-    expect(parseRouteSources({ goPopular: 5 }).goPopular).toEqual({ enabled: true, limit: 5 })
+  test("opencode: true enables popular mode on the zen plan by default", () => {
+    const on = parseRouteSources({ opencode: true })
+    expect(on.opencode).toEqual({ enabled: true, plan: "zen", limit: 10 })
   })
 
-  test("goPopular counts clamp to a sane range", () => {
-    expect(parseRouteSources({ goPopular: 0 }).goPopular.enabled).toBe(false)
-    expect(parseRouteSources({ goPopular: -3 }).goPopular.enabled).toBe(false)
-    expect(parseRouteSources({ goPopular: Number.NaN }).goPopular.enabled).toBe(false)
-    expect(parseRouteSources({ goPopular: 1.7 }).goPopular.limit).toBe(1)
-    expect(parseRouteSources({ goPopular: 999 }).goPopular.limit).toBe(40)
+  test("popular is the default mode; a count sets the top size", () => {
+    expect(parseRouteSources({ opencode: {} }).opencode).toEqual({ enabled: true, plan: "zen", limit: 10 })
+    expect(parseRouteSources({ opencode: { popular: true } }).opencode.enabled).toBe(true)
+    expect(parseRouteSources({ opencode: { popular: 5 } }).opencode).toEqual({
+      enabled: true,
+      plan: "zen",
+      limit: 5,
+    })
+  })
+
+  test("plan selects zen or go; anything else disables", () => {
+    expect(parseRouteSources({ opencode: { plan: "go" } }).opencode).toEqual({
+      enabled: true,
+      plan: "go",
+      limit: 10,
+    })
+    expect(parseRouteSources({ opencode: { plan: "zen" } }).opencode.plan).toBe("zen")
+    expect(parseRouteSources({ opencode: { plan: "copilot" } }).opencode.enabled).toBe(false)
+    expect(parseRouteSources({ opencode: { plan: 7 } }).opencode.enabled).toBe(false)
+  })
+
+  test("popular counts clamp (magnitudes never disable), garbage modes disable", () => {
+    expect(parseRouteSources({ opencode: { popular: 0 } }).opencode.limit).toBe(1)
+    expect(parseRouteSources({ opencode: { popular: -3 } }).opencode.limit).toBe(1)
+    expect(parseRouteSources({ opencode: { popular: 999 } }).opencode.limit).toBe(40)
+    expect(parseRouteSources({ opencode: { popular: 1.7 } }).opencode.limit).toBe(1)
+    expect(parseRouteSources({ opencode: { popular: false } }).opencode.enabled).toBe(false)
+    expect(parseRouteSources({ opencode: { popular: "all" } }).opencode.enabled).toBe(false)
+    expect(parseRouteSources({ opencode: { popular: Number.NaN } }).opencode.enabled).toBe(false)
+  })
+
+  test("sources compose independently", () => {
+    const cfg = parseRouteSources({ favorites: true, opencode: { plan: "go", popular: 3 } })
+    expect(cfg.favorites).toBe(true)
+    expect(cfg.opencode).toEqual({ enabled: true, plan: "go", limit: 3 })
   })
 })
 
@@ -497,5 +526,34 @@ describe("rankSourcePopular", () => {
       { providerID: "p", modelID: "m", steps: 9 },
     ]
     expect(rankSourcePopular(duplicated, "p", 10)).toEqual([{ providerID: "p", modelID: "m" }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Session availability gate for routing candidates (catalog-flag based).
+// ---------------------------------------------------------------------------
+
+describe("isAvailableModel", () => {
+  test("healthy active entries pass", () => {
+    expect(isAvailableModel({ enabled: true, status: "active" })).toBe(true)
+    // Older catalogs may omit both flags - fail open.
+    expect(isAvailableModel({})).toBe(true)
+  })
+
+  test("explicitly disabled or deprecated entries fail", () => {
+    expect(isAvailableModel({ enabled: false, status: "active" })).toBe(false)
+    expect(isAvailableModel({ enabled: true, status: "deprecated" })).toBe(false)
+    expect(isAvailableModel({ enabled: true, status: "Disabled" })).toBe(false)
+    expect(isAvailableModel({ enabled: true, status: "retired" })).toBe(false)
+    expect(isAvailableModel({ enabled: true, status: "active", time: { released: 123, deprecated: 456 } })).toBe(false)
+  })
+
+  test("statuses fail open, non-entries fail closed", () => {
+    for (const status of ["beta", "preview", "experimental", "stable", ""]) {
+      expect(isAvailableModel({ enabled: true, status })).toBe(true)
+    }
+    expect(isAvailableModel(null)).toBe(false)
+    expect(isAvailableModel(undefined)).toBe(false)
+    expect(isAvailableModel("active")).toBe(false)
   })
 })
