@@ -69,7 +69,7 @@ import {
   shouldNotifyIncomplete,
 } from "./logic"
 import { type Candidate } from "./logic"
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -119,7 +119,7 @@ interface Credential {
 const CLI_CREDENTIALS: Record<string, Credential | undefined> = {}
 const CLI_CREDENTIALS_DEAD: Record<string, boolean> = {}
 
-function loadCliStoreCredential(integration: string): Credential | undefined {
+async function loadCliStoreCredential(integration: string): Promise<Credential | undefined> {
   const cached = CLI_CREDENTIALS[integration]
   if (cached) return cached
   if (CLI_CREDENTIALS_DEAD[integration]) return undefined
@@ -127,10 +127,21 @@ function loadCliStoreCredential(integration: string): Credential | undefined {
     if (!bin) continue
     try {
       // stdout only; stderr and the key itself are never logged or persisted
-      const out = execFileSync(bin, ["auth", "export"], {
-        encoding: "utf8",
-        timeout: 15_000,
-        stdio: ["ignore", "pipe", "ignore"],
+      const out = await new Promise<string>((resolve, reject) => {
+        let stdout = ""
+        const child = execFile(bin, ["auth", "export"], {
+          encoding: "utf8",
+          timeout: 15_000,
+          stdio: ["ignore", "pipe", "ignore"],
+        })
+        child.stdout?.on("data", (chunk: string) => {
+          stdout += chunk
+        })
+        child.on("error", reject)
+        child.on("close", (code) => {
+          if (code === 0) resolve(stdout)
+          else reject(new Error(`exit ${code}`))
+        })
       })
       const key = parseAuthExport(JSON.parse(out), integration)
       if (key) {
@@ -151,7 +162,7 @@ function invalidateCliStoreCredential(integration: string): void {
   CLI_CREDENTIALS_DEAD[integration] = false
 }
 
-function resolveKey(): Credential | undefined {
+async function resolveKey(): Promise<Credential | undefined> {
   const provider = OPTIONS_PROVIDER
   const envKey =
     provider === "opencode-go"
@@ -159,8 +170,11 @@ function resolveKey(): Credential | undefined {
       : process.env.TYPESAFE_API_KEY || process.env.OPENCODE_API_KEY
   if (envKey) return { key: envKey, source: "env", integration: provider }
   if (!process.env.JEV_ENDPOINT) {
-    const store = loadCliStoreCredential(provider)
-    if (store) return store
+    // The V2 CLI only exposes a single "opencode" integration; the jev
+    // deployment is selected by the key/endpoint pairing, not by a separate
+    // CLI integration. Always query the opencode integration here.
+    const store = await loadCliStoreCredential("opencode")
+    if (store) return { ...store, integration: provider }
   }
   try {
     const auth = JSON.parse(
@@ -227,12 +241,12 @@ async function jevRequest(
 }
 
 async function jevJudgeInner(
-  resolveCred: () => Credential | undefined,
+  resolveCred: () => Promise<Credential | undefined>,
   questions: Question[],
   state: unknown,
   signal?: AbortSignal,
 ): Promise<JevReply> {
-  const cred = resolveCred()
+  const cred = await resolveCred()
   if (!cred) {
     throw new Error(
       "jev: no credential (set TYPESAFE_API_KEY, export OPENCODE_API_KEY, or run `opencode auth login` to sign in to the Console)",
