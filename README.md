@@ -290,13 +290,13 @@ This plugin implements the same System One contract as two skills from
 skills published to the open [skills](https://skills.sh/) ecosystem. The
 division of labor: the skills carry portable *advice* (usable with any agent
 and the `jev` CLI), while the plugin is OpenCode's native mechanism and
-*enforces* the parts that can be mechanical - hooks like screening, scrubbing,
-and fail-closed routing are things advice alone cannot guarantee.
+*enforces* what can be mechanical - hooks like screening, scrubbing, and the
+fail-safe routing gate are things advice alone cannot guarantee.
 
 | Skill | Adds |
 | --- | --- |
-| [`auto-system-one`](https://github.com/atvari-eu/skills/blob/main/skills/auto-system-one/SKILL.md) | The judgment-moment guidance: *when* to call for a decision, *how* to phrase questions. Useful everywhere, including OpenCode with this plugin. |
-| [`system-one`](https://github.com/atvari-eu/skills/blob/main/skills/system-one/SKILL.md) | The portable mechanics: HTTP shapes, `jev` CLI, thresholds. Redundant on OpenCode with this plugin; load it everywhere else. |
+| [`auto-system-one`](https://github.com/atvari-eu/skills/blob/main/skills/auto-system-one/SKILL.md) | The judgment-moment guidance: *when* to call for a decision, plus call discipline (batch one request, never re-ask a rephrased question, route on confidence) and the hard privacy line. Useful everywhere, including OpenCode with this plugin. |
+| [`system-one`](https://github.com/atvari-eu/skills/blob/main/skills/system-one/SKILL.md) | The portable mechanics: HTTP shapes, `jev` CLI, auth pairing, thresholds, models. Mostly redundant on OpenCode with this plugin; still the reference for the `jev` CLI in shell, non-Console endpoints, and threshold tuning. |
 
 Install with the `skills` CLI:
 
@@ -308,12 +308,13 @@ $ skills add atvari-eu/skills@auto-system-one -g
 ### Recommended pairing
 
 - **OpenCode always running with this plugin:** keep `auto-system-one`, skip
-  `system-one`. The plugin already enforces the mechanics - transport and auth
-  chain, one call = one state, per-item batching with aggregation, durable
-  cache, fail-closed routing, and the screening.
+  `system-one`. The plugin already enforces the mechanics - the same auth
+  chain (env keys to OpenCode's auth store), typed request/response shapes,
+  one call = one state, per-item batching with in-code aggregation, durable
+  cache, secret scrubbing of every judgment state, and the screening.
 - **Anywhere else** (other agents, the `jev` CLI, plugin-less OpenCode): load
   `system-one` first and `auto-system-one` second, as the portable pair - the
-  documented contract is exactly what this plugin implements on OpenCode.
+  documented contract is what this plugin implements on OpenCode.
 
 ## Environment
 
