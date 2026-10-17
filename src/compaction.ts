@@ -63,13 +63,14 @@ export interface Options {
   /** "replace" (default): supply the pruned transcript as the compaction summary. "clean": only rewrite messages, let the built-in summarizer run. */
   mode?: "replace" | "clean"
   /**
-   * Shape of the hook-supplied summary in `replace` mode. "transcript" (default)
-   * replays user/assistant text verbatim with tool calls and results per Jev's
-   * verdicts. "report" keeps the summary itself tiny - a per-call report of what
-   * was judged (dropped / truncated / kept with a bounded head) - so the compaction
-   * block reads like an audit trail and carries the least context. In "report"
-   * mode the older user/assistant exchanges are NOT replayed into the summary at
-   * all; only the host-kept `recent` conversation and this report describe the past.
+   * Shape of the hook-supplied summary in `replace` mode. "report" (default)
+   * keeps the summary itself tiny - a per-call report of what was judged
+   * (dropped / truncated / kept with a bounded head) - so the compaction block
+   * reads like an audit trail and carries the least context. The older
+   * user/assistant exchanges are NOT replayed into the summary at all; only
+   * the host-kept `recent` conversation and this report describe the past.
+   * "transcript" opts back into replaying user/assistant text verbatim with
+   * tool calls and results per Jev's verdicts.
    */
   summary?: "transcript" | "report"
 }

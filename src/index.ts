@@ -1605,7 +1605,7 @@ export default Plugin.define({
           ? { maxSummaryTokens: c.maxSummaryTokens }
           : {}),
         mode: c.mode === "clean" ? ("clean" as const) : ("replace" as const),
-        summary: c.summary === "report" ? ("report" as const) : ("transcript" as const),
+        summary: c.summary === "transcript" ? ("transcript" as const) : ("report" as const),
       }
 
       const windows = new Map<string, number>()
