@@ -916,19 +916,29 @@ export function fmtFindReport(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * Extracts the Console credential usable against the default System One
- * endpoint from an `opencode auth export` payload: the active integration
- * "opencode" entry, either its API key (type "key") or - since the V2 CLI
- * signs in OAuth - its session access token (type "oauth"), which the CLI
- * keeps refreshed, so a fresh export is always current. Returns undefined
- * when the payload has no usable opencode entry (other integrations and
- * inactive entries are ignored); malformed input yields undefined, never a
- * throw.
+ * Maps a jev provider option value onto the deployment it names. Two exist
+ * today: the Console default ("opencode") and the OpenCode Go subscription
+ * ("opencode-go"). Anything else returns undefined so the caller can warn
+ * and fall back to the default instead of failing.
  */
-export function parseAuthExport(json: unknown): string | undefined {
+export function normaliseProvider(value: unknown): "opencode" | "opencode-go" | undefined {
+  if (value === "opencode" || value === "opencode-go") return value
+  return undefined
+}
+
+/**
+ * Extracts the credential for an integration from an `opencode auth export`
+ * payload (default integration: "opencode", the Console deployment): active
+ * entries only, either an API key (type "key") or - since the V2 CLI signs
+ * in OAuth - a session access token (type "oauth"), which the CLI keeps
+ * refreshed, so a fresh export is always current. Other integrations,
+ * inactive entries and unknown shapes return undefined; malformed input
+ * yields undefined, never a throw.
+ */
+export function parseAuthExport(json: unknown, integrationID = "opencode"): string | undefined {
   if (!Array.isArray(json)) return undefined
   for (const entry of json as Array<any>) {
-    if (entry?.integrationID !== "opencode" || entry?.active !== true) continue
+    if (entry?.integrationID !== integrationID || entry?.active !== true) continue
     const v = entry?.value
     if (v?.type === "key" && typeof v.key === "string" && v.key) return v.key
     if (v?.type === "oauth" && typeof v.access === "string" && v.access) return v.access

@@ -34,8 +34,11 @@
 //
 // Env contract identical to the `jev` CLI and skills:
 //   JEV_ENDPOINT (default: OpenCode Console System One endpoint)
-//   TYPESAFE_API_KEY | OPENCODE_API_KEY | opencode CLI login
-//     (`opencode auth export`) | legacy auth store (.opencode.key), in order
+//   provider plugin option: "opencode" (Console, default) or "opencode-go" -
+//     selects the credential chain (env name, CLI-store integration, legacy
+//     auth store entry); both providers use the same System One endpoint
+//   opencode: TYPESAFE_API_KEY | OPENCODE_API_KEY | CLI login | legacy store
+//   opencode-go: OPENCODE_GO_API_KEY | CLI Go login | legacy store
 //   JEV_MODEL (default: jev-1.13-free)
 //   - `model` plugin option wins over JEV_MODEL; both win over the default
 //
@@ -54,6 +57,7 @@ import {
   doneTranscript,
   doneVerdict,
   isAvailableModel,
+  normaliseProvider,
   parseAuthExport,
   parseCandidates,
   parseRouteSources,
@@ -105,14 +109,20 @@ interface JevReply {
 interface Credential {
   key: string
   source: "env" | "cli-store" | "auth-json"
+  /** The provider integration this credential belongs to ("opencode" or "opencode-go"). */
+  integration: string
 }
 
-let CLI_CREDENTIAL: Credential | undefined
-let CLI_CREDENTIAL_DEAD = false
+// One cache slot per provider integration; entries are module-level so the
+// `opencode auth export` subprocess runs at most once per provider per
+// process (and once more after a 401-triggered invalidation).
+const CLI_CREDENTIALS: Record<string, Credential | undefined> = {}
+const CLI_CREDENTIALS_DEAD: Record<string, boolean> = {}
 
-function loadCliStoreCredential(): Credential | undefined {
-  if (CLI_CREDENTIAL) return CLI_CREDENTIAL
-  if (CLI_CREDENTIAL_DEAD) return undefined
+function loadCliStoreCredential(integration: string): Credential | undefined {
+  const cached = CLI_CREDENTIALS[integration]
+  if (cached) return cached
+  if (CLI_CREDENTIALS_DEAD[integration]) return undefined
   for (const bin of [process.env.OPENCODE_BIN, "opencode", "opencode2"]) {
     if (!bin) continue
     try {
@@ -122,38 +132,46 @@ function loadCliStoreCredential(): Credential | undefined {
         timeout: 15_000,
         stdio: ["ignore", "pipe", "ignore"],
       })
-      const key = parseAuthExport(JSON.parse(out))
+      const key = parseAuthExport(JSON.parse(out), integration)
       if (key) {
-        CLI_CREDENTIAL = { key, source: "cli-store" }
-        return CLI_CREDENTIAL
+        CLI_CREDENTIALS[integration] = { key, source: "cli-store", integration }
+        return CLI_CREDENTIALS[integration]
       }
-      break // the CLI ran, but holds no usable "opencode" credential
+      break // the CLI ran, but holds no usable credential for this integration
     } catch {
       // missing binary or unusable output - try the next binary name
     }
   }
-  CLI_CREDENTIAL_DEAD = true
+  CLI_CREDENTIALS_DEAD[integration] = true
   return undefined
 }
 
-function invalidateCliStoreCredential(): void {
-  CLI_CREDENTIAL = undefined
-  CLI_CREDENTIAL_DEAD = false
+function invalidateCliStoreCredential(integration: string): void {
+  CLI_CREDENTIALS[integration] = undefined
+  CLI_CREDENTIALS_DEAD[integration] = false
 }
 
 function resolveKey(): Credential | undefined {
-  const envKey = process.env.TYPESAFE_API_KEY || process.env.OPENCODE_API_KEY
-  if (envKey) return { key: envKey, source: "env" }
+  const provider = OPTIONS_PROVIDER
+  const envKey =
+    provider === "opencode-go"
+      ? process.env.OPENCODE_GO_API_KEY
+      : process.env.TYPESAFE_API_KEY || process.env.OPENCODE_API_KEY
+  if (envKey) return { key: envKey, source: "env", integration: provider }
   if (!process.env.JEV_ENDPOINT) {
-    const store = loadCliStoreCredential()
+    const store = loadCliStoreCredential(provider)
     if (store) return store
   }
   try {
     const auth = JSON.parse(
       readFileSync(`${homedir()}/.local/share/opencode/auth.json`, "utf8"),
     )
-    const key = auth?.opencode?.key
-    if (typeof key === "string" && key.length > 0) return { key, source: "auth-json" }
+    // The legacy store keys match the integration ids ("opencode",
+    // "opencode-go").
+    const key = auth?.[provider]?.key
+    if (typeof key === "string" && key.length > 0) {
+      return { key, source: "auth-json", integration: provider }
+    }
   } catch {
     // no legacy store - fall through to "no credential"
   }
@@ -166,6 +184,10 @@ function resolveEndpoint(): string {
 
 // Options-set model wins over the env; both precede the baked default.
 let OPTIONS_MODEL: string | undefined = undefined
+
+// Selected jev deployment, set from the `provider` plugin option; the Console
+// deployment is the default.
+let OPTIONS_PROVIDER: "opencode" | "opencode-go" = "opencode"
 
 function resolveModel(): string {
   return OPTIONS_MODEL || process.env.JEV_MODEL || "jev-1.13-free"
@@ -222,7 +244,7 @@ async function jevJudgeInner(
   // re-read the store once (picking up the session the CLI refreshed) and
   // retry - never twice, never against a custom endpoint.
   if (response.status === 401 && cred.source === "cli-store") {
-    invalidateCliStoreCredential()
+    invalidateCliStoreCredential(cred.integration)
     const fresh = resolveCred()
     if (fresh && fresh.key !== cred.key) {
       response = await jevRequest(fresh, questions, state, signal)
@@ -508,6 +530,15 @@ export default Plugin.define({
     if (modelOption) {
       OPTIONS_MODEL = modelOption
       console.log(`[jev] model: ${modelOption} (from plugin options)`)
+    }
+    const providerOption = normaliseProvider(o.provider)
+    if (o.provider !== undefined && !providerOption) {
+      console.log(
+        `[jev] provider: ${JSON.stringify(o.provider)} is not a known provider ("opencode", "opencode-go") - keeping the default`,
+      )
+    } else if (providerOption === "opencode-go") {
+      OPTIONS_PROVIDER = providerOption
+      console.log(`[jev] provider: ${providerOption} (from plugin options)`)
     }
     const screenEnabled = o.screen?.enabled !== false
     const screenMode = o.screen?.mode === "redact" ? "redact" : "annotate"
@@ -1468,7 +1499,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
   },
 })

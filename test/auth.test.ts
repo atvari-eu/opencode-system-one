@@ -2,7 +2,7 @@
 // Pure logic, no plugin host, no live jev, no subprocess.
 
 import { describe, expect, test } from "bun:test"
-import { jevAuthError, parseAuthExport } from "../src/logic"
+import { jevAuthError, normaliseProvider, parseAuthExport } from "../src/logic"
 
 const MUNITO_ENTRY = {
   id: "cred_m",
@@ -13,6 +13,49 @@ const MUNITO_ENTRY = {
 }
 
 describe("parseAuthExport", () => {
+  test("defaults to the console (opencode) integration", () => {
+    expect(
+      parseAuthExport([
+        {
+          id: "cred_k",
+          integrationID: "opencode",
+          label: "atvari",
+          active: true,
+          value: { type: "key", key: "sk_x" },
+        },
+        {
+          id: "cred_g",
+          integrationID: "opencode-go",
+          label: "OpenCode Go",
+          active: true,
+          value: { type: "key", key: "go_x" },
+        },
+      ]),
+    ).toBe("sk_x")
+  })
+
+  test("an explicit integration selects its own entry", () => {
+    const export_ = [
+      {
+        id: "cred_k",
+        integrationID: "opencode",
+        label: "atvari",
+        active: true,
+        value: { type: "key", key: "sk_x" },
+      },
+      {
+        id: "cred_g",
+        integrationID: "opencode-go",
+        label: "OpenCode Go",
+        active: true,
+        value: { type: "key", key: "go_x" },
+      },
+    ]
+    expect(parseAuthExport(export_, "opencode-go")).toBe("go_x")
+    expect(parseAuthExport(export_, "opencode")).toBe("sk_x")
+    expect(parseAuthExport(export_, "munitoai")).toBeUndefined()
+  })
+
   test("the active Console OAuth session is passed as its access token", () => {
     expect(
       parseAuthExport([
@@ -109,5 +152,20 @@ describe("jevAuthError", () => {
     expect(jevAuthError(502, "Upstream request failed")).toBe(
       "jev: upstream 502 - Upstream request failed",
     )
+  })
+})
+
+describe("normaliseProvider", () => {
+  test("known providers pass through", () => {
+    expect(normaliseProvider("opencode")).toBe("opencode")
+    expect(normaliseProvider("opencode-go")).toBe("opencode-go")
+  })
+
+  test("unknown, non-string and unset values fall back to undefined", () => {
+    expect(normaliseProvider(undefined)).toBeUndefined()
+    expect(normaliseProvider("go")).toBeUndefined()
+    expect(normaliseProvider("opencode-go/")).toBeUndefined()
+    expect(normaliseProvider(42 as any)).toBeUndefined()
+    expect(normaliseProvider({ provider: "opencode-go" } as any)).toBeUndefined()
   })
 })
