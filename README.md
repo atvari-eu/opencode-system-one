@@ -39,10 +39,14 @@ context compaction can be decided by System One instead of a lossy summary.
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
   session transcript. Both answer without loading a skill.
-- **routing** - prompts that explicitly ask for a judgment get a short
-  deterministic append telling the agent to make the matching
+- **routing** (opt-in) - prompts that explicitly name a decision tool get a
+  short deterministic append telling the agent to make that
   `jev_decide` / `jev_judge_many` call its **first action** with verbatim
-  inputs, instead of thinking the judgment through itself first. See
+  inputs. It is off by default: the tool descriptions carry the same
+  first-action imperative on every request, and the note is the one place
+  where the plugin touches the user's prompt - enable
+  (`"routing": { "hints": true }`) only if you observe the model deliberating
+  before calling. See
   [Fast routing of judgment prompts](#fast-routing-of-judgment-prompts).
 - **effort** (opt-in) - before each turn, jev picks the reasoning effort
   (thinking level) that prompt deserves - from the levels the selected model
@@ -141,8 +145,9 @@ home.file.".config/opencode/jev-plugin/index.ts".source =
 
 ### Options
 
-Everything is on by default except `effort`, `approvals`, and `compaction`
-(all opt-in); turn parts off with the object form:
+Everything is on by default except the prompt-touching and behavior-shifting
+surfaces: `routing`, `effort`, `approvals`, and `compaction` (all opt-in);
+turn parts off with the object form:
 
 ```jsonc
 {
@@ -155,7 +160,7 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
-        "routing": { "hints": true }, // tool-first hints for judgment prompts
+        "routing": { "hints": true }, // opt-in: append the tool-first note on prompts naming a jev tool
         "effort": { "auto": true }, // opt-in per-prompt thinking level; see "Auto reasoning effort"
         "approvals": { "auto": true }, // opt-in; see "jev-assisted approvals"
         "compaction": {      // opt-in; see "System One compaction"
@@ -172,28 +177,29 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
 
 When the user's prompt explicitly asks for a judgment by naming one of the
 plugin's decision tools (`jev_decide`, `jev_judge_many`, "jev judge …"),
-OpenCode still runs the primary model first, and that model tends to
-deliberate the question itself before reaching for the tool. The plugin
-closes most of that gap mechanically:
+OpenCode still runs the primary model first, and that model may deliberate
+the question itself before reaching for the tool. The first-action
+imperative lives in the tool descriptions, which run on every request:
 
-- The `jev_decide` / `jev_judge_many` tool descriptions state that an explicit
-  judgment request makes the tool call the **first action**, with the user's
-  items passed verbatim - no pre-analysis, no rewriting.
-- The `prompt` hook appends a short routing hint whenever a deterministic
-  regex (`ROUTING_PATTERN`) matches the prompt: *"make that jev call your
-  FIRST action … if no jev tool fits, ignore this note."* The gate is
-  precision-first: it fires only when a prompt addresses one of the decision
-  tools by name (`jev_decide`, `jev_judge_many`, or "jev judge …"). Echoed
-  hint text is stripped before matching - quoting the note in a complaint or
-  pasting plugin logs cannot re-trigger it.
-- What deliberately does not fire: judgment vocabulary in ordinary prose -
-  "judge these", "verdict", skill names like `system-one`. The earlier broad
-  gate matched such mentions into visible false positives on the composer;
-  these phrasings get their first-action guidance from the tool
-  descriptions instead, and the hint's own fallback line ("if no jev tool
-  fits, ignore this note") keeps any rare mismatch harmless.
+- The `jev_decide` / `jev_judge_many` descriptions state that an explicit
+  judgment request makes the tool call the **first action**, with the
+  user's items passed verbatim - no pre-analysis, no rewriting.
 
-Turn off with `"routing": { "hints": false }`.
+On top of that, an opt-in `prompt` hook appends a short routing note
+(`"routing": { "hints": true }`): *"make that jev call your FIRST action …
+if no jev tool fits, ignore this note."* The note is the only place where
+the plugin edits the user's prompt text, so it is off by default - the
+descriptions carry the same instruction on every request, and any
+deterministic gate can only approximate intent (history lesson: a broad
+vocabulary gate matched ordinary prose and the plugin's own skill names;
+echoed notes re-triggered themselves). Keep the note for the rare case you
+actually observe the model deliberating despite the descriptions; its gate
+is precision-first (fires only on tool-name mentions) and strips echoed
+hint text before matching.
+
+The shape is deliberately asymmetric: **invisible guidance (descriptions)
+is always on; visible prompt edits are opt-in** - the same rule that keeps
+the routing note, effort switching, and approvals out of the default path.
 
 Not possible plugin-side: skipping the primary model turn entirely - OpenCode
 exposes result-skips only for the compaction, title, and generate flows, not

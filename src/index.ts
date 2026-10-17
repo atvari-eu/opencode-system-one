@@ -299,7 +299,9 @@ const DONE_QUESTION: Question = {
 // earlier vocabulary gate (judge / verdict / noul / system-one) matched
 // ordinary prose and skill names ("opencode-system-one") read as requests -
 // visible false positives on the composer. The tool descriptions already
-// carry the first-action imperative for every other phrasing.
+// carry the first-action imperative for every other phrasing. Opt-in
+// (`routing.hints`, default off): the note is the only surface where the
+// plugin edits the user's prompt, so it stays off unless enabled.
 const ROUTING_PATTERN = /\bjev[ _-]?(?:decide|judge(?:[ _-]?many)?)\b/i
 
 const ROUTING_HINT =
@@ -407,7 +409,12 @@ export default Plugin.define({
     const toolsEnabled = o.tools !== false
     const commandsEnabled = o.commands !== false
     const cacheEnabled = o.cache !== false
-    const routingHint = o.routing?.hints !== false
+    // Opt-in: the jev tools' descriptions already carry the first-action
+    // imperative on every request; the note is a recency-positioned
+    // reinforcement for the highest-intent prompts only (names a decision
+    // tool). Off by default so the description evidence stands on its own
+    // - re-enable if the model is observed deliberating before calling.
+    const routingHint = o.routing?.hints === true
     const effortAuto = o.effort?.auto === true
     const effortMinConfidence =
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
