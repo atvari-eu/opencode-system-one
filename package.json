@@ -4,7 +4,8 @@
   "description": "OpenCode plugin enforcing the TypeSafe System One (Jev) decision layer",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.ts"
   },
   "scripts": {
     "test": "bun test"

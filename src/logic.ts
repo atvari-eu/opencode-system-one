@@ -951,6 +951,50 @@ export function fmtFindReport(input: {
 }
 
 // ---------------------------------------------------------------------------
+// Jev invocations: user-relevant failure classification
+// ---------------------------------------------------------------------------
+
+/** Synthetic notice marker the TUI plugin converts into an error toast. */
+export const JEVS_ERROR_MARK = "[jev-error] "
+
+export interface JevUserError {
+  /** The part of the message that matters to the user, without internal detail. */
+  title: string
+}
+
+/**
+ * True for the failure classes a user can act on (Configure Screen One): missing
+ * credential (no login), 401 key/session rejection, 402 funds, 403 endpoint gate
+ * (free tier only inside OpenCode), 422 malformed request from the endpoint.
+ * Transport noise, plain 5xx and tool-level failures stay console-only.
+ */
+export function jevUserError(message: unknown): JevUserError | undefined {
+  const text = typeof message === "string" ? message : String(message ?? "")
+  if (/only be used from within OpenCode/i.test(text)) {
+    return { title: "jev: free tier only works inside the OpenCode app" }
+  }
+  if (/insufficient/i.test(text) || /jev: 402\b/i.test(text)) {
+    return { title: "jev: System One account has no funds (402) - top up in the OpenCode Console" }
+  }
+  if (/no credential/i.test(text)) {
+    return { title: "jev: no credential - run `opencode auth login` to sign in to the Console" }
+  }
+  if (/jev: 401\b/i.test(text)) {
+    return { title: "jev: credential rejected (401) - expired session? run `opencode auth login` again" }
+  }
+  if (/jev: 403\b|endpoint refused/i.test(text)) {
+    return { title: "jev: endpoint refused the request (403) - wrong deployment or account gate" }
+  }
+  if (/jev: 422\b/i.test(text)) {
+    return { title: "jev: endpoint rejected the request (422)" }
+  }
+  if (/free tier/i.test(text)) {
+    return { title: "jev: free tier unavailable - sign in to the OpenCode Console for the free tier" }
+  }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
 // Jev auth plumbing: parsing `opencode auth export` and status-aware error
 // text. Pure functions; src/index.ts owns resolution order, caching and HTTP.
 // ---------------------------------------------------------------------------

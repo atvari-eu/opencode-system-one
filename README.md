@@ -76,6 +76,18 @@ compaction can be decided by System One instead of a lossy summary
 Nothing here depends on a specific model provider; the plugin only adds tools
 and guards around your existing setup.
 
+### Error popups
+
+User-actionable jev failures - no credential, 401 key rejection, 402
+insufficient funds, 403 endpoint gate, free-tier restriction ("only from
+within OpenCode") - are surfaced twice: once as a `[jev-error] …` row in the
+timeline, and once as a top-corner error popup, matching how OpenCode shows
+its own errors. The bundled TUI half of the plugin (package export
+`./tui`) renders those rows as toasts; at most one row per failure class per
+minute, a stapled 4xx-only list by construction, so repeated tool failures
+never toast-spam. Local tool noise (5xx, transport errors) stays
+console-only.
+
 ## Install
 
 Entries go into `plugins` in `opencode.json(c)` - global (`~/.config/opencode/opencode.jsonc`)

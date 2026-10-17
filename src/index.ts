@@ -50,8 +50,10 @@ import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS, messageChars, collectCa
 import { runFind } from "./find"
 import {
   EFFORT_ORDER,
+  JEVS_ERROR_MARK,
   NOTIFY_BELOW_DEFAULT,
   jevAuthError,
+  jevUserError,
   candidateKey,
   clampThreshold,
   doneTranscript,
@@ -732,6 +734,30 @@ export default Plugin.define({
       .map(String)
     const location = (ctx as any).location?.directory ?? ""
 
+    // User-relevant jev failures post one "[jev-error] …" synthetic row per
+    // occurrence (deduped per message within a one-minute cooldown so a run of
+    // failing screens still toasts once); the bundled TUI plugin renders those
+    // rows as top-corner error toasts, exactly like host-made error popups.
+    const lastSurfaced = new Map<string, number>()
+    const SURFACE_COOLDOWN_MS = 60_000
+    const surfaceJev = async (message: unknown, sessionID?: string): Promise<void> => {
+      const error = jevUserError(message)
+      if (!error) return
+      const key = error.title
+      const previous = lastSurfaced.get(key)
+      if (previous !== undefined && Date.now() - previous < SURFACE_COOLDOWN_MS) return
+      lastSurfaced.set(key, Date.now())
+      try {
+        await (ctx as any).session?.synthetic?.({
+          ...(sessionID ? { sessionID } : {}),
+          text: `${JEVS_ERROR_MARK}${error.title}`,
+        })
+        console.log(`[jev] surfaced: ${error.title}`)
+      } catch (surfaceError: any) {
+        console.error(`[jev] surface: synthetic post failed (${String(surfaceError?.message ?? surfaceError)})`)
+      }
+    }
+
     async function cachedJudge(
       questions: Question[],
       state: unknown,
@@ -1054,6 +1080,7 @@ export default Plugin.define({
             }
           }
         } catch (err: any) {
+          await surfaceJev(err?.message, event?.sessionID)
           console.error(`[jev] route: skipped for this prompt (${String(err?.message ?? err)})`)
         }
       })
@@ -1145,6 +1172,7 @@ export default Plugin.define({
                   : `[jev] likely risky (${fmt(p)}) - review`,
             )
           } catch (err: any) {
+            await surfaceJev(err?.message, event?.sessionID)
             console.error(`[jev] approval: judgment skipped (${String(err?.message ?? err)})`)
           }
         })
@@ -1215,6 +1243,7 @@ export default Plugin.define({
           }
         } catch (err: any) {
           const message = String(err?.message ?? err)
+          await surfaceJev(message, event?.sessionID)
           const fallback = readResultText(event.result)
           setPrimaryText(
             event.result,
@@ -1538,6 +1567,7 @@ export default Plugin.define({
             console.log(`[jev] done-check: ${sessionID} p=${fmt(done)} - incomplete notice posted`)
           }
         } catch (err: any) {
+          await surfaceJev(err?.message, sessionID)
           console.error(`[jev] done-check: skipped (${String(err?.message ?? err)})`)
         }
       }
@@ -1712,6 +1742,7 @@ export default Plugin.define({
             console.log("[jev] compaction: nothing stale enough to act on - built-in compaction continues")
           }
         } catch (err: any) {
+          await surfaceJev(err?.message, event?.sessionID)
           if (idleOrigin) {
             // Idle-triggered request: no jev judgment means no compaction at
             // all. Throwing fails the compaction (marked as failed in the
@@ -1776,6 +1807,7 @@ export default Plugin.define({
               await (ctx as any).session.compact?.({ sessionID })
               IDLE_POSTED.set(sessionID, Date.now())
             } catch (err: any) {
+              await surfaceJev(err?.message, sessionID)
               console.error(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
             }
           }
