@@ -28,8 +28,11 @@ context compaction can be decided by System One instead of a lossy summary.
   multi-state batch endpoint is ever simulated. Both are registered as
   first-class tools (not Code Mode nested calls), so every judgment shows as
   its own tool row (`Running jev_decide…`) in the timeline, and their
-  descriptions carry the judgment-moment guidance and call discipline - no
-  companion skill is needed.
+  descriptions carry the judgment-moment guidance and call discipline - when
+  to reach for jev proactively (screening, claim verification, ranking,
+  bounded choices, scoring, and self-contained classification questions where
+  nothing needs to be read first), when to skip, and the confidence
+  thresholds - no companion skill is needed.
 - **cache** - replies for identical (endpoint, model, state, questions) are
   served from durable plugin storage; only answers are persisted, never the
   state text.
