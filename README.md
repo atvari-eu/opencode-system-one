@@ -432,6 +432,11 @@ are excluded from both the judged state and the hook-supplied summary: the
 host regenerates them every turn, so replaying them would only duplicate
 what arrives fresh after compaction.
 
+Being handed a block that is still too much? Run `/compact` again within
+one minute of a previous compaction: the second pass yields to OpenCode's
+built-in summarizer, which produces the default lossy summary instead. The
+jev summary ends with a note reminding you of this.
+
 Fail-closed: a missing key, a jev failure, a malformed answer, or a history
 that cannot be fitted leaves compaction entirely to OpenCode's built-in
 summarizer, on the unmodified transcript. Nothing is half-applied.
@@ -447,6 +452,7 @@ Options (all defaults mirror the reference):
 | --- | --- | --- |
 | `enabled` | `false` | Off unless explicitly enabled. |
 | `mode` | `"replace"` | `"replace"` supplies the pruned transcript as the summary; `"clean"` only rewrites messages and keeps OpenCode's summarizer. |
+| `summary` | `"transcript"` | Shape of the hook-supplied summary. `"transcript"` replays user/assistant text verbatim (plus per-call Jev verdicts); `"report"` collapses it to a per-call audit report - dropped, truncated, kept-with-head calls only, no text replay - which keeps the context footprint minimal and reads like the compaction's decision log. |
 | `keepThreshold` | `0.5` | Verdict probability at which call/result survive. |
 | `preserveRecentMessages` | `6` | Newest messages pinned untouched. |
 | `maxStateTokens` | `25000` | Judgment state budget before staged fitting gives up. |

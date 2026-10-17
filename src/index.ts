@@ -1605,6 +1605,7 @@ export default Plugin.define({
           ? { maxSummaryTokens: c.maxSummaryTokens }
           : {}),
         mode: c.mode === "clean" ? ("clean" as const) : ("replace" as const),
+        summary: c.summary === "report" ? ("report" as const) : ("transcript" as const),
       }
 
       const windows = new Map<string, number>()
@@ -1625,10 +1626,25 @@ export default Plugin.define({
         return 200_000
       }
 
+      // Running /compact twice in quick succession falls back to OpenCode's
+      // built-in summarizer: the second pass within this window skips the jev
+      // judgment (returning no result means built-in compaction continues on
+      // the unmodified transcript). Timestamp is stored whenever a jev pass
+      // actually ran, so the very first compaction is never affected.
+      let lastCompactionAt: { sessionID: string; at: number } | undefined
+      const YIELD_WINDOW_MS = 60_000
+
       await (ctx as any).session.hook("compaction", async (event: any) => {
         try {
           if (!Array.isArray(event?.messages) || event.messages.length === 0) return
           if (event.result) return // another hook already supplied a summary
+          const now = Date.now()
+          if (lastCompactionAt?.sessionID === String(event.sessionID) && now - lastCompactionAt.at < YIELD_WINDOW_MS) {
+            console.log(
+              `[jev] compaction: a jev pass ran ${Math.round((now - lastCompactionAt.at) / 1000)}s ago in this session - yielding to the built-in summarizer`,
+            )
+            return
+          }
           const window = await windowOf(event.model)
           const plan = await runCompaction(
             event.messages,
@@ -1638,6 +1654,7 @@ export default Plugin.define({
             compactionOptions,
             () => window,
           )
+          lastCompactionAt = { sessionID: String(event.sessionID), at: now }
           if (plan.replaceSummary) {
             event.result = { summary: plan.replaceSummary }
             console.log(

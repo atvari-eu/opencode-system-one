@@ -2,7 +2,7 @@
 // rendered summary or the judged state; user/assistant replay is untouched.
 
 import { describe, expect, test } from "bun:test"
-import { renderSummary, collectCalls } from "../src/compaction"
+import { renderSummary, collectCalls, renderCallReport, runCompaction, DEFAULTS } from "../src/compaction"
 
 const message = (role: "user" | "assistant" | "system", text: string): any => ({
   role,
@@ -61,8 +61,8 @@ describe("collectCalls", () => {
         role: "system",
         content: [
           { type: "text", text: SYSTEM_CATALOG },
-          { type: "tool-call", toolCallId: "call_1", toolName: "execute", input: {} },
-          { type: "tool-result", toolCallId: "call_1", result: { type: "text", value: "catalog" } },
+          { type: "tool-call", id: "call_1", name: "execute", input: {} },
+          { type: "tool-result", id: "call_1", result: { type: "text", value: "catalog" } },
         ],
       },
       message("assistant", "done"),
@@ -72,3 +72,90 @@ describe("collectCalls", () => {
     expect(calls).toHaveLength(0)
   })
 })
+
+describe("renderCallReport", () => {
+  const mkCall = (key: string, name: string, input: unknown, result: string, pinned = false): any => ({
+    key,
+    name,
+    input,
+    resultText: result,
+    resultChars: result.length,
+    isError: false,
+    callMsg: 10,
+    callIndex: 0,
+    resultMsg: 10,
+    resultIndex: 1,
+    pinned,
+  })
+  const decision = (call: any, action: "keep" | "drop_result" | "drop_call"): any => ({
+    call,
+    keepCall: 0.9,
+    keepResult: 0.9,
+    action,
+    reason: action === "keep" ? "kept" : action === "drop_result" ? "result_dropped" : "call_dropped",
+  })
+
+  test("report lists judged calls and excludes pinned ones", () => {
+    const dropped = mkCall("a", "bash", { command: "rm -rf /tmp/x" }, "removed everything".repeat(40))
+    const kept = mkCall("b", "read", { path: "src/main.ts" }, "const x = 1;".repeat(200))
+    const pinned = mkCall("c", "grep", { pattern: "todo" }, "results", true)
+    const report = renderCallReport(
+      [pinned, dropped, kept],
+      new Map([
+        [dropped.key, decision(dropped, "drop_call")],
+        [kept.key, decision(kept, "keep")],
+      ]),
+      300,
+    )
+    expect(report).toContain("Dropped calls:")
+    expect(report).toContain("bash")
+    expect(report).toContain("dropped call+result")
+    expect(report).toContain("head kept")
+    expect(report).not.toContain("grep")
+    expect(report).not.toContain("todo")
+    // bounded: kept result head is clamped
+    expect(report.length).toBeLessThan(2400)
+    // no transcript replay
+    expect(report).not.toContain("[user]")
+    expect(report).not.toContain("[assistant]")
+  })
+
+  test("report mode ignores calls without decisions", () => {
+    const undecided = mkCall("d", "execute", { path: "x" }, "result")
+    const report = renderCallReport([undecided], new Map(), 300)
+    expect(report).toContain("0 judged tool calls dropped")
+  })
+
+  test("runCompaction report mode appends the built-in summarizer hint", async () => {
+    const dropped = mkCall("r1", "bash", { command: "ls -la" }, "files listed".repeat(60))
+    const messages: any[] = [
+      message("user", "list the files"),
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", id: dropped.key, name: "bash", input: dropped.input, result: undefined },
+          { type: "tool-result", id: dropped.key, result: { type: "text", value: dropped.resultText } },
+        ],
+      },
+    ]
+    const turnJudge = async (
+      questions: Array<{ id: string }>,
+    ): Promise<{ answers?: Record<string, any>; usage?: Record<string, unknown> }> => ({
+      answers: Object.fromEntries(
+        questions.map((question) => [question.id, { noul: 0.1 }]),
+      ),
+      usage: { input_tokens: 10, output_tokens: 5 },
+    })
+    const plan = await runCompaction(
+      messages,
+      turnJudge as never,
+      [],
+      { ...DEFAULTS, preserveRecentMessages: 0, summary: "report" },
+      () => 200_000,
+    )
+    expect(plan.replaceSummary).toContain("Older history was removed")
+    expect(plan.replaceSummary).toContain("Run /compact again within one minute")
+    expect((plan.summaryTokens ?? 0) < 500).toBe(true)
+  })
+})
+
