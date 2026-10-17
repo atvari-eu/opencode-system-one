@@ -23,6 +23,7 @@
 //   JEV_ENDPOINT (default: OpenCode Console System One endpoint)
 //   TYPESAFE_API_KEY | OPENCODE_API_KEY | opencode auth store (.opencode.key)
 //   JEV_MODEL (default: jev-1.13-free)
+//   - `model` plugin option wins over JEV_MODEL; both win over the default
 //
 // Fail-closed absent configuration: a missing key or failed call never
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
@@ -71,8 +72,11 @@ function resolveEndpoint(): string {
   return process.env.JEV_ENDPOINT || CONSOLE_ENDPOINT
 }
 
+// Options-set model wins over the env; both precede the baked default.
+let OPTIONS_MODEL: string | undefined = undefined
+
 function resolveModel(): string {
-  return process.env.JEV_MODEL || "jev-1.13-free"
+  return OPTIONS_MODEL || process.env.JEV_MODEL || "jev-1.13-free"
 }
 
 function toQuestionMap(questions: Question[]): Record<string, any> {
@@ -381,6 +385,11 @@ export default Plugin.define({
   id: "atvari.jev",
   async setup(ctx) {
     const o: any = (ctx as any).options ?? {}
+    const modelOption = typeof o.model === "string" && o.model.trim() !== "" ? o.model.trim() : undefined
+    if (modelOption) {
+      OPTIONS_MODEL = modelOption
+      console.log(`[jev] model: ${modelOption} (from plugin options)`)
+    }
     const screenEnabled = o.screen?.enabled !== false
     const screenMode = o.screen?.mode === "redact" ? "redact" : "annotate"
     const scrubEnabled = o.scrub?.enabled !== false

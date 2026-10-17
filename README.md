@@ -140,6 +140,7 @@ Everything is on by default except `effort`, `approvals`, and `compaction`
       "package": "github:atvari-eu/opencode-system-one",
       "options": {
         "screen": { "enabled": true, "mode": "annotate" }, // or "redact"
+        "model": "jev-1.13", // optional; overrides JEV_MODEL and the default
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
@@ -325,7 +326,8 @@ is never logged or persisted):
 - `TYPESAFE_API_KEY` → `OPENCODE_API_KEY` → opencode auth store
   (`~/.local/share/opencode/auth.json`, field `.opencode.key`)
 - `JEV_ENDPOINT` (default: OpenCode Console System One endpoint)
-- `JEV_MODEL` (default: `jev-1.13-free`)
+- `JEV_MODEL` (default: `jev-1.13-free`; the plugin's `model` option wins
+  over this env, which wins over the default)
 
 A missing key or failed call never produces a "successful" judgment: screen
 marks `unavailable`, tools throw, 401/403 reports the key↔endpoint pairing
