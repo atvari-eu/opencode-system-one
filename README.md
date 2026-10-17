@@ -285,41 +285,26 @@ Options (all defaults mirror the reference):
 | `minReduction` | `0.25` | Required relative shrink before a hook-supplied summary replaces the built-in one. |
 | `maxSummaryTokens` | half the model window | Cap on the hook-supplied summary (estimated tokens). |
 
-## Do you still need the skills?
+## Skills
 
-Short answer on OpenCode running this plugin: **no**. The plugin carries the
-judgment-moment guidance natively - the `jev_decide` / `jev_judge_many` tool
-descriptions state when to reach for a judgment proactively (screen pasted
-content before reading it in, verify cited claims, rank by meaning, score
-against described levels), when to skip (a regex or exact comparison decides;
-no criterion in view; state would carry sensitive content), and the call
-discipline is built into the tools (verbatim inputs, batch questions,
-confidence thresholds, malformed answers fail). The plugin also enforces what
-advice cannot guarantee: hooks like screening, scrubbing, and the fail-safe
-routing gate.
+None needed. This plugin does not depend on and does not pair with any skill -
+the tool descriptions, hooks, routing, and commands above carry the whole job.
+On OpenCode with this plugin, do not load the `system-one` / `auto-system-one`
+skills; nothing in them is consulted, and the plugin only enforces what
+functions can be reached at all.
 
-The two skills remain the portable pair for everywhere else:
-
-| Skill | Adds |
-| --- | --- |
-| [`auto-system-one`](https://github.com/atvari-eu/skills/blob/main/skills/auto-system-one/SKILL.md) | *When* to call for a judgment, call discipline, and the hard privacy line - for other agents and plugin-less OpenCode. |
-| [`system-one`](https://github.com/atvari-eu/skills/blob/main/skills/system-one/SKILL.md) | HTTP shapes, `jev` CLI, auth pairing, thresholds, models - the reference for shell scripts, non-Console endpoints, and threshold tuning, even next to this plugin. |
-
-Install (other agents, or OpenCode *without* this plugin):
+For other agents (no plugin): the standalone `jev` CLI is the path, and the
+portable skills in [`atvari-eu/skills`](https://github.com/atvari-eu/skills)
+can drive it from any agent. Install there, not on OpenCode with this plugin:
 
 ```console
 $ skills add atvari-eu/skills@system-one -g
 $ skills add atvari-eu/skills@auto-system-one -g
 ```
 
-If the plugin's tool descriptions ever prove too thin - say the agent still
-pre-analyzes judgment requests or skips screening pastes - the next step would
-be a small OpenCode-specific skill tuned to these tools, not a bundle of the
-generic pair.
-
 ## Environment
 
-Identical to the `jev` CLI and skills (resolved fresh on every call; the key
+Identical to the `jev` CLI (resolved fresh on every call; the key
 is never logged or persisted):
 
 - `TYPESAFE_API_KEY` → `OPENCODE_API_KEY` → opencode auth store
