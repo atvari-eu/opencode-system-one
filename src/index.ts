@@ -432,6 +432,34 @@ export default Plugin.define({
         return []
       }
 
+      // Normalized switch refs for the manual-pick comparison; "default" is
+      // the neutral state (no variant pinned).
+      const refKey = (ref: any): string =>
+        JSON.stringify([
+          String(ref?.providerID ?? ""),
+          String(ref?.id ?? ""),
+          String(ref?.variant ?? "default").toLowerCase(),
+        ])
+
+      // Newest model-switched message in the transcript ({ model, previous }),
+      // or undefined. The TUI's effort picker commits through
+      // session.switchModel before the prompt is submitted, so a manual pick
+      // is the newest message by the time this hook runs.
+      const latestSwitch = async (sessionID: string): Promise<{ to: any; from: any } | undefined> => {
+        try {
+          const rows: any[] = await (ctx as any).session.context({ sessionID })
+          for (let i = rows.length - 1; i >= 0; i--) {
+            const message: any = rows[i]?.info ?? rows[i]
+            if (message?.type === "model-switched") return { to: message.model, from: message.previous }
+          }
+        } catch {}
+        return undefined
+      }
+
+      // Stood-down picks logged so far, to avoid repeating the notice on
+      // every prompt while a manual pick is in effect.
+      const foreignSwitch = new Map<string, string>()
+
       await (ctx as any).session.hook("prompt", async (event: any) => {
         try {
           const text = typeof event?.prompt?.text === "string" ? event.prompt.text : ""
@@ -441,6 +469,39 @@ export default Plugin.define({
           if (!model?.providerID || !model?.id) return
           const levels = await effortLevels(model.providerID, model.id)
           if (levels.length === 0) return
+
+          // Manual picks win. Every variant switch - including the ones this
+          // feature makes - lands in the transcript as a model-switched
+          // message. If the newest switch is not the one recorded here after
+          // an own switch (plugin storage), it came from the user or
+          // elsewhere: stand down for the session - no jev call, no
+          // switching - until the variant returns to Default, which
+          // re-enables auto. A missing or unreadable record fails open into
+          // the plain auto behavior.
+          const last = await latestSwitch(event.sessionID)
+          if (last) {
+            let mine = false
+            try {
+              const pin: any = await (ctx as any).storage.get(`effort-pin/${String(event.sessionID)}`)
+              mine = Boolean(
+                pin && refKey(pin.to) === refKey(last.to) && refKey(pin.from) === refKey(last.from),
+              )
+            } catch {}
+            if (!mine) {
+              if ((last.to?.variant ?? "default") === "default") {
+                if (foreignSwitch.delete(String(event.sessionID)))
+                  console.log("[jev] effort: back to default - auto re-enabled")
+              } else {
+                const picked = String(last.to?.variant ?? "?")
+                if (foreignSwitch.get(String(event.sessionID)) !== picked) {
+                  foreignSwitch.set(String(event.sessionID), picked)
+                  console.log(`[jev] effort: manual pick ${picked} - auto stood down until Default`)
+                }
+                return
+              }
+            }
+          }
+
           // The routing hook (registered before this one) may have appended
           // its hint; that judgment-flavored text is not the user's message.
           const judged = text.endsWith(ROUTING_HINT) ? text.slice(0, -ROUTING_HINT.length) : text
@@ -475,6 +536,18 @@ export default Plugin.define({
             sessionID: event.sessionID,
             model: { providerID: model.providerID, id: model.id, variant: choice },
           })
+          // Record the switch as ours, so the next prompt can tell it apart
+          // from a manual pick in the transcript.
+          try {
+            await (ctx as any).storage.set(`effort-pin/${String(event.sessionID)}`, {
+              to: { providerID: model.providerID, id: model.id, variant: choice },
+              from: {
+                providerID: model.providerID,
+                id: model.id,
+                variant: typeof model.variant === "string" ? model.variant : undefined,
+              },
+            })
+          } catch {}
           console.log(`[jev] effort: ${current} → ${choice} (jev pick, confidence ${fmt(answer.confidence)})`)
         } catch (err: any) {
           console.error(`[jev] effort: skipped for this prompt (${String(err?.message ?? err)})`)

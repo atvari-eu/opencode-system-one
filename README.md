@@ -205,6 +205,18 @@ turn's first request is resolved:
 
 Each real level change appends OpenCode's native `model-switched` message (a
 small status line in the timeline), so changes are visible and auditable.
+
+**Manual picks win.** The picker commits through the same `session.switchModel`
+the feature uses, so a manual effort pick shows up as the newest
+`model-switched` message before the next prompt is judged. The plugin records
+its own switches in durable plugin storage; when the newest switch is not one
+of its own (you picked a level, or changed the model another way), auto stands
+down for that session - no jev call, no switching - until the variant is
+`Default` again, which re-enables it. Repeated prompts log the stand-down
+notice once. A missing attribution record (cleared storage, fresh install)
+errs toward the user and keeps auto off until the next `Default` pick. The
+gate is a plain comparison, no model call.
+
 Like every jev call, the judgment is cached per prompt - repeating the same
 prompt costs nothing. The price is one extra jev round-trip per new prompt
 (inside prompt admission, capped by the 8 s timeout); the payoff is that
