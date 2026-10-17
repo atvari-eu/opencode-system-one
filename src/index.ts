@@ -699,22 +699,29 @@ export default Plugin.define({
     const findEnabled = o.find?.enabled === true
     const approvalsRaw: any = o.approvals
     const approvalsObj: any = typeof approvalsRaw === "object" && approvalsRaw !== null ? approvalsRaw : {}
-    const approvalsMode: "annotate" | "auto" | "off" = (() => {
+    const approvalsMode: "annotate" | "auto" | "deny" | "off" = (() => {
       if (approvalsRaw === undefined || approvalsRaw === null || approvalsRaw === false) return "off"
       if (typeof approvalsRaw !== "object") {
         console.log(
-          '[jev] approvals: unsupported value - use { "mode": "annotate" | "auto" }, or omit for off',
+          '[jev] approvals: unsupported value - use { "mode": "annotate" | "auto" | "deny" }, or omit for off',
         )
         return "off"
       }
-      if (approvalsRaw.mode === "annotate" || approvalsRaw.mode === "auto") return approvalsRaw.mode
+      if (
+        approvalsRaw.mode === "annotate" ||
+        approvalsRaw.mode === "auto" ||
+        approvalsRaw.mode === "deny"
+      ) {
+        return approvalsRaw.mode
+      }
       console.log(
-        `[jev] approvals: mode must be "annotate" or "auto" (got ${JSON.stringify(approvalsRaw.mode ?? null)}) - falling back to annotate`,
+        `[jev] approvals: mode must be "annotate", "auto" or "deny" (got ${JSON.stringify(approvalsRaw.mode ?? null)}) - falling back to annotate`,
       )
       return "annotate"
     })()
     const approvalsEnabled = approvalsMode !== "off"
     const approvalsAuto = approvalsMode === "auto"
+    const approvalsDeny = approvalsMode === "deny"
     const approvalsMinConfidence =
       typeof approvalsObj.minConfidence === "number" && Number.isFinite(approvalsObj.minConfidence)
         ? Math.min(0.99, Math.max(0.5, approvalsObj.minConfidence))
@@ -1117,6 +1124,15 @@ export default Plugin.define({
               console.log(
                 `[jev] approval: auto-approved ${action} ${resources.join(" && ").slice(0, 120)} (${fmt(p)})`,
               )
+              return
+            }
+            // deny mode: the model's clearly-risky verdict refuses the request
+            // outright (effect "deny" surfaces the reason to the model); gates
+            // and uncertain bands stay human prompts - never auto-approved.
+            if (approvalsDeny && approvalsActions.includes(action) && p < 0.5) {
+              event.effect = "deny"
+              console.log(`[jev] approval: denied ${action} ${resources.join(" && ").slice(0, 120)} (${fmt(p)})`)
+              annotate(event, `[jev] likely risky (${fmt(p)}) - denied`)
               return
             }
             annotate(
@@ -1644,7 +1660,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
   },
 })

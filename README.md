@@ -346,8 +346,8 @@ Options:
 ## jev-assisted approvals
 
 Permission requests (tool executions that would otherwise interrupt you) can
-be vetted by jev before they reach you. The feature is opt-in and has two
-stacked modes:
+be vetted by jev before they reach you. The feature is opt-in and has three
+modes:
 
 - **Annotate** (enabled with `"approvals": { "mode": "annotate" }`): every
   `ask` verdict gets a one-line jev opinion added to the prompt you see -
@@ -358,6 +358,15 @@ stacked modes:
   approved programmatically and logged to the console. Only the allowlisted
   `actions` (default `bash`, `edit`) are candidates; `webfetch`, MCP calls,
   and everything else still prompt you.
+- **Deny** (`"approvals": { "mode": "deny" }`): the mirror image - for the
+  allowlisted `actions` only, a *likely risky* verdict (below 0.5) refuses
+  the request programmatically (`effect: "deny"`, the reason rides back to
+  the model as tool feedback so it can pick a different approach), and
+  everything above that band still prompts you. Never auto-approves; gated
+  and uncertain bands stay human prompts. Use it when you want the agent
+  held back from obviously wrong operations but absolutely no automatic
+  yes - useful while the account is on the Console free tier, where an
+  unattended approve would fire billable work.
 
 Every judgment only happens when a request would already prompt you -
 already-allowed and explicitly denied requests stay free of any jev call.
@@ -376,17 +385,17 @@ uninterpretable answer leaves the request exactly as OpenCode built it
 deny rules and every "always allow" memory you made in the UI always rank
 above the feature.
 
-One framing matters: auto-approval is an **explicit delegation you opt
-into**, bounded by the deterministic gates above; it never auto-denies,
-and every automatic approval is logged.
+One framing matters: automatic decisions are an **explicit delegation you opt
+into**, bounded by the deterministic gates above; `auto` never auto-denies and
+`deny` never auto-approves, and every automatic decision is logged.
 
 Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` also auto-approves requests above `minConfidence`. Omit or `false` keeps the feature off. |
+| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` also auto-approves requests above `minConfidence`; `"deny"` also auto-denies allowlisted requests whose verdict falls below 0.5. Omit or `false` keeps the feature off. |
 | `minConfidence` | `0.85` | `auto` threshold, clamped to 0.5-0.99. |
-| `actions` | `["bash", "edit"]` | Actions eligible for `auto`; annotations apply to every prompt-worthy request regardless. |
+| `actions` | `["bash", "edit"]` | Actions eligible for `auto` and `deny`; annotations apply to every prompt-worthy request regardless. |
 
 ## System One compaction
 
