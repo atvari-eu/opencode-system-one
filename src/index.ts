@@ -34,7 +34,10 @@ import {
   EFFORT_ORDER,
   clampThreshold,
   parseCandidates,
+  parseScreenTools,
   routeTurn,
+  screenApplies,
+  screenRedacts,
 } from "./logic"
 import { type Candidate } from "./logic"
 import { createHash } from "node:crypto"
@@ -400,6 +403,7 @@ export default Plugin.define({
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
         ? o.effort.minConfidence
         : 0.6
+    const screenTools = parseScreenTools(o.screen?.tools)
     // Routing config lives under "route" so that the judgment-model override
     // ("model": "<id>" string) and the model-routing options never share one
     // ambiguous key (a string there is not a routing config and vice versa).
@@ -737,11 +741,17 @@ export default Plugin.define({
       }
     }
 
-    // -- screen: fetched content before it enters context --
+    // -- screen: tool results before they enter context --
+    // webfetch by default; "screen": { "tools": "all" } screens every tool
+    // result (annotated only - fail-closed redaction stays scoped to fetched
+    // web content). The plugin's own judgment tools are skipped: their
+    // outputs are verdicts that are already judged.
 
     if (screenEnabled) {
       await (ctx as any).tool.hook("execute.after", async (event: any) => {
-        if (event?.tool !== "webfetch" || event?.status !== "completed") return
+        if (event?.status !== "completed") return
+        const tool = String(event?.tool ?? "")
+        if (!screenApplies(tool, screenTools)) return
         const url = typeof event.input?.url === "string" ? event.input.url : ""
         const text0 = readResultText(event.result)
         if (!text0) return
@@ -758,7 +768,7 @@ export default Plugin.define({
         const scrubbed = redactText(sample)
         try {
           const cacheKey = `screen/${createHash("sha256")
-            .update(JSON.stringify({ url: url || sample.slice(0, 256), sample: scrubbed.text }))
+            .update(JSON.stringify({ t: tool, url: url || sample.slice(0, 256), sample: scrubbed.text }))
             .digest("hex")}`
           let verdict: any = cacheEnabled
             ? await (ctx as any).storage.get(cacheKey)
@@ -775,11 +785,11 @@ export default Plugin.define({
             (typeof injection === "number" && injection >= 0.7) ||
             (typeof junk === "number" && junk >= 0.85)
 
-          if (screenMode === "redact" && unsafe) {
+          if (screenMode === "redact" && unsafe && screenRedacts(tool)) {
             const note = `[jev-screen withheld this content (fail-closed): ${tag}. Read the page manually or set screen.enabled=false in the jev plugin options to override.]` +
               (scrubbed.hits ? `\n(${scrubbed.hits} secret-like token(s) were redacted before screening.)` : "")
             setPrimaryText(event.result, note)
-            await notice(`[jev-screen] ✗ ${url || "(no url)"}: content withheld (fail-closed) - ${tag}`)
+            await notice(`[jev-screen] ✗ ${url || tool}: content withheld (fail-closed) - ${tag}`)
             return
           }
 
@@ -789,7 +799,7 @@ export default Plugin.define({
             setPrimaryText(event.result, `[${tag}${scrubHint}${flag}] ` + text0)
             if (unsafe) {
               await notice(
-                `[jev-screen] ⚠ ${url || "(no url)"} flagged (${tag}) - result annotated, do not rely on it`,
+                `[jev-screen] ⚠ ${url || tool} flagged (${tag}) - result annotated, do not rely on it`,
               )
             }
           }
@@ -1116,7 +1126,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
