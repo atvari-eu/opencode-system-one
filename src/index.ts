@@ -30,6 +30,13 @@
 
 import { Plugin } from "@opencode/plugin"
 import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS } from "./compaction"
+import {
+  EFFORT_ORDER,
+  clampThreshold,
+  parseCandidates,
+  routeTurn,
+} from "./logic"
+import { type Candidate } from "./logic"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -290,29 +297,21 @@ const DONE_QUESTION: Question = {
 }
 
 // ---------------------------------------------------------------------------
-// Auto effort: jev picks the thinking level (model variant) per prompt
+// Auto routing: jev picks the thinking level and/or the model per prompt
 // ---------------------------------------------------------------------------
 
 // OpenCode models reasoning effort as the model's reasoning variant
 // (Model.Ref#variant). Overlays for it are applied when the LanguageModel is
 // resolved, and the runner reads the variant from the session's model
 // selection - so the prompt hook, which runs before the runner resolves,
-// asks jev and switches the variant via session.switchModel (what the UI's
+// asks jev and applies the pick via session.switchModel (what the UI's
 // effort picker does). Only variants the catalog lists may be used: an
-// unknown variant fails the whole turn at resolve time.
-const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-
-const EFFORT_CRITERIA: Record<string, string> = {
-  none: "No reasoning needed: a trivial lookup, formatting, one-line edit, or a follow-up with an obvious next action",
-  minimal:
-    "Barely any reasoning: an explicit, unambiguous instruction with a directly known answer",
-  low: "Light reasoning: a clear, bounded task with an obvious next action and no open design questions",
-  medium:
-    "Normal multi-step work: several files or steps, some uncertainty, moderate planning - the typical coding request",
-  high: "Hard work: complex debugging, architecture or interface design, broad refactors, or unfamiliar territory needing careful analysis",
-  xhigh: "Very hard: deep multi-system reasoning where getting it wrong is costly",
-  max: "Maximum thinking: the hardest problems with the highest stakes",
-}
+// unknown variant fails the whole turn at resolve time, so every routed
+// candidate is validated against the model domain before it is offered.
+//
+// The decision logic (option building, the question set, the stand-down /
+// revert lattice) lives in logic.ts; this file only performs the
+// OpenCode-specific I/O the outcome declares.
 
 // ---------------------------------------------------------------------------
 // Approvals: jev annotates permission prompts, optionally auto-approves them
@@ -401,6 +400,18 @@ export default Plugin.define({
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
         ? o.effort.minConfidence
         : 0.6
+    // Routing config lives under "route" so that the judgment-model override
+    // ("model": "<id>" string) and the model-routing options never share one
+    // ambiguous key (a string there is not a routing config and vice versa).
+    const routeRaw: any = (o as any).route
+    const modelAuto = routeRaw?.auto === true
+    const modelCandidates: Candidate[] = parseCandidates(routeRaw?.candidates)
+    const modelMinConfidence = clampThreshold(routeRaw?.minConfidence, 0.5, 0.99, 0.6)
+    if (modelAuto && modelCandidates.length === 0) {
+      console.log(
+        '[jev] route: auto enabled without valid candidates - set "route": { "candidates": ["provider/model", ...] }; routing stays off',
+      )
+    }
     const approvalsRaw: any = o.approvals
     const approvalsObj: any = typeof approvalsRaw === "object" && approvalsRaw !== null ? approvalsRaw : {}
     const approvalsMode: "annotate" | "auto" | "off" = (() => {
@@ -476,32 +487,35 @@ export default Plugin.define({
       })
     }
 
-    // -- effort: jev decides the thinking level per prompt (opt-in) --
+    // -- route: jev decides the thinking level and/or model per prompt (opt-in) --
 
-    if (effortAuto) {
-      // Reasoning variants the model's catalog lists, in ascending order.
-      const effortLevels = async (providerID: any, modelID: any): Promise<string[]> => {
+    if (effortAuto || modelAuto) {
+      // Reasoning variants (and availability) per model, memoized per process.
+      // Routed switches that do not resolve would fail the whole turn at
+      // model-resolve time, so candidates are validated here before they are
+      // ever offered to jev. The cache also feeds synchronous price hints
+      // into the option criteria.
+      const infoCache = new Map<string, any>()
+      const modelInfo = async (providerID: any, modelID: any): Promise<any> => {
+        const cacheKey = `${providerID}/${modelID}`
+        if (infoCache.has(cacheKey)) return infoCache.get(cacheKey)
+        let info: any = null
         try {
-          const info: any = await (ctx as any).model?.get?.(providerID, modelID)
-          const listed = (info?.variants ?? []).map((variant: any) =>
-            typeof variant?.id === "string" ? variant.id : String(variant),
-          )
-          return EFFORT_ORDER.filter((level) => listed.includes(level))
+          info = (await (ctx as any).model?.get?.(providerID, modelID)) ?? null
         } catch {}
-        return []
+        infoCache.set(cacheKey, info)
+        return info
+      }
+      const levelsFor = async (providerID: any, modelID: any): Promise<string[]> => {
+        const info = await modelInfo(providerID, modelID)
+        const listed = (info?.variants ?? []).map((variant: any) =>
+          typeof variant?.id === "string" ? variant.id : String(variant),
+        )
+        return EFFORT_ORDER.filter((level) => listed.includes(level))
       }
 
-      // Normalized switch refs for the manual-pick comparison; "default" is
-      // the neutral state (no variant pinned).
-      const refKey = (ref: any): string =>
-        JSON.stringify([
-          String(ref?.providerID ?? ""),
-          String(ref?.id ?? ""),
-          String(ref?.variant ?? "default").toLowerCase(),
-        ])
-
       // Newest model-switched message in the transcript ({ model, previous }),
-      // or undefined. The TUI's effort picker commits through
+      // or undefined. The TUI's effort/model picker commits through
       // session.switchModel before the prompt is submitted, so a manual pick
       // is the newest message by the time this hook runs.
       const latestSwitch = async (sessionID: string): Promise<{ to: any; from: any } | undefined> => {
@@ -526,86 +540,116 @@ export default Plugin.define({
           const session: any = await (ctx as any).session.get({ sessionID: event.sessionID })
           const model = session?.model
           if (!model?.providerID || !model?.id) return
-          const levels = await effortLevels(model.providerID, model.id)
-          if (levels.length === 0) return
 
-          // Manual picks win. Every variant switch - including the ones this
-          // feature makes - lands in the transcript as a model-switched
-          // message. If the newest switch is not the one recorded here after
-          // an own switch (plugin storage), it came from the user or
-          // elsewhere: stand down for the session - no jev call, no
-          // switching - until the variant returns to Default, which
-          // re-enables auto. A missing or unreadable record fails open into
-          // the plain auto behavior.
-          const last = await latestSwitch(event.sessionID)
-          if (last) {
-            let mine = false
-            try {
-              const pin: any = await (ctx as any).storage.get(`effort-pin/${String(event.sessionID)}`)
-              mine = Boolean(
-                pin && refKey(pin.to) === refKey(last.to) && refKey(pin.from) === refKey(last.from),
-              )
-            } catch {}
-            if (!mine) {
-              if ((last.to?.variant ?? "default") === "default") {
-                if (foreignSwitch.delete(String(event.sessionID)))
-                  console.log("[jev] effort: back to default - auto re-enabled")
-              } else {
-                const picked = String(last.to?.variant ?? "?")
-                if (foreignSwitch.get(String(event.sessionID)) !== picked) {
-                  foreignSwitch.set(String(event.sessionID), picked)
-                  console.log(`[jev] effort: manual pick ${picked} - auto stood down until Default`)
-                }
-                return
-              }
+          const currentRef = {
+            providerID: model.providerID,
+            modelID: model.id,
+            variant: typeof model.variant === "string" ? model.variant : "default",
+          }
+
+          const usableCandidates: Candidate[] = []
+          if (modelAuto) {
+            for (const candidate of modelCandidates) {
+              if ((await modelInfo(candidate.providerID, candidate.modelID)) !== null) usableCandidates.push(candidate)
+            }
+            if (usableCandidates.length === 0) {
+              console.log("[jev] route: no usable candidates - effort handling continues without routing")
             }
           }
 
-          const state =
-            "A user message in an OpenCode coding session is quoted below. Decide how much reasoning effort the assistant's turn for it should use.\n\n<user>\n" +
-            redactText(text.slice(0, 6000)).text +
-            "\n</user>"
-          const question: Question = {
-            id: "effort",
-            type: "choice",
-            instructions:
-              "Which reasoning effort should this turn use? Pick the level matching the work the message asks for; between two levels prefer the LOWER one - a cheap turn can escalate later, but wasted thinking cannot be taken back.",
-            criteria: Object.fromEntries(levels.map((level) => [level, EFFORT_CRITERIA[level] ?? level])),
+          // The base model this session routes from, recorded on first sight.
+          // Judge failures revert to it and a manual pick re-arms when the
+          // active model returns to it; the plugin never switches it itself.
+          let base: any = currentRef
+          if (modelAuto) {
+            try {
+              const stored: any = await (ctx as any).storage.get(`route-base/${String(event.sessionID)}`)
+              if (stored?.providerID && stored?.id) base = stored
+            } catch {}
+            try {
+              await (ctx as any).storage.set(`route-base/${String(event.sessionID)}`, base)
+            } catch {}
           }
-          const { reply } = await cachedJudge([question], state, AbortSignal.timeout(8_000))
-          const answer: any = reply.answers?.effort
-          const choice = typeof answer?.choice === "string" ? answer.choice.trim().toLowerCase() : ""
-          const current = typeof model.variant === "string" ? model.variant.toLowerCase() : "default"
-          if (!levels.includes(choice)) {
-            console.log(`[jev] effort: uninterpretable answer (${String(answer?.choice)}) - keeping ${current}`)
-            return
-          }
-          if (choice === current) return
-          if (typeof answer?.confidence === "number" && answer.confidence < effortMinConfidence) {
-            console.log(
-              `[jev] effort: ${choice} uncertain (${fmt(answer.confidence)}) - keeping ${current}`,
-            )
-            return
-          }
-          await (ctx as any).session.switchModel({
-            sessionID: event.sessionID,
-            model: { providerID: model.providerID, id: model.id, variant: choice },
-          })
-          // Record the switch as ours, so the next prompt can tell it apart
-          // from a manual pick in the transcript.
+
+          // Manual picks win. Every switch lands in the transcript as a
+          // model-switched message; the pin record tells own switches apart
+          // from foreign ones. A missing or unreadable record fails open into
+          // the plain auto behavior.
+          const last = await latestSwitch(event.sessionID)
+          let pin: any
           try {
-            await (ctx as any).storage.set(`effort-pin/${String(event.sessionID)}`, {
-              to: { providerID: model.providerID, id: model.id, variant: choice },
-              from: {
-                providerID: model.providerID,
-                id: model.id,
-                variant: typeof model.variant === "string" ? model.variant : undefined,
+            pin = modelAuto
+              ? ((await (ctx as any).storage.get(`route-pin/${String(event.sessionID)}`)) ??
+                (await (ctx as any).storage.get(`effort-pin/${String(event.sessionID)}`)))
+              : (await (ctx as any).storage.get(`effort-pin/${String(event.sessionID)}`))
+          } catch {}
+
+          const outcome: any = await routeTurn(
+            {
+              effort: effortAuto,
+              model: modelAuto && usableCandidates.length > 0,
+              candidates: usableCandidates,
+              effortMinConfidence,
+              modelMinConfidence,
+            },
+            {
+              prompt: text,
+              current: currentRef,
+              levelsFor,
+              lastSwitch: last ?? null,
+              pin: pin ?? null,
+              base,
+              tier: (providerID: any, modelID: any) => {
+                const cached = infoCache.get(`${providerID}/${modelID}`)
+                return cached ? tierOf(cached) : ""
+              },
+              scrub: (t: string) => redactText(t).text,
+              // cachedJudge resolves to { reply, cached }: unwrap the reply.
+              judge: async (questions: any, state: any, signal: any) =>
+                (await cachedJudge(questions, state, signal)).reply,
+            },
+          )
+
+          for (const line of outcome?.errors ?? []) console.error(line)
+          const mode: string = outcome?.mode ?? "off"
+          const key = String(event.sessionID)
+          if (mode === "stand") {
+            const picked = String(outcome.pickedLabel ?? "")
+            if (foreignSwitch.get(key) !== picked) {
+              foreignSwitch.set(key, picked)
+              for (const line of outcome.logs ?? []) console.log(line)
+            }
+          } else {
+            // Re-arm notices print once per stood-down pick (not on every
+            // prompt while the user sits at their pick).
+            const once = mode === "rearm" || outcome?.rearm === true
+            if (!once || foreignSwitch.delete(key)) {
+              for (const line of outcome.logs ?? []) console.log(line)
+            }
+          }
+
+          if (outcome?.switchTo) {
+            await (ctx as any).session.switchModel({
+              sessionID: event.sessionID,
+              model: {
+                providerID: outcome.switchTo.providerID,
+                id: outcome.switchTo.modelID,
+                ...(outcome.switchTo.variant && outcome.switchTo.variant !== "default"
+                  ? { variant: outcome.switchTo.variant }
+                  : {}),
               },
             })
-          } catch {}
-          console.log(`[jev] effort: ${current} → ${choice} (jev pick, confidence ${fmt(answer.confidence)})`)
+            if (outcome.recordPin) {
+              try {
+                await (ctx as any).storage.set(
+                  `${modelAuto ? "route-pin" : "effort-pin"}/${String(event.sessionID)}`,
+                  outcome.recordPin,
+                )
+              } catch {}
+            }
+          }
         } catch (err: any) {
-          console.error(`[jev] effort: skipped for this prompt (${String(err?.message ?? err)})`)
+          console.error(`[jev] route: skipped for this prompt (${String(err?.message ?? err)})`)
         }
       })
     }
@@ -1072,10 +1116,20 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 ? `auto(${modelCandidates.length})` : "auto(no candidates)") : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
+
+// Optional price hint woven into routing option criteria - a defensive read
+// across the shapes OpenCode model catalogs have exposed for costs.
+function tierOf(info: any): string {
+  const cost = info?.cost ?? info?.price
+  const input = cost?.input ?? cost?.perMillion?.input ?? (typeof cost === "number" ? cost : undefined)
+  return typeof input === "number" && Number.isFinite(input) && input > 0
+    ? `$${input >= 1 ? input.toFixed(2) : input.toPrecision(2)}/Mtok input`
+    : ""
+}
 
 function fmt(v: unknown): string {
   return typeof v === "number" ? v.toFixed(2) : "?"
