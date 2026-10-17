@@ -815,6 +815,21 @@ export default Plugin.define({
       // ever offered to jev. The cache also feeds synchronous price hints
       // into the option criteria.
       const infoCache = new Map<string, any>()
+      // V2 model reads: ctx.model.get() is absent (every candidate filtered
+      // as "unavailable" in 8097700-61298f6, silently disabling route and
+      // effort); ctx.model.list() is the only read and returns
+      // { location, data } - also excluding providers that have not finished
+      // activation, so it is re-read per prompt before candidate filtering.
+      const listIndex = { map: null as Map<string, any> | null, at: 0 }
+      const refreshListIndex = async (): Promise<void> => {
+        try {
+          const listed: any = await (ctx as any).model?.list?.()
+          const data: any[] = Array.isArray(listed) ? listed : (listed?.data ?? [])
+          listIndex.map = new Map(data.map((m: any) => [`${m.providerID}/${m.id}`, m]))
+          listIndex.at = Date.now()
+        } catch {}
+      }
+      await refreshListIndex()
       const modelInfo = async (providerID: any, modelID: any): Promise<any> => {
         const cacheKey = `${providerID}/${modelID}`
         if (infoCache.has(cacheKey)) return infoCache.get(cacheKey)
@@ -822,6 +837,7 @@ export default Plugin.define({
         try {
           info = (await (ctx as any).model?.get?.(providerID, modelID)) ?? null
         } catch {}
+        if (!info && listIndex.map) info = listIndex.map.get(cacheKey) ?? null
         infoCache.set(cacheKey, info)
         return info
       }
@@ -951,6 +967,10 @@ export default Plugin.define({
 
           const usableCandidates: Candidate[] = []
           if (modelAuto) {
+            // Providers activate asynchronously; the registry is complete
+            // only after setup, so candidates are validated against a fresh
+            // read on every prompt rather than the startup snapshot.
+            await refreshListIndex()
             let combined = modelCandidates
             const sources = await resolveRouteSources()
             if (sources) {
