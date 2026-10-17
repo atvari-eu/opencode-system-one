@@ -33,7 +33,7 @@ describe("screenApplies", () => {
   test('"all" screens everything except self tools', () => {
     expect(screenApplies("bash", "all")).toBe(true)
     expect(screenApplies("edit", "all")).toBe(true)
-    for (const self of SELF_SCREENED_TOOLS) {
+    for (const self of Object.keys(SELF_SCREENED_TOOLS)) {
       expect(screenApplies(self, "all")).toBe(false)
     }
   })

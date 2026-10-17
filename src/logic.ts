@@ -708,10 +708,17 @@ export function parseScreenTools(raw: unknown): ScreenTools {
 // Tools this plugin itself registers - their outputs are verdicts that are
 // already judged (or are jev_find's own screened states); screening them
 // again adds cost for no signal.
-export const SELF_SCREENED_TOOLS: ReadonlySet<string> = new Set(["jev/decide", "jev/judge_many", "jev_find"])
+export const SELF_SCREENED_TOOLS: Record<string, true> = {
+  jev_find: true,
+  // Hosts prefix namespaced tools as either spelling; cover both.
+  jev_decide: true,
+  jev_judge_many: true,
+  "jev/decide": true,
+  "jev/judge_many": true,
+}
 
-export function screenApplies(tool: string, tools: ScreenTools, self: ReadonlySet<string> = SELF_SCREENED_TOOLS): boolean {
-  if (self.has(tool)) return false
+export function screenApplies(tool: string, tools: ScreenTools, self: Readonly<Record<string, true>> = SELF_SCREENED_TOOLS): boolean {
+  if (self[tool]) return false
   return tools === "all" || tools.includes(tool)
 }
 
@@ -905,7 +912,10 @@ export function fmtFindReport(input: {
       + `.${input.nameErrors || input.windowErrors ? ` (${input.nameErrors} path and ${input.windowErrors} excerpt judgments errored)` : ""}`
   if (input.hits.length === 0) return `${head}\nNo relevant hits.`
   const body = input.hits
-    .map((h, i) => `${i + 1}. ${h.path} - heat ${h.heat.toFixed(2)} (lines ${h.lines[0]}-${h.lines[1]})\n   ${h.excerpt}`)
+    .map((h, i) => {
+      const excerpt = h.excerpt.replace(/\n/g, "\n   ")
+      return `${i + 1}. ${h.path} - heat ${h.heat.toFixed(2)} (lines ${h.lines[0]}-${h.lines[1]})\n   ${excerpt}`
+    })
     .join("\n")
   return `${head}\nRanked hits are routing signals only - read the files before relying on them:\n${body}`
 }

@@ -290,7 +290,7 @@ export async function runFind(deps: FindDeps, rawQuery: string, options: FindRun
 
 function excerptOf(text: string): string {
   const lines = text.split("\n").slice(0, FIND_LIMITS.excerptLines)
-  let out = lines.join(" ⏎ ")
+  let out = lines.join("\n")
   if (out.length > FIND_LIMITS.excerptChars) out = `${out.slice(0, FIND_LIMITS.excerptChars)}…`
   return out
 }
