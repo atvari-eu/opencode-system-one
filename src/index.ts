@@ -14,6 +14,10 @@
 //                                 as first-class tools (codemode: false) so
 //                                 each call shows as its own tool row
 //   cache   replies for identical (state, questions, model) via plugin storage
+//   compact System One based history compaction (opt-in) following
+//                                 tamaratran/fast-jev-compaction: tool calls and
+//                                 results are dropped/truncated by jev verdicts,
+//                                 user/assistant text stays verbatim
 //
 // Env contract identical to the `jev` CLI and skills:
 //   JEV_ENDPOINT (default: OpenCode Console System One endpoint)
@@ -24,6 +28,7 @@
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
 
 import { Plugin } from "@opencode/plugin"
+import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS } from "./compaction"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -84,7 +89,7 @@ function toQuestionMap(questions: Question[]): Record<string, any> {
 
 async function jevJudge(
   questions: Question[],
-  state: string,
+  state: unknown,
   signal?: AbortSignal,
 ): Promise<JevReply> {
   const key = resolveKey()
@@ -308,7 +313,7 @@ export default Plugin.define({
 
     async function cachedJudge(
       questions: Question[],
-      state: string,
+      state: unknown,
       signal?: AbortSignal,
     ): Promise<{ reply: JevReply; cached: boolean }> {
       const model = resolveModel()
@@ -652,8 +657,85 @@ export default Plugin.define({
       })
     }
 
+    // -- compaction: System One decides which history is stale (opt-in) --
+    // Port of tamaratran/fast-jev-compaction onto session.hook("compaction").
+    // The handler NEVER throws: a jev failure means the built-in compaction
+    // runs on an unmodified transcript (hook failures would defect otherwise).
+
+    if (o.compaction?.enabled === true) {
+      const c: any = o.compaction ?? {}
+      const num = (v: unknown, d: number) =>
+        typeof v === "number" && Number.isFinite(v) ? v : d
+      const compactionOptions = {
+        keepThreshold: num(c.keepThreshold, COMPACTION_DEFAULTS.keepThreshold),
+        preserveRecentMessages: Math.max(
+          0,
+          Math.floor(num(c.preserveRecentMessages, COMPACTION_DEFAULTS.preserveRecentMessages)),
+        ),
+        maxStateTokens: num(c.maxStateTokens, COMPACTION_DEFAULTS.maxStateTokens),
+        maxRequestTokens: num(c.maxRequestTokens, COMPACTION_DEFAULTS.maxRequestTokens),
+        truncateHeadChars: num(c.truncateHeadChars, COMPACTION_DEFAULTS.truncateHeadChars),
+        minReduction: num(c.minReduction, COMPACTION_DEFAULTS.minReduction),
+        ...(typeof c.maxSummaryTokens === "number" && Number.isFinite(c.maxSummaryTokens)
+          ? { maxSummaryTokens: c.maxSummaryTokens }
+          : {}),
+        mode: c.mode === "clean" ? ("clean" as const) : ("replace" as const),
+      }
+
+      const windows = new Map<string, number>()
+      // The hook's model is a bare Ref; resolve the context window via the
+      // model domain. Core assumes 200k when the limit is unknown - same here.
+      const windowOf = async (model: any): Promise<number> => {
+        const key = `${model?.providerID ?? ""}/${model?.id ?? ""}`
+        const hit = windows.get(key)
+        if (hit !== undefined) return hit
+        try {
+          const info: any = await (ctx as any).model?.get?.(model?.providerID, model?.id)
+          const limit = info?.limit?.context
+          if (typeof limit === "number" && limit > 0) {
+            windows.set(key, limit)
+            return limit
+          }
+        } catch {}
+        return 200_000
+      }
+
+      await (ctx as any).session.hook("compaction", async (event: any) => {
+        try {
+          if (!Array.isArray(event?.messages) || event.messages.length === 0) return
+          if (event.result) return // another hook already supplied a summary
+          const window = await windowOf(event.model)
+          const plan = await runCompaction(
+            event.messages,
+            async (questions, state) =>
+              (await cachedJudge(questions as Question[], state, undefined)).reply,
+            SECRET_PATTERNS,
+            compactionOptions,
+            () => window,
+          )
+          if (plan.replaceSummary) {
+            event.result = { summary: plan.replaceSummary }
+            console.log(
+              `[jev] compaction: supplied the pruned transcript as the summary (~${plan.summaryTokens}tok est, no summarizer call)`,
+            )
+            return
+          }
+          if (plan.keepMessages) {
+            event.messages = plan.keepMessages
+            console.log("[jev] compaction: decisions applied in place - built-in summarizer runs on the cleaned transcript")
+          } else {
+            console.log("[jev] compaction: nothing stale enough to act on - built-in compaction continues")
+          }
+        } catch (err: any) {
+          console.error(
+            `[jev] compaction: jev pass failed (${String(err?.message ?? err)}) - built-in compaction runs unmodified`,
+          )
+        }
+      })
+    }
+
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
