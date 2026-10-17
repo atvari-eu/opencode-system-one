@@ -105,7 +105,10 @@ pin storage). Rationale worth remembering when extending it:
   (the OpenCode Go subscription). Baked decisions: sources are opt-in
   (they widen what routing may switch to) and additive-only (explicit
   candidates stay ahead of sourced ones); the prompt hook runs per
-  prompt, so sources re-read at most once a minute (TTL cache); they fail
+  prompt, so the sources snapshot is read exactly once per process (the
+  ranking shifts on a 30-day horizon - re-reading per prompt would only
+  burn I/O), shared across concurrent hooks via an in-flight memo, with
+  up to three attempts when the first read fails transiently; they fail
   open (missing file / failed DB read = no candidates from that source,
   logged once on change), and malformed shapes disable rather than guess
   (bar a clamped count). Availability gating happens twice: after

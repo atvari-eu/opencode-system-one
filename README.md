@@ -257,7 +257,10 @@ draw from what the session itself knows:
 Sources are off unless enabled, are additive to `candidates` (explicit
 entries keep their position ahead of sourced ones, duplicates drop out),
 and fail open: a missing favorites file or an unreadable database simply
-yields no candidates from that source. Everything sourced still goes
+yields no candidates from that source. Sources are fetched once per
+server process (the usage ranking moves on a 30-day horizon), so freshly
+starred favorites or new usage show up after a restart - each routed
+prompt after that costs zero extra I/O. Everything sourced still goes
 through the same pre-offer checks as a hand-named candidate: it must
 exist in *this session's* catalog (provider connected, workspace-enabled)
 and carry no disabled/deprecated marker - unknown catalog statuses fail

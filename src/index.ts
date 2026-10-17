@@ -553,25 +553,27 @@ export default Plugin.define({
 
       // Dynamic candidate sources (route.sources) - the user's TUI-favorite
       // models and OpenCode's own most-used models ("popular" mode, zen or
-      // go plan) by local usage. Re-read at most once a minute. Fail-open
-      // throughout: a missing favorites file or DB read failure only means
-      // no candidates from that source, never an error in the turn.
-      const SOURCE_TTL = 60_000
+      // go plan) by local usage. The snapshot is fetched ONCE per process
+      // (usage shifts on a 30-day horizon; per-prompt reads would only burn
+      // I/O), with a short in-flight memo so concurrent prompt hooks share
+      // one fetch, and at most three attempts in case the first run hits a
+      // transient DB error - then the empty snapshot stands for the process
+      // lifetime. Fail-open throughout: a failed source read never errors
+      // the turn, it just contributes no candidates.
+      const MAX_SOURCE_ATTEMPTS = 3
       const USAGE_DAYS = 30
       // Flagged-unavailable candidates noticed so far, logged once per
       // process so the filter is observable without spamming every prompt.
       const noticedDrops = new Set<string>()
-      let sourceCache: { at: number; favorites: Candidate[]; opencode: Candidate[] } = {
-        at: 0,
+      const sourceCache: { favorites: Candidate[]; opencode: Candidate[] } = {
         favorites: [],
         opencode: [],
       }
-      const resolveRouteSources = async (): Promise<{
-        favorites: Candidate[]
-        opencode: Candidate[]
-      } | null> => {
-        if (!routeSources.favorites && !routeSources.opencode.enabled) return null
-        if (Date.now() - sourceCache.at < SOURCE_TTL) return sourceCache
+      let sourceFetched = false
+      let sourceAttempts = 0
+      let sourceInflight: Promise<{ favorites: Candidate[]; opencode: Candidate[] } | null> | null = null
+      const fetchSources = async (): Promise<{ favorites: Candidate[]; opencode: Candidate[] } | null> => {
+        sourceAttempts += 1
         const favorites: Candidate[] = []
         const opencode: Candidate[] = []
         if (routeSources.favorites) {
@@ -581,6 +583,7 @@ export default Plugin.define({
             favorites.push(...parseCandidates(raw?.favorite))
           } catch {}
         }
+        let popularFailed = false
         if (routeSources.opencode.enabled) {
           try {
             const dataDir = process.env.XDG_DATA_HOME?.trim() || join(homedir(), ".local", "share")
@@ -606,20 +609,29 @@ export default Plugin.define({
               db.close()
             }
           } catch (err) {
+            popularFailed = true
             console.error(`[jev] route: opencode source failed (routing continues without it):`, err)
           }
         }
-        const prev = sourceCache.at === 0 ? null : sourceCache
-        sourceCache = { at: Date.now(), favorites, opencode }
-        const changed =
-          favorites.length + opencode.length > 0 &&
-          (!prev || prev.favorites.length !== favorites.length || prev.opencode.length !== opencode.length)
-        if (changed) {
+        // A failed popular fetch retries on a later prompt (bounded by
+        // MAX_SOURCE_ATTEMPTS); a legitimate empty result does not.
+        sourceFetched = !popularFailed
+        sourceCache.favorites = favorites
+        sourceCache.opencode = opencode
+        if (favorites.length + opencode.length > 0 && sourceFetched) {
           console.log(
-            `[jev] route: sources - favorites=${favorites.length} opencode(${routeSources.opencode.plan})=${opencode.length}`,
+            `[jev] route: sources snapshot (fetched once) - favorites=${favorites.length} opencode(${routeSources.opencode.plan})=${opencode.length}`,
           )
         }
         return sourceCache
+      }
+      const resolveRouteSources = (): Promise<{ favorites: Candidate[]; opencode: Candidate[] } | null> => {
+        if (!routeSources.favorites && !routeSources.opencode.enabled) return Promise.resolve(null)
+        if (sourceFetched || sourceAttempts >= MAX_SOURCE_ATTEMPTS) return Promise.resolve(sourceCache)
+        sourceInflight ??= fetchSources().finally(() => {
+          sourceInflight = null
+        })
+        return sourceInflight
       }
 
       // Newest model-switched message in the transcript ({ model, previous }),
