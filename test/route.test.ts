@@ -240,6 +240,34 @@ describe("routeTurn: legacy effort flow (model routing off)", () => {
 })
 
 describe("routeTurn: pair mode (effort + model)", () => {
+  test("digest is wrapped into the state and scrubbed", async () => {
+    const seen: unknown[] = []
+    await turn(PAIR_CONFIG, {
+      digest: "token-sk_[redacted] RECENT HEAVY WORK",
+      judge: async (_questions: unknown, state: unknown) => {
+        seen.push(state)
+        return { answers: { route: { choice: "acme/base#default", confidence: 0.9 } } }
+      },
+      scrub: (t: string) => t.replaceAll("sk_", "REDACTED_"),
+    })
+    const text = JSON.stringify(seen)
+    expect(text).toContain("<recent-context>")
+    expect(text).toContain("token-REDACTED_")
+    expect(text).toContain("RECENT HEAVY WORK")
+  })
+
+  test("no digest keeps the prompt-only state", async () => {
+    const seen: unknown[] = []
+    await turn(PAIR_CONFIG, {
+      judge: async (_questions: unknown, state: unknown) => {
+        seen.push(state)
+        return { answers: { route: { choice: "acme/base#default", confidence: 0.9 } } }
+      },
+    })
+    const text = JSON.stringify(seen)
+    expect(text).not.toContain("<recent-context>")
+  })
+
   test("routes to a candidate model+level and records the pin", async () => {
     const outcome = await turn(PAIR_CONFIG, {
       judge: async () => ({ answers: { route: { choice: "zeta/flagship#high", confidence: 0.9 } } }),

@@ -936,14 +936,11 @@ export default Plugin.define({
       // or undefined. The TUI's effort/model picker commits through
       // session.switchModel before the prompt is submitted, so a manual pick
       // is the newest message by the time this hook runs.
-      const latestSwitch = async (sessionID: string): Promise<{ to: any; from: any } | undefined> => {
-        try {
-          const rows: any[] = await (ctx as any).session.context({ sessionID })
-          for (let i = rows.length - 1; i >= 0; i--) {
-            const message: any = rows[i]?.info ?? rows[i]
-            if (message?.type === "model-switched") return { to: message.model, from: message.previous }
-          }
-        } catch {}
+      const latestSwitch = (rows: ReadonlyArray<any>): { to: any; from: any } | undefined => {
+        for (let i = rows.length - 1; i >= 0; i--) {
+          const message: any = rows[i]?.info ?? rows[i]
+          if (message?.type === "model-switched") return { to: message.model, from: message.previous }
+        }
         return undefined
       }
 
@@ -1026,7 +1023,8 @@ export default Plugin.define({
           // model-switched message; the pin record tells own switches apart
           // from foreign ones. A missing or unreadable record fails open into
           // the plain auto behavior.
-          const last = await latestSwitch(event.sessionID)
+          const rows: any[] = await ((ctx as any).session.context({ sessionID: event.sessionID }).catch(() => []))
+          const last = latestSwitch(rows)
           let pin: any
           try {
             pin = modelAuto
@@ -1050,6 +1048,13 @@ export default Plugin.define({
               lastSwitch: last ?? null,
               pin: pin ?? null,
               base,
+              // Transcript tail so the judge weighs the turn's actual work
+              // (files touched, prior failures), not the often-brief prompt.
+              digest: doneTranscript(rows, {
+                maxMessages: 12,
+                perMessageChars: 500,
+                totalChars: 2500,
+              }).text,
               tier: (providerID: any, modelID: any) => {
                 const cached = infoCache.get(`${providerID}/${modelID}`)
                 return cached ? tierOf(cached) : ""

@@ -445,6 +445,12 @@ export interface RouteInput {
   pin?: PinRecord | undefined | null
   /** The base model this session routes from (record or first observation). */
   base?: { providerID: string; modelID: string; variant?: string } | null
+  /**
+   * Bounded digest of the recent transcript tail, composed by the host.
+   * Short prompts on heavy turns (edits, debugging) read low out of context;
+   * a tail digest is what lets the judge escalate on the work, not the ask.
+   */
+  digest?: string
   /** Optional per-model price hint for the option criteria. */
   tier?: (providerID: string, modelID: string) => string
   /** Deterministic scrub applied to prompt + question state text. */
@@ -465,6 +471,13 @@ export interface RouteOutcome {
 }
 
 const routeStateWrap = (lead: string, scrubbed: string): string => `${lead}\n\n<user>\n${scrubbed}\n</user>`
+
+/** State text with the optional transcript-tail digest, scrubbed like the prompt. */
+const routeStateText = (lead: string, scrub: (t: string) => string, input: RouteInput): string => {
+  const base = routeStateWrap(lead, scrub(input.prompt.slice(0, 6000)))
+  const digest = input.digest ? scrub(input.digest.slice(-2500)) : ""
+  return digest ? `${base}\n\n<recent-context>\n${digest}\n</recent-context>` : base
+}
 
 export async function routeTurn(config: RouteConfig, input: RouteInput): Promise<RouteOutcome> {
   const logs: string[] = []
@@ -505,9 +518,10 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
         "Which reasoning effort should this turn use? Pick the level matching the work the message asks for; between two levels prefer the LOWER one - a cheap turn can escalate later, but wasted thinking cannot be taken back.",
       criteria: Object.fromEntries(levels.map((level) => [level, levelCriteria(level)])),
     }
-    const state = routeStateWrap(
+    const state = routeStateText(
       "A user message in an OpenCode coding session is quoted below. Decide how much reasoning effort the assistant's turn for it should use.",
-      scrub(input.prompt.slice(0, 6000)),
+      scrub,
+      input,
     )
     let reply: { answers?: Record<string, any> }
     try {
@@ -632,7 +646,7 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
 
   let reply: { answers?: Record<string, any> }
   try {
-    reply = await input.judge([question], routeStateWrap(lead, scrub(input.prompt.slice(0, 6000))), AbortSignal.timeout(8_000))
+    reply = await input.judge([question], routeStateText(lead, scrub, input), AbortSignal.timeout(8_000))
   } catch (err: any) {
     return failToBase(`[jev] route: judge failed (${String(err?.message ?? err)})`)
   }
