@@ -46,6 +46,13 @@ context compaction can be decided by System One instead of a lossy summary.
   actually supports - and switches the model's variant, the same mechanism as
   the UI's effort picker. Fail-open: if jev is unavailable or uncertain, the
   current level stays. See [Auto reasoning effort](#auto-reasoning-effort).
+- **approvals** (opt-in) - permission requests are judged by jev before they
+  reach you: the verdict is added to the prompt ("likely safe 0.92",
+  "uncertain - review", gate holds for destructive/sensitive patterns), and
+  with `"auto"` enabled, high-confidence routine operations are approved
+  outright. Configured deny rules always win; low confidence always falls
+  back to the human prompt. See
+  [jev-assisted approvals](#jev-assisted-approvals).
 - **compaction** (opt-in) - replaces the compaction summarizer with System One
   decisions, following
   [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction):
@@ -131,8 +138,8 @@ home.file.".config/opencode/jev-plugin/index.ts".source =
 
 ### Options
 
-Everything is on by default except `effort` and `compaction` (both opt-in);
-turn parts off with the object form:
+Everything is on by default except `effort`, `approvals`, and `compaction`
+(all opt-in); turn parts off with the object form:
 
 ```jsonc
 {
@@ -147,6 +154,7 @@ turn parts off with the object form:
         "cache": true,
         "routing": { "hints": true }, // tool-first hints for judgment prompts
         "effort": { "auto": true }, // opt-in per-prompt thinking level; see "Auto reasoning effort"
+        "approvals": { "auto": true }, // opt-in; see "jev-assisted approvals"
         "compaction": {      // opt-in; see "System One compaction"
           "enabled": true,
           "mode": "replace"  // or "clean"
@@ -159,10 +167,11 @@ turn parts off with the object form:
 
 ## Fast routing of judgment prompts
 
-When the user's prompt explicitly asks for a judgment ("judge these", "give a
-verdict", mentions `jev`, …), OpenCode still runs the primary model first, and
-that model tends to deliberate the question itself before reaching for the
-tool. The plugin closes most of that gap mechanically:
+When the user's prompt explicitly asks for a judgment by naming one of the
+plugin's decision tools (`jev_decide`, `jev_judge_many`, "jev judge …"),
+OpenCode still runs the primary model first, and that model tends to
+deliberate the question itself before reaching for the tool. The plugin
+closes most of that gap mechanically:
 
 - The `jev_decide` / `jev_judge_many` tool descriptions state that an explicit
   judgment request makes the tool call the **first action**, with the user's
@@ -239,6 +248,55 @@ Options:
 | --- | --- | --- |
 | `auto` | `false` | Off unless explicitly enabled. |
 | `minConfidence` | `0.6` | Minimum jev answer confidence required to switch levels. |
+
+## jev-assisted approvals
+
+Permission requests (tool executions that would otherwise interrupt you) can
+be vetted by jev before they reach you. The feature is opt-in and has two
+stacked modes:
+
+- **Annotate** (enabled with `"approvals": true` or any object form): every
+  `ask` verdict gets a one-line jev opinion added to the prompt you see -
+  `[jev] likely safe (0.92)`, `[jev] uncertain (0.63) - review`,
+  `[jev] likely risky (0.18) - review`. The decision stays entirely yours.
+- **Auto** (`"approvals": { "auto": true }`): the same judgment, and when it
+  clears the confidence bar (default `0.85`, `minConfidence`), the request is
+  approved programmatically and logged to the console. Only the allowlisted
+  `actions` (default `bash`, `edit`) are candidates; `webfetch`, MCP calls,
+  and everything else still prompt you.
+
+Every judgment only happens on `ask` state - already-allowed and explicitly
+denied requests remain free of any jev call, since OpenCode short-circuits
+denials before plugins run.
+
+Deterministic gates decide before any model does: requests containing secret
+scans or `[REDACTED:]` markers, destructive patterns (`rm -rf`, `sudo`,
+piped-to-shell, `git push --force`, `npm publish`, `DROP TABLE`, `dd of=`,
+system paths, ...), or edits outside the project directory are **never**
+auto-approved - they are annotated and left to you. The gate list is
+deliberately a deny-the-shortcut list, not a security sandbox; a false
+positive only costs automation, never safety - the human prompt remains.
+
+The fail-closed ladder: jev unreachable, a timeout (8 s), or an
+uninterpretable answer leaves the request exactly as OpenCode built it -
+your prompt, unaltered verdict aside. Low confidence never silently
+approves. Configured deny rules and every "always allow" memory you made in
+the UI rule above the feature by construction.
+
+One deliberate deviation from the System One guideline "a probability is
+never permission by itself": the guideline targets an agent improvising
+approvals around the human. Here the delegation is explicit in your config,
+bounded by deterministic gates, never auto-denies, and every machine-approved
+operation is logged - the probability is one input to a declared policy, not
+the policy.
+
+Options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `auto` | `false` | Enable programmatic approval on high confidence. |
+| `minConfidence` | `0.85` | `auto` threshold, clamped to 0.5-0.99. |
+| `actions` | `["bash", "edit"]` | Actions eligible for `auto`; others always prompt. Annotations judge every `ask` regardless. |
 
 ## System One compaction
 
@@ -339,6 +397,9 @@ rule. There is no provider degradation chain.
   posts on its own are screen verdicts for flagged fetches.
 - Compaction never rewrites user/assistant text and never applies partial
   decisions; any failure falls back to the untouched built-in flow.
+- Approvals never override configured deny rules, never auto-deny, and
+  fall back to the human prompt on every failure mode; the deterministic
+  gate list (destructive/secret patterns) is checked before any jev call.
 
 ## License
 

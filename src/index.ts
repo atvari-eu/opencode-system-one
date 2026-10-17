@@ -330,6 +330,59 @@ const EFFORT_CRITERIA: Record<string, string> = {
   max: "Maximum thinking: the hardest problems with the highest stakes",
 }
 
+// ---------------------------------------------------------------------------
+// Approvals: jev annotates permission prompts, optionally auto-approves them
+// ---------------------------------------------------------------------------
+
+// OpenCode permission flow: tools call assert() with {action, resources,
+// metadata}; a configured deny rule short-circuits BEFORE any plugin hook, so
+// an approval can never override configuration. For "ask" cases the
+// permission/evaluate hook receives a mutable event: rewriting effect to
+// "allow" auto-approves, and `message` rides into what the human sees. The
+// hook also fires for already-allowed operations, so everything that is not
+// "ask" returns untouched - zero jev cost there.
+
+const REDACTED_MARKER = /\[REDACTED:/
+
+// Hard "never auto-approve" patterns for the resource strings. This is a
+// deny-the-shortcut list, not a security sandbox: a false positive only
+// keeps the human prompt (annotate-only), never blocks anything.
+const DESTRUCTIVE: Array<RegExp> = [
+  /\brm\b[^;|&]*\s-{1,2}[a-zA-Z]*[rf]/i,
+  /\bsudo\b/i,
+  /\|\s*(sudo\s+)?(sh|bash|zsh|ksh|fish)\b/i,
+  /\bgit\s+push\b[^;|&]*\s(-f\b|--force)/i,
+  /\bgit\s+reset\s+--hard\b/i,
+  /\bgit\s+clean\b[^;|&]*-[a-zA-Z]*[fdx]/i,
+  /\bgit\s+filter-(branch|repo)\b/i,
+  /\b(npm|pnpm|yarn|bun)\s+publish\b/i,
+  /\bdrop\s+(table|database|schema)\b/i,
+  /\btruncate\s+table\b/i,
+  /\bdd\b[^;|&]*\bof=/i,
+  /\bchmod\s+(777|666)\b/i,
+  /\b(mkfs|shutdown|reboot|poweroff|halt)\b/i,
+  /\/dev\/(sd[a-z]\d?|nvme\d+|disk)\b/i,
+  /(^|[\s"'`(=])\/(etc|boot|sbin)\//,
+]
+
+// Module-level (not per-event) so the cache key stays stable for repeated,
+// identical approval requests.
+const APPROVAL_QUESTION: Question = {
+  id: "approve",
+  type: "noul",
+  instructions:
+    "Should the permission request below be approved automatically, without a human reviewing it first? Answer with the probability that approval is safe. High (approaching 1.0) only for routine, reversible, workspace-local development work: editing project files, running tests/lint/builds/dev servers, installing declared dependencies, standard git add/commit/diff. Low for: destructive or irreversible steps, anything outside the workspace or touching system paths, executing fetched code, publishing or deploying, modifying credentials or security settings, broad deletions, or any step that is not clearly understood. The whole request is approved or refused together - a single risky step must drag the probability down.",
+}
+
+// Stateless regex testing - several pattern lists carry the `g` flag, and a
+// raw `.test` would keep lastIndex state between authorization calls.
+function matchesAny(text: string, patterns: Array<RegExp>): boolean {
+  return patterns.some((pattern) => {
+    pattern.lastIndex = 0
+    return pattern.test(text)
+  })
+}
+
 // Normalizes score/choice answers; returns a mean numeric when possible.
 function numericOf(answer: any): number | undefined {
   if (!answer || typeof answer !== "object") return undefined
@@ -360,6 +413,16 @@ export default Plugin.define({
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
         ? o.effort.minConfidence
         : 0.6
+    const approvalsEnabled = o.approvals === true || (typeof o.approvals === "object" && o.approvals !== null)
+    const approvalsObj: any = typeof o.approvals === "object" && o.approvals !== null ? o.approvals : {}
+    const approvalsAuto = approvalsObj.auto === true
+    const approvalsMinConfidence =
+      typeof approvalsObj.minConfidence === "number" && Number.isFinite(approvalsObj.minConfidence)
+        ? Math.min(0.99, Math.max(0.5, approvalsObj.minConfidence))
+        : 0.85
+    const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["bash", "edit"])
+      .filter((action: unknown) => typeof action === "string" && action.length > 0)
+      .map(String)
     const location = (ctx as any).location?.directory ?? ""
 
     async function cachedJudge(
@@ -568,6 +631,89 @@ export default Plugin.define({
           console.error(`[jev] effort: skipped for this prompt (${String(err?.message ?? err)})`)
         }
       })
+    }
+
+    // -- approvals: jev annotates permission prompts, optionally approves (opt-in) --
+
+    if (approvalsEnabled) {
+      const permissionApi = (ctx as any).permission
+      if (!permissionApi?.hook) {
+        console.log("[jev] approvals: permission hooks unavailable on this OpenCode version - skipped")
+      } else {
+        // Absolute paths outside the workspace are never auto-approve
+        // candidates; relative paths are project-local by definition.
+        const isProjectPath = (resource: string): boolean =>
+          !resource.startsWith("/") || !location || resource === location || resource.startsWith(`${location}/`)
+
+        const annotate = (event: any, note: string): void => {
+          event.message = event.message ? `${event.message} - ${note}` : note
+        }
+
+        const secretPatterns = SECRET_PATTERNS.map(([pattern]) => pattern)
+
+        await permissionApi.hook("evaluate", async (event: any) => {
+          try {
+            if (event?.effect !== "ask") return
+            const action = String(event.action ?? "")
+            const resources: string[] = Array.isArray(event.resources)
+              ? event.resources.map((item: unknown) => String(item ?? ""))
+              : []
+            if (resources.length === 0) return
+
+            // Deterministic gates first: properties that make auto-approval
+            // impossible regardless of any judgment. The scrub marker counts
+            // as secret usage; multi-command bash calls are approved as a
+            // whole, so one bad command holds the entire request.
+            for (const resource of resources) {
+              if (
+                REDACTED_MARKER.test(resource) ||
+                matchesAny(resource, secretPatterns) ||
+                (action === "bash" && matchesAny(resource, DESTRUCTIVE)) ||
+                (action === "edit" && !isProjectPath(resource))
+              ) {
+                annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
+                console.log(`[jev] approval: gate held ${action} for manual review`)
+                return
+              }
+            }
+
+            const detail: string[] = [`workspace: ${location || "(unknown)"}`, `action: ${action}`]
+            for (const resource of resources) detail.push(`- ${resource.slice(0, 2000)}`)
+            if (event.metadata && typeof event.metadata === "object")
+              detail.push(`details: ${JSON.stringify(event.metadata).slice(0, 2000)}`)
+            const state =
+              "An OpenCode coding agent requests permission for the operation(s) below. Judge whether approving them automatically is safe.\n\n" +
+              redactText(detail.join("\n").slice(0, 6000)).text
+
+            const { reply } = await cachedJudge([APPROVAL_QUESTION], state, AbortSignal.timeout(8_000))
+            const p = numericOf((reply as any).answers?.approve)
+            if (typeof p !== "number" || Number.isNaN(p)) {
+              annotate(event, "[jev] verdict unavailable - review")
+              console.log(`[jev] approval: uninterpretable answer for ${action}`)
+              return
+            }
+
+            const candidate = approvalsAuto && approvalsActions.includes(action) && p >= approvalsMinConfidence
+            if (candidate) {
+              event.effect = "allow"
+              console.log(
+                `[jev] approval: auto-approved ${action} ${resources.join(" && ").slice(0, 120)} (${fmt(p)})`,
+              )
+              return
+            }
+            annotate(
+              event,
+              p >= approvalsMinConfidence
+                ? `[jev] likely safe (${fmt(p)})`
+                : p >= 0.5
+                  ? `[jev] uncertain (${fmt(p)}) - review`
+                  : `[jev] likely risky (${fmt(p)}) - review`,
+            )
+          } catch (err: any) {
+            console.error(`[jev] approval: judgment skipped (${String(err?.message ?? err)})`)
+          }
+        })
+      }
     }
 
     // -- screen: fetched content before it enters context --
@@ -949,7 +1095,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} routing=${routingHint ? "on" : "off"} effort=${effortAuto ? "auto" : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} routing=${routingHint ? "on" : "off"} effort=${effortAuto ? "auto" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"} (endpoint=${resolveEndpoint()})`,
     )
   },
 })
