@@ -61,6 +61,7 @@ import {
   chainPermissionEffect,
   clampThreshold,
   lookupPermission,
+  normalizeWorkspacePath,
   parsePermissions,
   parseMinConfidence,
   doneCheckStandDown,
@@ -1323,8 +1324,11 @@ export default Plugin.define({
           // the judge-failure path was itself ReferenceError-ing on
           // out-of-scope names (3176904's live "action is not defined").
           const action = String(event?.action ?? "")
+          // Workspace-internal absolutes collapse to workspace-relative: the
+          // same file must hit the same rule, judged state, and stats bucket
+          // no matter how the tool spelled the path.
           const resources: string[] = Array.isArray(event?.resources)
-            ? event.resources.map((item: unknown) => String(item ?? ""))
+            ? event.resources.map((item: unknown) => normalizeWorkspacePath(location, String(item ?? "")))
             : []
           const statsBound = { action, resources }
           try {

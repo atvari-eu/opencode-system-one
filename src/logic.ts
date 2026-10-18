@@ -1459,6 +1459,20 @@ export function globMatches(text: string, glob: string): boolean {
   return false
 }
 
+/** Collapse absolute paths inside the workspace to workspace-relative, so the
+ * same file produces the same resource string - and thus the same rule match,
+ * judged state, and stats bucket - no matter how the tool spelled the path.
+ * Relative resources, outside-workspace absolutes, and the workspace directory
+ * itself pass through unchanged. */
+export function normalizeWorkspacePath(directory: string, resource: string): string {
+  if (!directory || !resource.startsWith("/")) return resource
+  const dir = directory.endsWith("/") && directory.length > 1 ? directory.slice(0, -1) : directory
+  if (!dir || dir === "/") return resource
+  if (resource === dir) return resource
+  const prefix = `${dir}/`
+  return resource.startsWith(prefix) ? resource.slice(prefix.length) : resource
+}
+
 export const PERMISSION_EFFECTS = ["allow", "ask", "deny", "system-one"] as const
 export type PermissionEffect = (typeof PERMISSION_EFFECTS)[number]
 

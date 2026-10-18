@@ -14,6 +14,7 @@ import {
   globMatches,
   matchesPatterns,
   mergeApprovalStats,
+  normalizeWorkspacePath,
   parsePermissions,
   parseMinConfidence,
   resolveApproval,
@@ -56,6 +57,29 @@ describe("approval stats", () => {
       fail: 1,
       bands: { "allow/0.7-0.8": 1, "allow/>=0.9": 1, "ask/<0.5": 1, "asked-deny": 1 },
     })
+  })
+})
+
+describe("normalizeWorkspacePath", () => {
+  const work = "/home/dev/work"
+  test("relativizes workspace-internal absolutes", () => {
+    expect(normalizeWorkspacePath(work, "/home/dev/work/src/index.ts")).toBe("src/index.ts")
+  })
+  test("passes through non-workspace absolutes", () => {
+    expect(normalizeWorkspacePath(work, "/etc/nixos/home/ai.nix")).toBe("/etc/nixos/home/ai.nix")
+    expect(normalizeWorkspacePath(work, "/home/dev/work-other/file.ts")).toBe("/home/dev/work-other/file.ts")
+  })
+  test("passes through relative resources and the workspace directory itself", () => {
+    expect(normalizeWorkspacePath(work, "src/index.ts")).toBe("src/index.ts")
+    expect(normalizeWorkspacePath(work, work)).toBe(work)
+  })
+  test("prefix only matches at a path boundary", () => {
+    expect(normalizeWorkspacePath(work, "/home/dev/workshop/file.ts")).toBe("/home/dev/workshop/file.ts")
+  })
+  test("tolerates empty or trailing-slash directories", () => {
+    expect(normalizeWorkspacePath("", "/home/dev/work/src/index.ts")).toBe("/home/dev/work/src/index.ts")
+    expect(normalizeWorkspacePath("/home/dev/work/", "/home/dev/work/src/index.ts")).toBe("src/index.ts")
+    expect(normalizeWorkspacePath(work, "/")).toBe("/")
   })
 })
 

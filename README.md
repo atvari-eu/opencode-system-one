@@ -621,6 +621,11 @@ Notes on the split:
   gates run, so a `secrets/` edit is held before the remark matters.
 - `system-one` entries only fire for requests the host sends to `ask` - a
   host `allow` never reaches the plugin for that request at all.
+- Resource paths inside the workspace directory are normalized to
+  workspace-relative before rules, gates, and the judged state see them, so
+  `read src/index.ts` and `read /home/me/proj/src/index.ts` resolve the same
+  way and land in one `/jev-approval-stats` slice. Outside-workspace
+  absolutes pass through unchanged.
 
 
 Options:
