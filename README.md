@@ -16,13 +16,15 @@ compaction can be decided by System One instead of a lossy summary
 
 - **screen** - tool results are judged (junk? prompt injection?) before they
   enter context: `webfetch` by default, every tool with
-  `"screen": { "tools": "all" }`. Mode `annotate` (default) prefixes the
-  result with `jev-screen: junk=… injection=…` (plus `⚠ do-not-rely` over
-  threshold); mode `redact` replaces unsafe **webfetch** content fail-closed
-  (other tools are only annotated). Screened state is regex-scrubbed, sampled
+  `"screen": { "tools": "all" }`. The verdict lands in a separate
+  `[jev-screen]` timeline row by default (`"annotation": "notice"` — result
+  text stays clean; the model learns of a verdict late, and `"mode":
+  "redact"` remains the fail-closed hard stop for fetched pages). Set
+  `"annotation": "inline"` to prefix the result instead, so the model sees
+  the verdict where it reads the content (plus `⚠ do-not-rely` over
+  threshold). Screened state is regex-scrubbed, sampled
   to 12 kB, and cached per (tool, url, content hash). The plugin's own
-  judgment tools are never screened. Flagged results additionally surface as
-  a visible `[jev-screen] ⚠ … do-not-rely` notice row in the timeline. For
+  judgment tools are never screened. For
   content that is not a tool result, the agent can call `jev_screen` itself
   — same judgment, its own tool row, a pass/flagged/unsafe verdict.
 - **scrub** - deterministic redaction (pure regex, never a model call) of
@@ -172,7 +174,7 @@ meanings never share one ambiguous key:
     {
       "package": "github:atvari-eu/opencode-system-one",
       "options": {
-        "screen": { "enabled": true, "mode": "annotate", "tools": "all" },
+        "screen": { "enabled": true, "mode": "annotate", "annotation": "notice", "tools": "all" },
         "model": "jev-1.13", // optional; overrides JEV_MODEL and the default
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many

@@ -6,6 +6,7 @@ import {
   screenApplies,
   screenRedacts,
   screenVerdict,
+  parseScreenAnnotation,
   SELF_SCREENED_TOOLS,
 } from "../src/logic"
 
@@ -49,6 +50,16 @@ describe("screenRedacts", () => {
     expect(screenRedacts("webfetch")).toBe(true)
     expect(screenRedacts("bash")).toBe(false)
     expect(screenRedacts("edit")).toBe(false)
+  })
+})
+
+describe("parseScreenAnnotation", () => {
+  test("notice is the default; only 'inline' opts back in", () => {
+    expect(parseScreenAnnotation(undefined)).toBe("notice")
+    expect(parseScreenAnnotation(false)).toBe("notice")
+    expect(parseScreenAnnotation("notice")).toBe("notice")
+    expect(parseScreenAnnotation("INLINE")).toBe("notice") // case must match exactly
+    expect(parseScreenAnnotation("inline")).toBe("inline")
   })
 })
 

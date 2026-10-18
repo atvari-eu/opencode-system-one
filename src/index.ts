@@ -67,6 +67,7 @@ import {
   parseCandidates,
   parseIdleAuto,
   parseRouteSources,
+  parseScreenAnnotation,
   parseScreenTools,
   pinMatches,
   rankSourcePopular,
@@ -684,6 +685,7 @@ export default Plugin.define({
     }
     const screenEnabled = o.screen?.enabled !== false
     const screenMode = o.screen?.mode === "redact" ? "redact" : "annotate"
+    const screenAnnotation = parseScreenAnnotation(o.screen?.annotation)
     const scrubEnabled = o.scrub?.enabled !== false
     const toolsEnabled = o.tools !== false
     const commandsEnabled = o.commands !== false
@@ -1426,9 +1428,17 @@ export default Plugin.define({
           }
 
           if (text0) {
+            const suffix = scrubbed.hits ? ` scrubbed=${scrubbed.hits}` : ""
+            if (screenAnnotation === "notice") {
+              // Result text stays untouched; the verdict posts as its own
+              // timeline row. Timing note: the synthetic row lands after the
+              // result in the transcript - the model reads unannotated
+              // content and learns of the verdict late.
+              await notice(`[jev-screen] ${tag}${suffix} ${unsafe ? "⚠ do-not-rely" : "pass"} - ${url || tool}`)
+              return
+            }
             const flag = unsafe ? ` ⚠ do-not-rely` : ""
-            const scrubHint = scrubbed.hits ? ` scrubbed=${scrubbed.hits}` : ""
-            setPrimaryText(event.result, `[${tag}${scrubHint}${flag}]\n\n` + text0)
+            setPrimaryText(event.result, `[${tag}${suffix}${flag}]\n\n` + text0)
             if (unsafe) {
               await notice(
                 `[jev-screen] ⚠ ${url || tool} flagged (${tag}) - result annotated, do not rely on it`,
@@ -2276,7 +2286,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the

@@ -899,6 +899,14 @@ export function screenApplies(tool: string, tools: ScreenTools, self: Readonly<R
   return tools === "all" || tools.includes(tool)
 }
 
+// Where the screening verdict lands: "notice" leaves the tool result
+// untouched and posts a separate timeline row (human-facing, default);
+// "inline" prefixes the result text so the model sees the verdict where it
+// reads the content. Trade-off documented in README / screen hook comment.
+export function parseScreenAnnotation(raw: unknown): "inline" | "notice" {
+  return raw === "inline" ? "inline" : "notice"
+}
+
 // Fail-closed redaction deliberately stays scoped to fetched web content:
 // redacting arbitrary bash output destroys its usefulness; other tool
 // results are annotated only.
