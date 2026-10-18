@@ -1508,7 +1508,7 @@ export const HINTS_MAX = 5
 
 // The shell permission action is named "shell" on OpenCode v2 and "bash" on
 // older releases; the gate accepts both so one install covers either.
-const isShellAction = (action: string): boolean => action === "shell" || action === "bash"
+export const isShellAction = (action: string): boolean => action === "shell" || action === "bash"
 
 /** Split a shell resource into chain segments (`&&`, `||`, `;`, newline).
  * Best-effort: semicolons inside quotes are out of scope for a pure split -
