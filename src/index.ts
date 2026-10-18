@@ -715,8 +715,21 @@ export default Plugin.define({
     // ("provider/model") is switched to when an auto-mode turn cannot be
     // routed (judge failure, no options) so the pseudo-model is never
     // actually invoked - set it to a local default-capable model.
+    //
+    // Searchability: the picker's filter matches the model name + provider
+    // name only - the model schema has no alias/tag field - so configured
+    // aliases ride in the display title ("System One Auto (jev)").
+    const autoModelRaw: unknown = routeRaw?.autoModel
+    const autoModelCfg: { name?: unknown; aliases?: unknown } | null =
+      typeof autoModelRaw === "object" && autoModelRaw !== null ? (autoModelRaw as any) : autoModelRaw === true ? {} : null
+    const autoEntryAliases = (Array.isArray(autoModelCfg?.aliases) ? autoModelCfg!.aliases : ["jev"])
+      .filter((a): a is string => typeof a === "string" && a.trim() !== "")
+      .map((a) => a.trim())
+    const autoEntryName: string =
+      typeof autoModelCfg?.name === "string" && autoModelCfg.name.trim() !== "" ? autoModelCfg.name.trim() : "System One Auto"
+    const autoEntryTitle = autoEntryAliases.length > 0 ? `${autoEntryName} (${autoEntryAliases.join(", ")})` : autoEntryName
     const autoEntry =
-      modelAuto && routeRaw?.autoModel === true ? { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL } : null
+      modelAuto && autoModelCfg ? { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL, title: autoEntryTitle } : null
     const autoFallbackRaw: unknown = routeRaw?.autoFallback
     const autoFallbackList = Array.isArray(autoFallbackRaw)
       ? autoFallbackRaw
@@ -852,17 +865,15 @@ export default Plugin.define({
             editor.add({
               info: {
                 ...Provider.Info.empty(entryProviderID),
-                name: "System One Auto",
+                name: "System One",
                 activation: "enabled",
                 package: "@opencode-ai/providers/openai-compatible",
                 settings: { baseURL: "http://127.0.0.1:1/v1" },
               },
-              models: [
-                { ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: "System One Auto" },
-              ],
+              models: [{ ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: autoEntry.title }],
             })
           })
-          console.log("[jev] route: registered auto entry system-one/auto")
+          console.log(`[jev] route: registered auto entry system-one/auto as "${autoEntry.title}"`)
         } catch (err: any) {
           console.error(`[jev] route: auto entry registration failed (${String(err?.message ?? err)})`)
         }
