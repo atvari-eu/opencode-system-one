@@ -463,7 +463,7 @@ modes:
 - **Auto** (`"approvals": { "mode": "auto" }`): the same judgment, and when it
   clears the confidence bar (default `0.85`, `minConfidence`), the request is
   approved programmatically and logged to the console. Only the allowlisted
-  `actions` (default `bash`, `edit`) are candidates; `webfetch`, MCP calls,
+  `actions` (default `shell`, `edit`) are candidates; `webfetch`, MCP calls,
   and everything else still prompt you.
 - **Deny** (`"approvals": { "mode": "deny" }`): the mirror image - for the
   allowlisted `actions` only, a *likely risky* verdict (below 0.5) refuses
@@ -502,7 +502,7 @@ Options:
 | --- | --- | --- |
 | `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` also auto-approves requests above `minConfidence`; `"deny"` also auto-denies allowlisted requests whose verdict falls below 0.5. Omit or `false` keeps the feature off. |
 | `minConfidence` | `0.85` | `auto` threshold, clamped to 0.5-0.99. |
-| `actions` | `["bash", "edit"]` | Actions eligible for `auto` and `deny`; annotations apply to every prompt-worthy request regardless. |
+| `actions` | `["shell", "edit"]` | Actions eligible for `auto` and `deny`; annotations apply to every prompt-worthy request regardless. Entries must match the CLI's permission action name - `shell` on OpenCode v2, `bash` on older releases (the gate accepts both names). |
 
 ## System One compaction
 

@@ -770,7 +770,7 @@ export default Plugin.define({
       typeof approvalsObj.minConfidence === "number" && Number.isFinite(approvalsObj.minConfidence)
         ? Math.min(0.99, Math.max(0.5, approvalsObj.minConfidence))
         : 0.85
-    const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["bash", "edit"])
+    const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["shell", "edit"])
       .filter((action: unknown) => typeof action === "string" && action.length > 0)
       .map(String)
     const location = (ctx as any).location?.directory ?? ""
@@ -1316,7 +1316,10 @@ export default Plugin.define({
               if (
                 REDACTED_MARKER.test(resource) ||
                 matchesAny(resource, secretPatterns) ||
-                (action === "bash" && matchesAny(resource, DESTRUCTIVE)) ||
+                // The shell permission action is named "shell" on OpenCode
+                // v2 and "bash" on older releases; accept both names so one
+                // install covers either.
+                ((action === "bash" || action === "shell") && matchesAny(resource, DESTRUCTIVE)) ||
                 (action === "edit" && !isProjectPath(resource))
               ) {
                 annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
