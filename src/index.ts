@@ -54,6 +54,8 @@ import {
   NOTIFY_BELOW_DEFAULT,
   jevAuthError,
   jevUserError,
+  approvalGate,
+  approvalQuestion,
   candidateKey,
   clampThreshold,
   doneCheckStandDown,
@@ -62,6 +64,7 @@ import {
   emergencyRealModel,
   idleSessionID,
   isAvailableModel,
+  matchesPatterns,
   normaliseProvider,
   parseAuthExport,
   parseCandidates,
@@ -73,6 +76,7 @@ import {
   pinMatches,
   rankSourcePopular,
   refKey,
+  resolveApproval,
   routeTurn,
   screenApplies,
   screenRedacts,
@@ -588,7 +592,8 @@ const isAutoEntry = (autoEntry: { providerID: string; modelID: string } | null |
   !!autoEntry && model?.providerID === autoEntry.providerID && model?.id === autoEntry.modelID
 
 // ---------------------------------------------------------------------------
-// Approvals: jev annotates permission prompts, optionally auto-approves them
+// Approvals: jev vets permission prompts, and in the delegating modes enacts
+// the decisive verdicts (approve in auto; deny in auto and deny)
 // ---------------------------------------------------------------------------
 
 // OpenCode permission flow: tools call assert() with {action, resources,
@@ -600,45 +605,6 @@ const isAutoEntry = (autoEntry: { providerID: string; modelID: string } | null |
 // "ask" returns untouched - zero jev cost there.
 
 const REDACTED_MARKER = /\[REDACTED:/
-
-// Hard "never auto-approve" patterns for the resource strings. This is a
-// deny-the-shortcut list, not a security sandbox: a false positive only
-// keeps the human prompt (annotate-only), never blocks anything.
-const DESTRUCTIVE: Array<RegExp> = [
-  /\brm\b[^;|&]*\s-{1,2}[a-zA-Z]*[rf]/i,
-  /\bsudo\b/i,
-  /\|\s*(sudo\s+)?(sh|bash|zsh|ksh|fish)\b/i,
-  /\bgit\s+push\b[^;|&]*\s(-f\b|--force)/i,
-  /\bgit\s+reset\s+--hard\b/i,
-  /\bgit\s+clean\b[^;|&]*-[a-zA-Z]*[fdx]/i,
-  /\bgit\s+filter-(branch|repo)\b/i,
-  /\b(npm|pnpm|yarn|bun)\s+publish\b/i,
-  /\bdrop\s+(table|database|schema)\b/i,
-  /\btruncate\s+table\b/i,
-  /\bdd\b[^;|&]*\bof=/i,
-  /\bchmod\s+(777|666)\b/i,
-  /\b(mkfs|shutdown|reboot|poweroff|halt)\b/i,
-  /\/dev\/(sd[a-z]\d?|nvme\d+|disk)\b/i,
-  /(^|[\s"'`(=])\/(etc|boot|sbin)\//,
-]
-
-// Module-level (not per-event) so the cache key stays stable for repeated,
-// identical approval requests.
-const APPROVAL_QUESTION: Question = {
-  id: "approve",
-  type: "noul",
-  instructions:
-    "Should the permission request below be approved automatically, without a human reviewing it first? Answer with the probability that approval is safe. High (approaching 1.0) only for routine, reversible, workspace-local development work: editing project files, running tests/lint/builds/dev servers, installing declared dependencies, standard git add/commit/diff. Low for: destructive or irreversible steps, anything outside the workspace or touching system paths, executing fetched code, publishing or deploying, modifying credentials or security settings, broad deletions, or any step that is not clearly understood. The whole request is approved or refused together - a single risky step must drag the probability down.",
-}
-
-// Stateless regex testing - several pattern lists carry the `g` flag, and a
-// raw `.test` would keep lastIndex state between authorization calls.
-function matchesAny(text: string, patterns: Array<RegExp>): boolean {
-  return patterns.some((pattern) => {
-    pattern.lastIndex = 0
-    return pattern.test(text)
-  })
-}
 
 // Normalizes score/choice answers; returns a mean numeric when possible.
 function numericOf(answer: any): number | undefined {
@@ -1281,7 +1247,7 @@ export default Plugin.define({
       })
     }
 
-    // -- approvals: jev annotates permission prompts, optionally approves (opt-in) --
+    // -- approvals: jev vets permission prompts, or enacts decisive verdicts (opt-in) --
 
     if (approvalsEnabled) {
       const permissionApi = (ctx as any).permission
@@ -1298,6 +1264,8 @@ export default Plugin.define({
         }
 
         const secretPatterns = SECRET_PATTERNS.map(([pattern]) => pattern)
+        const isRedactedOrSecret = (resource: string): boolean =>
+          REDACTED_MARKER.test(resource) || matchesPatterns(resource, secretPatterns)
 
         await permissionApi.hook("evaluate", async (event: any) => {
           try {
@@ -1310,18 +1278,10 @@ export default Plugin.define({
 
             // Deterministic gates first: properties that make auto-approval
             // impossible regardless of any judgment. The scrub marker counts
-            // as secret usage; multi-command bash calls are approved as a
+            // as secret usage; multi-command shell calls are judged as a
             // whole, so one bad command holds the entire request.
             for (const resource of resources) {
-              if (
-                REDACTED_MARKER.test(resource) ||
-                matchesAny(resource, secretPatterns) ||
-                // The shell permission action is named "shell" on OpenCode
-                // v2 and "bash" on older releases; accept both names so one
-                // install covers either.
-                ((action === "bash" || action === "shell") && matchesAny(resource, DESTRUCTIVE)) ||
-                (action === "edit" && !isProjectPath(resource))
-              ) {
+              if (approvalGate(action, resource, { isRedactedOrSecret, isProjectPath })) {
                 annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
                 console.log(`[jev] approval: gate held ${action} for manual review`)
                 return
@@ -1333,42 +1293,35 @@ export default Plugin.define({
             if (event.metadata && typeof event.metadata === "object")
               detail.push(`details: ${JSON.stringify(event.metadata).slice(0, 2000)}`)
             const state =
-              "An OpenCode coding agent requests permission for the operation(s) below. Judge whether approving them automatically is safe.\n\n" +
+              "An OpenCode coding agent requests permission for the operation(s) below. Decide how it should be handled.\n\n" +
               redactText(detail.join("\n").slice(0, 6000)).text
 
-            const { reply } = await cachedJudge([APPROVAL_QUESTION], state, AbortSignal.timeout(8_000))
-            const p = numericOf((reply as any).answers?.approve)
-            if (typeof p !== "number" || Number.isNaN(p)) {
-              annotate(event, "[jev] verdict unavailable - review")
-              console.log(`[jev] approval: uninterpretable answer for ${action}`)
-              return
-            }
-
-            const candidate = approvalsAuto && approvalsActions.includes(action) && p >= approvalsMinConfidence
-            if (candidate) {
+            // One three-way choice - approve (run it), deny (refuse it), ask
+            // (show a human): the verdict names the action, so decisive
+            // verdicts are enacted under the mode policy and only the
+            // genuinely uncertain band reaches the human. Fail-closed: any
+            // uninterpretable answer stays exactly the original prompt.
+            const { reply } = await cachedJudge([approvalQuestion()], state, AbortSignal.timeout(8_000))
+            const outcome = resolveApproval({
+              answer: (reply as any).answers?.approve,
+              mode: approvalsMode,
+              minConfidence: approvalsMinConfidence,
+              allowlisted: approvalsActions.includes(action),
+            })
+            if (outcome.effect === "allow") {
               event.effect = "allow"
               console.log(
-                `[jev] approval: auto-approved ${action} ${resources.join(" && ").slice(0, 120)} (${fmt(p)})`,
+                `[jev] approval: auto-approved ${action} ${resources.join(" && ").slice(0, 120)} - ${outcome.note}`,
               )
               return
             }
-            // deny mode: the model's clearly-risky verdict refuses the request
-            // outright (effect "deny" surfaces the reason to the model); gates
-            // and uncertain bands stay human prompts - never auto-approved.
-            if (approvalsDeny && approvalsActions.includes(action) && p < 0.5) {
+            if (outcome.effect === "deny") {
               event.effect = "deny"
-              console.log(`[jev] approval: denied ${action} ${resources.join(" && ").slice(0, 120)} (${fmt(p)})`)
-              annotate(event, `[jev] likely risky (${fmt(p)}) - denied`)
+              annotate(event, `${outcome.note} - the agent must pick another approach`)
+              console.log(`[jev] approval: denied ${action} ${resources.join(" && ").slice(0, 120)} - ${outcome.note}`)
               return
             }
-            annotate(
-              event,
-              p >= approvalsMinConfidence
-                ? `[jev] likely safe (${fmt(p)})`
-                : p >= 0.5
-                  ? `[jev] uncertain (${fmt(p)}) - review`
-                  : `[jev] likely risky (${fmt(p)}) - review`,
-            )
+            annotate(event, outcome.note)
           } catch (err: any) {
             await surfaceJev(err?.message, event?.sessionID)
             console.error(`[jev] approval: judgment skipped (${String(err?.message ?? err)})`)

@@ -64,9 +64,10 @@ compaction can be decided by System One instead of a lossy summary
   lexical prefilter → path judgments → windowed passage judgments, ranked
   hits with line ranges. See [jev_find](#jev_find).
 - **approvals** (opt-in) - permission requests are vetted by jev before
-  they reach you: a verdict line is added to the prompt, and with
-  `"mode": "auto"`, high-confidence routine operations are approved outright.
-  Configured deny rules always win. See
+  they reach you: a verdict line is added to the prompt, and in the
+  delegating modes decisive verdicts are enacted - `auto` approves routine
+  operations outright and refuses clearly harmful ones, so prompts stay for
+  genuinely uncertain cases. Configured deny rules always win. See
   [jev-assisted approvals](#jev-assisted-approvals).
 - **compaction** (opt-in) - replaces the lossy compaction summarizer with
   System One decisions: tool calls and results are dropped or truncated by
@@ -458,51 +459,66 @@ modes:
 
 - **Annotate** (enabled with `"approvals": { "mode": "annotate" }`): every
   `ask` verdict gets a one-line jev opinion added to the prompt you see -
-  `[jev] likely safe (0.92)`, `[jev] uncertain (0.63) - review`,
-  `[jev] likely risky (0.18) - review`. The decision stays entirely yours.
-- **Auto** (`"approvals": { "mode": "auto" }`): the same judgment, and when it
-  clears the confidence bar (default `0.85`, `minConfidence`), the request is
-  approved programmatically and logged to the console. Only the allowlisted
-  `actions` (default `shell`, `edit`) are candidates; `webfetch`, MCP calls,
-  and everything else still prompt you.
-- **Deny** (`"approvals": { "mode": "deny" }`): the mirror image - for the
-  allowlisted `actions` only, a *likely risky* verdict (below 0.5) refuses
-  the request programmatically (`effect: "deny"`, the reason rides back to
-  the model as tool feedback so it can pick a different approach), and
-  everything above that band still prompts you. Never auto-approves; gated
-  and uncertain bands stay human prompts. Use it when you want the agent
-  held back from obviously wrong operations but absolutely no automatic
-  yes - useful while the account is on the Console free tier, where an
+  `[jev] suggests approve (0.94) - review`, `[jev] uncertain (0.58) - review`,
+  `[jev] suggests deny (0.91) - review`. The decision stays entirely yours.
+- **Auto** (`"approvals": { "mode": "auto" }`): the same judgment, and
+  decisive verdicts are enacted programmatically for the allowlisted
+  `actions` (default `shell`, `edit`): an approve verdict at or above
+  `minConfidence` (default `0.85`) is approved outright, a deny verdict at or
+  above the bar is refused (`effect: "deny"`, the reason rides back to the
+  model as tool feedback so it can pick a different approach). Only the
+  genuinely uncertain band - `ask` verdicts, below-bar confidence, gate
+  hits, judge failures - still prompts you; `webfetch`, MCP calls, and
+  everything outside `actions` also stay prompts.
+- **Deny** (`"approvals": { "mode": "deny" }`): the same verdicts but never
+  an automatic yes - otherwise identical to `auto` (decisive deny verdicts
+  refuse, everything else prompts). Use it when you want the agent held
+  back from clearly wrong operations but absolutely no automatic approve -
+  useful while the account is on the Console free tier, where an
   unattended approve would fire billable work.
+
+The verdict question is deliberately one three-way choice instead of a
+probability score: `approve` / `ask` / `deny` name the action, and the option
+descriptions steer the judge decisively - `ask` stays reserved for requests
+that are genuinely neither clearly routine nor clearly harmful, since every
+ask costs you attention. That is what keeps prompts down: routine,
+workspace-local work (including `rm -rf dist`, `npm run build`,
+`git commit`) vets as approve and never interrupts; clearly harmful
+work refuses instead of interrupting; you decide only the uncertain middle.
 
 Every judgment only happens when a request would already prompt you -
 already-allowed and explicitly denied requests stay free of any jev call.
 
 Deterministic gates decide before any model does: requests containing secret
-scans or `[REDACTED:]` markers, destructive patterns (`rm -rf`, `sudo`,
-piped-to-shell, `git push --force`, `npm publish`, `DROP TABLE`, `dd of=`,
-system paths, ...), or edits outside the project directory are **never**
-auto-approved - they are annotated and left to you. The gate list is
-deliberately a deny-the-shortcut list, not a security sandbox; a false
-positive only costs automation, never safety - the human prompt remains.
+scans or `[REDACTED:]` markers, destructive patterns (`rm` with recursive
+flags aimed at absolute or home paths, `sudo`, piped-to-shell,
+`git push --force`, `git reset --hard`, `npm publish`, `DROP TABLE`,
+`dd of=`, system paths, ...), or edits outside the project directory are
+**never** auto-approved - they are annotated and left to you. (Routine
+workspace-local cleanup like `rm -rf dist` is *not* gated; the judge sees
+the full command and its deny criterion covers broad or unknown deletions.)
+The gate list is deliberately a deny-the-shortcut list, not a security
+sandbox; a false positive only costs automation, never safety - the human
+prompt remains.
 
 The fail-closed ladder: jev unreachable, a timeout (8 s), or an
 uninterpretable answer leaves the request exactly as OpenCode built it
-(annotation aside), and low confidence never silently approves. Configured
-deny rules and every "always allow" memory you made in the UI always rank
-above the feature.
+(annotation aside), and below-bar confidence never silently enacts anything.
+Configured deny rules and every "always allow" memory you made in the UI
+always rank above the feature.
 
-One framing matters: automatic decisions are an **explicit delegation you opt
-into**, bounded by the deterministic gates above; `auto` never auto-denies and
-`deny` never auto-approves, and every automatic decision is logged.
+One framing matters: automatic decisions are an **explicit delegation you
+opt into**, bounded by the deterministic gates above. `auto` enacts both
+decisive verdicts (approve *and* deny), `deny` enacts only the refusal, and
+`annotate` never enacts; every automatic decision is logged.
 
 Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` also auto-approves requests above `minConfidence`; `"deny"` also auto-denies allowlisted requests whose verdict falls below 0.5. Omit or `false` keeps the feature off. |
-| `minConfidence` | `0.85` | `auto` threshold, clamped to 0.5-0.99. |
-| `actions` | `["shell", "edit"]` | Actions eligible for `auto` and `deny`; annotations apply to every prompt-worthy request regardless. Entries must match the CLI's permission action name - `shell` on OpenCode v2, `bash` on older releases (the gate accepts both names). |
+| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` enacts approve and deny verdicts for allowlisted actions above `minConfidence`; `"deny"` does the same minus the automatic approve. Omit or `false` keeps the feature off. |
+| `minConfidence` | `0.85` | Confidence in the winning verdict required to enact it (approve in `auto`; deny in `auto` and `deny`), clamped to 0.5-0.99. Lower it to enact more verdicts (fewer asks), raise it to hand more to the bar. |
+| `actions` | `["shell", "edit"]` | Actions eligible for automatic decisions in `auto` and `deny`; annotations apply to every prompt-worthy request regardless. Entries must match the CLI's permission action name - `shell` on OpenCode v2, `bash` on older releases (the gate itself accepts both names). Widening the list (e.g. adding `"webfetch"`) is the main dial for cutting prompts further - MCP tools should stay out of it. |
 
 ## System One compaction
 

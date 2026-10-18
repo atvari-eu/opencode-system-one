@@ -273,12 +273,39 @@ Deliberate simplifications, in case the omp version evolves:
   (`.env`, `id_rsa`, key dirs) are skipped during the walk, in addition
   to the text scrub that runs on every judged window.
 
-## Approvals: the "probability is never permission" tension
+## Approvals: verdicts, not probabilities
 
-The System One guideline "a probability is never permission by itself"
-targets an agent improvising approvals around the human. The approvals
-feature resolves the tension explicitly instead of bending the guideline
-quietly: delegation is opt-in in config, bounded by deterministic gates
-checked before any jev call, never auto-denies, and logs every automatic
-approval - the probability is one input to a declared policy, not the
-policy itself.
+The approvals feature started as a single `noul` question - "probability
+that approval is safe" - thresholded at 0.85 for enacting an approval. In
+practice that stayed prompt-heavy: the question's phrasing biases judges
+under the bar (listing every risk makes calibration conservative), a
+probabilistic verdict never names what should happen, and routine
+workspace-local commands like `rm -rf dist` hit the hard-coded `rm -rf`
+gate before any judgment.
+
+The redesign resolves all three. The question is now one three-way choice -
+approve / ask / deny, with the option descriptions steering the judge toward
+decisive verdicts: routine reversible workspace-local work approves,
+clearly harmful work denies, and `ask` is reserved for the genuinely
+uncertain middle (its criterion explicitly says it is not for borderline
+convenience). A verdict names the action, so enforcement is a pure mapping
+(`resolveApproval` in logic.ts): `auto` enacts both decisive verdicts,
+`deny` enacts only the refusal, `annotate` never enacts; the winner must
+also clear `minConfidence` (default 0.85, on confidence-in-the-verdict,
+clamped 0.5-0.99) and the action must be allowlisted (default `shell`,
+`edit` - "shell" is the v2 permission action name, "bash" the older one).
+Fail-closed is unchanged: a missing, malformed, or unknown choice answer is
+never a decision.
+
+Delegation tension: the System One guideline "a probability is never
+permission by itself" targets an agent improvising approvals around the
+human. The feature still resolves it explicitly: delegation is opt-in in
+config, bounded by the deterministic gates that run before any jev call,
+constrained again by the allowlist, and logged. `auto` now enacts automatic
+*denies* too (it previously never auto-denied): the decisive deny verdict is
+steered to critical operations by its criterion, denies are the fail-safe
+direction (a wrong refusal is visible feedback to the agent, unlike a wrong
+unattended approval), and below-bar denies still reach the human. The rm
+gate narrowed to recursive deletions aimed at absolute or tilde paths;
+workspace-local cleanup is judged instead of pre-gated, because it was the
+single most common needless prompt.
