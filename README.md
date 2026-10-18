@@ -262,7 +262,7 @@ next prompt re-routes it.
 ### The auto entry (`route.autoModel`)
 
 `"route": { "auto": true, "autoModel": true, "autoFallback": "provider/model" }`
-registers a pseudo-model `system-one/auto` that appears in the model picker
+registers a pseudo-model `opencode-system-one/auto` that appears in the model picker
 as a normal entry. Pick it once and the plugin takes over: it is never
 actually invoked - each prompt while the session sits on it is routed to a
 real `(model, level)` pair by the normal routing path, and at idle the
@@ -270,10 +270,10 @@ session returns to the auto entry, so the picker keeps showing `auto`.
 
 The picker's search matches the model's display name and provider name
 only (the model schema has no alias/tag field), so you can give the entry
-search aliases through the name: `"autoModel": { "aliases": ["jev"] }`
-(default) shows the entry as `System One Auto (jev)` - typing `jev`,
-`auto` or `system` all find it. `"autoModel": { "name": "Jev Auto" }`
-selects a custom display name instead.
+search aliases through the name: `"autoModel": { "aliases": ["Jev"] }`
+(default) shows the entry as `Auto (Jev)` - typing `jev` or `auto`
+finds it, and the provider appears under `opencode-system-one`.
+`"autoModel": { "name": "Autopilot" }` selects a custom display name.
 
 - Mid-loop (session on a judged pick whose base is the entry) the normal
   lattice applies: jev may keep or change the pick; judge failures keep the
@@ -330,7 +330,7 @@ Options:
 | `route.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
 | `route.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
 | `route.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
-| `route.autoModel` | `false` | Register the `system-one/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. `true`, or `{ "name": "...", "aliases": [...] }` to shape the picker title (default aliases add `(jev)` so `jev` is searchable). Requires `route.auto`. |
+| `route.autoModel` | `false` | Register the `opencode-system-one/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. `true`, or `{ "name": "...", "aliases": [...] }` to shape the picker title (defaults: `Auto` + `(Jev)` alias suffix for search). Requires `route.auto`. |
 | `route.autoFallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the turn fails visibly on the pseudo-model. |
 | `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
 | `effort.minConfidence` | `0.45` | Minimum jev answer confidence required to switch the reasoning variant. |

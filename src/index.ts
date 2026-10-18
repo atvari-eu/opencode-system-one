@@ -585,7 +585,7 @@ const DONE_QUESTION: Question = {
 
 // Auto pseudo-model entry: "auto" is not a runnable model - it is a resting
 // point the plugin routes away from at every prompt and restores at idle.
-const AUTO_PROVIDER = "system-one"
+const AUTO_PROVIDER = "opencode-system-one"
 const AUTO_MODEL = "auto"
 const autoEntryKeyOf = (e: { providerID: string; modelID: string }): string => `${e.providerID}/${e.modelID}`
 const isAutoEntry = (autoEntry: { providerID: string; modelID: string } | null | undefined, model: any): boolean =>
@@ -707,7 +707,7 @@ export default Plugin.define({
         '[jev] route: auto enabled without candidates - set "route": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "opencode": true }; routing stays off',
       )
     }
-    // route.autoModel: register a "system-one/auto" pseudo-model the user can
+    // route.autoModel: register a "opencode-system-one/auto" pseudo-model the user can
     // select in the TUI picker. The plugin is its only controller: at every
     // prompt while the session rides auto, jev routes the turn to a real
     // (model, level) pair, and at idle the session is pulled back to the
@@ -718,15 +718,15 @@ export default Plugin.define({
     //
     // Searchability: the picker's filter matches the model name + provider
     // name only - the model schema has no alias/tag field - so configured
-    // aliases ride in the display title ("System One Auto (jev)").
+    // aliases ride in the display title ("Auto (Jev)").
     const autoModelRaw: unknown = routeRaw?.autoModel
     const autoModelCfg: { name?: unknown; aliases?: unknown } | null =
       typeof autoModelRaw === "object" && autoModelRaw !== null ? (autoModelRaw as any) : autoModelRaw === true ? {} : null
-    const autoEntryAliases = (Array.isArray(autoModelCfg?.aliases) ? autoModelCfg!.aliases : ["jev"])
+    const autoEntryAliases = (Array.isArray(autoModelCfg?.aliases) ? autoModelCfg!.aliases : ["Jev"])
       .filter((a): a is string => typeof a === "string" && a.trim() !== "")
       .map((a) => a.trim())
     const autoEntryName: string =
-      typeof autoModelCfg?.name === "string" && autoModelCfg.name.trim() !== "" ? autoModelCfg.name.trim() : "System One Auto"
+      typeof autoModelCfg?.name === "string" && autoModelCfg.name.trim() !== "" ? autoModelCfg.name.trim() : "Auto"
     const autoEntryTitle = autoEntryAliases.length > 0 ? `${autoEntryName} (${autoEntryAliases.join(", ")})` : autoEntryName
     const autoEntry =
       modelAuto && autoModelCfg ? { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL, title: autoEntryTitle } : null
@@ -865,7 +865,7 @@ export default Plugin.define({
             editor.add({
               info: {
                 ...Provider.Info.empty(entryProviderID),
-                name: "System One",
+                name: "opencode-system-one",
                 activation: "enabled",
                 package: "@opencode-ai/providers/openai-compatible",
                 settings: { baseURL: "http://127.0.0.1:1/v1" },
@@ -873,7 +873,7 @@ export default Plugin.define({
               models: [{ ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: autoEntry.title }],
             })
           })
-          console.log(`[jev] route: registered auto entry system-one/auto as "${autoEntry.title}"`)
+          console.log(`[jev] route: registered auto entry opencode-system-one/auto as "${autoEntry.title}"`)
         } catch (err: any) {
           console.error(`[jev] route: auto entry registration failed (${String(err?.message ?? err)})`)
         }

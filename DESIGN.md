@@ -127,12 +127,12 @@ pin storage). Rationale worth remembering when extending it:
   `price.perMillion.input`, bare number) that feeds a per-Mtok hint into
   option criteria; missing data simply yields no hint.
 - **The auto entry** (`route.autoModel`): OpenCode has no "auto" model
-  concept, so the plugin registers `system-one/auto` itself via
+  concept, so the plugin registers `opencode-system-one/auto` itself via
   `ctx.provider.transform` (Provider.Info.empty + Model.Info.default, a
   closed-port base URL so a direct invocation fails fast instead of
   hanging - fail-visible, never fail-silent). The entry is only ever a
   *resting point* the plugin routes away from; semantically it just makes
-  the session base equal `system-one/auto`, so the existing stand-down
+  the session base equal `opencode-system-one/auto`, so the existing stand-down
   lattice applies unchanged (a manual pick stands down until the user
   selects `auto` again, which is the base-return re-arm). Two
   lattice adjustments were needed: at the entry the options exclude a
