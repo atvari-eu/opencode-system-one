@@ -729,18 +729,37 @@ export function isLoopingTail(lines: string[], minRun: number = LOOP_MIN_RUN): b
   return false
 }
 
+// Row text across every shape the host has shipped. v2 `session.context`
+// rows are flat ({ id, type: "user" | "synthetic" | ..., text?, content? }) -
+// no info wrapper, no role field; assistant text lives in content parts.
+// The JSON fallback is last so an unknown row never reads as empty.
+function messageText(m: any): string {
+  const info: any = m?.info ?? m
+  if (typeof info?.text === "string") return info.text
+  if (typeof m?.text === "string") return m.text
+  if (Array.isArray(info?.content)) {
+    const text = info.content
+      .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+      .map((part: any) => part.text)
+      .join("\n")
+    if (text) return text
+  }
+  return JSON.stringify(m).slice(0, 300)
+}
+
+// The row's turn kind: legacy shapes carry a `role`, v2 flat rows carry only
+// a `type` ("user", "assistant", "synthetic", "idle", ...). Synthetic-typed
+// rows are never user turns (own plugin posts ride in as such).
+function messageKind(m: any): string {
+  return (m?.info?.role ?? m?.role ?? m?.info?.type ?? m?.type) as string | undefined ?? ""
+}
+
 // Real user rows: the stand-down marker counts user messages so at most one
 // notice is posted per user message. Own notices are synthetic and never count.
 export function userRowCount(messages: any[]): number {
   return messages.filter((m: any) => {
-    const text = typeof m?.info?.text === "string"
-      ? m.info.text
-      : typeof m?.text === "string"
-        ? m.text
-        : ""
-    if (isOwnNoticeRow(text)) return false
-    const role = m?.info?.role ?? m?.role
-    return role === "user"
+    if (isOwnNoticeRow(messageText(m))) return false
+    return messageKind(m) === "user"
   }).length
 }
 
@@ -763,14 +782,7 @@ export function doneTranscript(
   const totalChars = options?.totalChars ?? 12000
   const lines = messages
     .slice(-maxMessages)
-    .map((m: any) => {
-      const text = typeof m?.info?.text === "string"
-        ? m.info.text
-        : typeof m?.text === "string"
-          ? m.text
-          : JSON.stringify(m).slice(0, 300)
-      return text.slice(0, perMessageChars)
-    })
+    .map((m: any) => messageText(m).slice(0, perMessageChars))
     .filter((line: string) => !isOwnNoticeRow(line))
   const text = lines.join("\n").slice(-totalChars)
   return {

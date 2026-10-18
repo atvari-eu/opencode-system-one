@@ -133,6 +133,76 @@ describe("userRowCount + doneCheckStandDown", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// v2 host rows: shapes captured verbatim from a live OpenCode v2
+// /session/{id}/context response (flat rows - no info wrapper, no role field;
+// assistant text lives in content parts; synthetic posts carry top-level text).
+// The stand-down and tail hashing must hold on these, not only on the legacy
+// wrapped shape above.
+// ---------------------------------------------------------------------------
+
+const flatUser = {
+  id: "msg_u1",
+  time: { created: 1 },
+  text: "fix the loop",
+  files: [],
+  agents: [],
+  type: "user",
+}
+const flatOtherUser = { ...flatUser, id: "msg_u2", text: "second ask" }
+const flatSynthetic = {
+  id: "msg_s1",
+  time: { created: 2 },
+  text: "[jev-done-check] p(complete)=0.13 → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user",
+  type: "synthetic",
+}
+const flatAssistant = {
+  id: "msg_a1",
+  time: { created: 3 },
+  type: "assistant",
+  agent: "build",
+  content: [
+    { type: "reasoning", text: "hidden deliberation" },
+    { type: "text", text: "the visible reply" },
+  ],
+}
+const flatIdle = { id: "msg_i1", time: { created: 4 }, type: "idle" }
+
+describe("userRowCount + doneCheckStandDown on flat v2 rows", () => {
+  test("counts typed user rows; synthetic and idle rows never count without a role field", () => {
+    expect(userRowCount([flatUser, flatAssistant, flatSynthetic, flatIdle])).toBe(1)
+    expect(userRowCount([flatUser, flatOtherUser])).toBe(2)
+    // legacy wrapped shapes keep working
+    expect(userRowCount([userRow("legacy role field")])).toBe(1)
+  })
+
+  test("doneTranscript reads content-part text and skips reasoning parts", () => {
+    const tail = doneTranscript([flatUser, flatAssistant])
+    expect(tail.text).toContain("fix the loop")
+    expect(tail.text).toContain("the visible reply")
+    expect(tail.text).not.toContain("hidden deliberation")
+    // an unknown row shape still degrades to its JSON - never to an empty tail
+    expect(doneTranscript([flatIdle]).text.length).toBeGreaterThan(0)
+  })
+
+  test("own synthetic notices stay excluded from text and hash on flat rows", () => {
+    const plain = doneTranscript([flatUser, flatAssistant])
+    const after = doneTranscript([flatUser, flatAssistant, flatSynthetic])
+    expect(plain.hash).toBe(after.hash)
+    expect(after.text).not.toContain("[jev-done-check]")
+  })
+
+  test("the nudge loop cannot restart without a new user message (the live failure)", () => {
+    // Real-failure chain: probe judged p=0.13 with userCount 0 (v2 rows lacked
+    // role), stored userCountAtNotice 0, and the next probe - still 0 - was
+    // treated as a brand-new user turn. With typed rows the count is real, so
+    // the same-count probe stands down.
+    expect(userRowCount([flatUser, flatOtherUser])).toBe(2)
+    expect(doneCheckStandDown({ userCountAtNotice: 2 }, 2)).toBe(true)
+    expect(doneCheckStandDown({ userCountAtNotice: 2 }, 3)).toBe(false)
+  })
+})
+
 describe("doneVerdict bands", () => {
   test("matches the command's bands exactly", () => {
     expect(doneVerdict(0.9)).toBe("complete")

@@ -363,6 +363,10 @@ notices you unprompted - rules that keep it polite:
   own notices excluded) is reported as a loop - the notice says the
   session is repeating itself and asks you to interrupt or send a new
   instruction, instead of re-asking for "the remaining work".
+- Simultaneous end-of-turn events judge once: one probe per session runs
+  at a time, and the idle subscriptions a reload leaves behind are handed
+  back (setup returns a cleanup), so stacked copies never each post their
+  own notice.
 - jev answers the same `noul` question as `/jev-done-check`
   (p(task complete), 0-1). One synthetic notice is posted only when
   completion looks unlikely - probability at or below `notifyBelow`

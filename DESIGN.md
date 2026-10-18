@@ -197,6 +197,11 @@ asked, so it carries extra invariants beyond fail-open:
   a notice, the user-message count at notice time is stored in the same
   row (`userCountAtNotice`); the next idle with a user-message count not
   above it stands down before any jev request. One nudge per user turn.
+  Shape pitfall (observed live 2026-10-18): v2 `session.context` rows are
+  flat and carry no `role` field - the kind rides as `type` - so a counter
+  reading `role === "user"` stands at 0 forever and the invariant silently
+  breaks (three probes judged and posted within one second after one turn
+  end). The count now falls back to `type === "user"`.
 - **Loop detection**: identical consecutive tail rows (whitespace-
   normalized, own notices removed first - a notice cannot mask a run it
   interrupts) flip the tail's `loop` flag; the notice then reports the
@@ -204,7 +209,14 @@ asked, so it carries extra invariants beyond fail-open:
   the remaining work, which would only continue the loop.
 - **Notification, not conversation**: the notice is one synthetic message;
   it never edits turns, never spawns model turns, and states p(complete)
-  so the user can disagree with it.
+  so the user can disagree with it. Live caution: v2 synthetic posts DO
+  join the agent's next model call (the TUI wakes), so each notice earns a
+  turn whose end re-arms the check - with the stand-down broken, that is
+  the fusillade of near-identical notices observed. Two hardening rules
+  came out of it: one probe per session in flight (concurrent copies all
+  read the marker as absent and each would post), and setup returns a
+  cleanup that hands back the idle subscriptions (a reload must not stack
+  old probes beside fresh ones).
 
 ## Screen-all: scoping lifted from webfetch-only
 

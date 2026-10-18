@@ -1647,6 +1647,10 @@ export default Plugin.define({
     // Newest model-switched message in the transcript ({ model, previous }),
     // or undefined - declared at setup scope because the idle resting reset
     // needs it even when the auto entry itself is off (plain auto effort).
+    // idleDisposers: every subscription these features open registers its stop
+    // flag, so the cleanup function setup returns (plugin reload/unload) can
+    // tear them down instead of leaving stacked probes behind.
+    const idleDisposers: Array<() => void> = []
     const latestSwitch = (rows: ReadonlyArray<any>): { to: any; from: any } | undefined => {
       for (let i = rows.length - 1; i >= 0; i--) {
         const message: any = rows[i]?.info ?? rows[i]
@@ -1663,9 +1667,14 @@ export default Plugin.define({
       try {
         const stream: any = await events.subscribe()
         if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
+          let stopped = false
+          idleDisposers.push(() => {
+            stopped = true
+          })
           ;(async () => {
             try {
               for await (const e of stream as any) {
+                if (stopped) break
                 const sessionID = idleSessionID(e)
                 if (sessionID) await handler(sessionID)
               }
@@ -1702,7 +1711,10 @@ export default Plugin.define({
     // their resting point. Best effort: without a usable idle subscription
     // the session stays on the last pick until the next prompt re-routes it.
     if (autoEntry || effortAuto) {
+      const restingInflight = new Set<string>()
       const resetResting = async (sessionID: string): Promise<void> => {
+        if (restingInflight.has(sessionID)) return
+        restingInflight.add(sessionID)
         try {
           // Only plugin-touched sessions reset: a stored pin must exist and
           // match the newest switch in the transcript. The pin's KEY is the
@@ -1758,6 +1770,8 @@ export default Plugin.define({
           )
         } catch (err: any) {
           console.error(`[jev] rest: reset skipped (${String(err?.message ?? err)})`)
+        } finally {
+          restingInflight.delete(sessionID)
         }
       }
       if (await subscribeIdle((sid) => resetResting(sid), "route-rest")) {
@@ -1781,9 +1795,17 @@ export default Plugin.define({
     // notice until a NEW user message arrives (one nudge per user turn).
     // A run of identical rows in the tail is a detected loop - the notice
     // then says so instead of re-asking for "the remaining work".
+    //
+    // Duplicate end-of-turn events (and subscriptions stacked by a plugin
+    // reload - setup returns a cleanup now) must not probe concurrently:
+    // concurrent probes all read the marker as absent and each posts a
+    // notice, so every handler enters through an in-process in-flight gate.
 
     if (doneCheckAuto) {
+      const probing = new Set<string>()
       const handleIdle = async (sessionID: string): Promise<void> => {
+        if (probing.has(sessionID)) return
+        probing.add(sessionID)
         try {
           const messages = await (ctx as any).session.context({ sessionID })
           const userCount = userRowCount(messages)
@@ -1817,6 +1839,8 @@ export default Plugin.define({
         } catch (err: any) {
           await surfaceJev(err?.message, sessionID)
           console.error(`[jev] done-check: skipped (${String(err?.message ?? err)})`)
+        } finally {
+          probing.delete(sessionID)
         }
       }
       if (await subscribeIdle((sid) => handleIdle(sid), "done-check")) {
@@ -1988,7 +2012,10 @@ export default Plugin.define({
           console.log("[jev] idle-compaction: event subscription unavailable on this OpenCode version - skipped")
         } else {
           let registered = false
+          const compactionInflight = new Set<string>()
           const handleIdleCompaction = async (sessionID: string): Promise<void> => {
+            if (compactionInflight.has(sessionID)) return
+            compactionInflight.add(sessionID)
             try {
               // Absolute target wins; else derive from the session model's window.
               let target = idleAuto.tokens
@@ -2025,15 +2052,22 @@ export default Plugin.define({
             } catch (err: any) {
               await surfaceJev(err?.message, sessionID)
               console.error(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
+            } finally {
+              compactionInflight.delete(sessionID)
             }
           }
           try {
             const stream: any = await events.subscribe()
             if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
               registered = true
+              let stopped = false
+              idleDisposers.push(() => {
+                stopped = true
+              })
               ;(async () => {
                 try {
                   for await (const e of stream as any) {
+                    if (stopped) break
                     const sessionID = idleSessionID(e)
                     if (sessionID) await handleIdleCompaction(sessionID)
                   }
@@ -2059,8 +2093,22 @@ export default Plugin.define({
     console.log(
       `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
+
+    // Plugin reload/unload must stop the idle loops: without a cleanup the
+    // old subscriptions stay live alongside the new instance's, and every
+    // end-of-turn then runs one probe per stacked copy (each misses the
+    // shared marker and posts its own notice).
+    return () => {
+      const disposers = idleDisposers.splice(0)
+      for (const dispose of disposers) {
+        try {
+          dispose()
+        } catch {}
+      }
+    }
   },
 })
+
 
 // Optional price hint woven into routing option criteria - a defensive read
 // across the shapes OpenCode model catalogs have exposed for costs.
