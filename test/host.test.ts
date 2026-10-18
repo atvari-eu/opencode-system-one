@@ -113,6 +113,8 @@ const APPROVALS_OPTIONS: Record<string, any> = {
         hint: "for more than occasional access, prefer /cd",
       },
       { action: "shell", resource: "sudo *", effect: "deny", hint: { deny: "do the task without sudo or ask the operator" } },
+      { action: "read", resource: "*", effect: "allow" },
+      { action: "grep", resource: "*", effect: "allow" },
     ],
   },
   screen: { enabled: true },
@@ -172,6 +174,23 @@ describe("plugin runtime harness", () => {
     await hooks.get("permission:evaluate")!(event)
     expect(event.effect).toBe("ask")
     expect(event.message ?? "").toContain("gate")
+  })
+
+  test("secret-path gate outranks config allow rules", async () => {
+    // read * is allowed by rule; a secret path must still prompt
+    const event: any = {
+      effect: "ask",
+      action: "read",
+      resources: ["/home/felschr/.ssh/id_rsa"],
+      sessionID: "ses_sp",
+    }
+    await hooks.get("permission:evaluate")!(event)
+    expect(event.effect).toBe("ask")
+    expect(event.message ?? "").toContain("secret")
+    // ordinary reads still sail through the allow rule
+    const plain: any = { effect: "ask", action: "read", resources: ["src/index.ts"], sessionID: "ses_sp" }
+    await hooks.get("permission:evaluate")!(plain)
+    expect(plain.effect).toBe("allow")
   })
 
   test("permission rule hints post once per session to agent context", async () => {

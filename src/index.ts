@@ -81,6 +81,8 @@ import {
   parseScreenMode,
   parseScreenTools,
   pinMatches,
+  secretPath,
+  secretPathAction,
   shellChainSegments,
   rankSourcePopular,
   refKey,
@@ -764,6 +766,8 @@ export default Plugin.define({
     // arguments mention dangerous strings without performing them);
     // false restores strict whole-string matching.
     const approvalsReadonlyGateBypass = approvalsObj.readonlyGateBypass !== false
+    // Built-in secret-path gate; false disables it (default: on).
+    const approvalsSecretsGate = approvalsObj.secretsGate !== false
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1327,6 +1331,23 @@ export default Plugin.define({
           try {
             if (event?.effect !== "ask") return
             if (resources.length === 0) return
+
+            // Built-in secret-path gate, ahead of rule resolution so a
+            // config allow (read * / grep *) cannot wave secret paths
+            // through; approvals.secretsGate = false skips it.
+            if (approvalsSecretsGate && secretPathAction(action)) {
+              const hit = resources.some((resource) =>
+                isShellAction(action) && !secretPath(resource)
+                  ? shellChainSegments(resource).some((segment) => secretPath(segment))
+                  : secretPath(resource),
+              )
+              if (hit) {
+                annotate(event, "[jev] gate: secret path - review required")
+                console.log(`[jev] approval: secret-path gate held ${action} for manual review`)
+                await recordApprovalStat(action, resources, { outcome: "gate" })
+                return
+              }
+            }
             const matched = lookupPermission(action, resources, approvalsRules)
 
             // Deterministic, once-per-session agent-context note from the
@@ -1396,6 +1417,7 @@ export default Plugin.define({
                     isRedactedOrSecret,
                     isProjectPath,
                     readonlyGateBypass: approvalsReadonlyGateBypass,
+                    secretsGate: approvalsSecretsGate,
                   })
                 ) {
                   annotate(event, "[jev] gate: potentially destructive or sensitive - review required")

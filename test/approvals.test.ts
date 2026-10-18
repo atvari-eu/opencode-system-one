@@ -17,6 +17,8 @@ import {
   parsePermissions,
   parseMinConfidence,
   resolveApproval,
+  secretPath,
+  secretPathAction,
 } from "../src/logic"
 
 describe("approval stats", () => {
@@ -103,6 +105,7 @@ const deps = {
   isRedactedOrSecret: (r: string) => r.includes("[REDACTED:") || r.includes("sk-ant-"),
   isProjectPath,
   readonlyGateBypass: true,
+  secretsGate: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +196,67 @@ describe("approvalGate", () => {
     const strict = { ...deps, readonlyGateBypass: false }
     expect(approvalGate("shell", "grep -rn 'sudo' /etc/nixos/home/ai.nix", strict)).toBe(true)
     expect(approvalGate("shell", "ls -la src", strict)).toBe(false)
+  })
+
+  describe("secret-path gate", () => {
+    test("matches credential paths, case-insensitive", () => {
+      for (const hit of [
+        "secrets/api.age",
+        "/etc/nixos/secrets/secrets.nix",
+        "SECRETS/hosts.nix",
+        "/home/felschr/.ssh/id_rsa",
+        "/home/felschr/.aws/credentials",
+        "~/.gnupg/pubring.kbx",
+        ".env",
+        "src/.env.local",
+        "server.key",
+        "deploy.pem",
+        "tokens.json",
+        "my-credential-helper.sh",
+        "vault/backup.kdbx",
+        "certs/chain.p12",
+        "bundle.pfx",
+        "dbDump.gpg",
+        "keys.asc",
+      ]) {
+        expect(secretPath(hit)).toBe(true)
+      }
+    })
+
+    test("keyword lookalikes and ordinary code do not match", () => {
+      for (const miss of [
+        "src/tokenizer.ts",
+        "src/tokenize.py",
+        "readme.md",
+        "src/index.ts",
+        "/etc/environment",
+        "src/envelope.ts",
+        "package.json",
+      ]) {
+        expect(secretPath(miss)).toBe(false)
+      }
+    })
+
+    test("applies to local path tools only; webfetch URLs stay with the judge", () => {
+      expect(secretPathAction("read")).toBe(true)
+      expect(secretPathAction("grep")).toBe(true)
+      expect(secretPathAction("shell")).toBe(true)
+      expect(secretPathAction("bash")).toBe(true)
+      expect(secretPathAction("edit")).toBe(true)
+      expect(secretPathAction("webfetch")).toBe(false)
+      expect(approvalGate("read", "/home/felschr/.ssh/id_rsa", deps)).toBe(true)
+      expect(approvalGate("grep", "secrets/foo.age", deps)).toBe(true)
+      // token-ish WORDS in URLs do not gate at the path level
+      expect(approvalGate("webfetch", "https://docs.example.com/tokens", deps)).toBe(false)
+      // lookalike paths read fine
+      expect(approvalGate("read", "src/tokenizer.ts", deps)).toBe(false)
+    })
+
+    test("gate can be disabled; value-level secret check stays", () => {
+      const off = { ...deps, secretsGate: false }
+      expect(approvalGate("read", "/home/felschr/.ssh/id_rsa", off)).toBe(false)
+      expect(approvalGate("read", "cat [REDACTED:api-key]", off)).toBe(true)
+    })
   })
 
   test("accepts the older bash action name as the shell tool", () => {

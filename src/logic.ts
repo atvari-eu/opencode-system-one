@@ -1425,6 +1425,10 @@ export interface ApprovalGateDeps {
   isProjectPath: (resource: string) => boolean
   /** False disables the read-only destructive-regex bypass (op-level strictness). */
   readonlyGateBypass: boolean
+  /** False disables the built-in secret-path gate (approvals.secretsGate).
+   * Defaults true. It outranks config allow rules at the hook level, so a
+   * broad `read *` allow cannot wave secret paths through. */
+  secretsGate: boolean
 }
 
 // Glob matching for plugin-level approval rules, mirroring OpenCode 2 permission
@@ -1590,11 +1594,48 @@ export function chainPermissionEffect(
   return null
 }
 
+// Secret-path gate: paths that point at credential material - files or
+// directories. Unlike APPROVAL_DESTRUCTIVE (command semantics) these match
+// the RESOURCE itself, so they also catch read/grep tool resources, not just
+// shell commands. Case-insensitive; identifiers that merely contain a
+// keyword as the prefix of a longer word (tokenizer.ts) do not match, while
+// real secret-ish basenames (tokens.json, secrets.nix) do. Encrypted
+// containers (.age, .kdbx, ...) matter here even though content screening
+// cannot see them - ciphertext reads as noise to the secret-material
+// question, the path does not.
+export const APPROVAL_SECRET_PATHS: RegExp[] = [
+  /(?:^|\/)secrets?(?:\/|\.|$)/i,
+  /(?:^|\/)\.env(?:\.[\w-]+)?$/i,
+  /\.(?:pem|key|age|kdbx|p12|pfx|gpg|asc)$/i,
+  /(?:^|\/)\.ssh(?:\/|$)/i,
+  /(?:^|\/)\.gnupg(?:\/|$)/i,
+  /(?:^|\/)\.aws(?:\/|$)/i,
+  /(?:^|\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\.[\w-]+)?$/i,
+  /(?:^|\/)credentials?(?:\.[\w-]+)?$/i,
+  /(?:^|\/)[\w.\-]*(?:secret|credential|token|apikey|api_key)s?(?![\w])[\w.\-]*$/i,
+]
+
+export function secretPath(resource: string): boolean {
+  return matchesPatterns(resource, APPROVAL_SECRET_PATHS)
+}
+
+// Which actions the secret-path gate applies to: the local content/path
+// tools. webfetch is excluded on purpose - token-ish words in URLs are
+// false-positive heaven (docs pages) and token VALUES in URLs are already
+// caught by the value-level secret check; MCP/task/question resources carry
+// no local paths and stay with the judged pass.
+export const SECRET_PATH_ACTIONS: ReadonlySet<string> = new Set(["read", "grep", "edit", "write"])
+
+export function secretPathAction(action: string): boolean {
+  return isShellAction(action) || SECRET_PATH_ACTIONS.has(action)
+}
+
 // The deterministic gate for one resource: properties that make auto-approval
 // impossible before any judgment. Multi-command shell calls are judged as a
 // whole, so one bad command holds the entire request.
 export function approvalGate(action: string, resource: string, deps: ApprovalGateDeps): boolean {
   if (deps.isRedactedOrSecret(resource)) return true
+  if (deps.secretsGate && secretPathAction(action) && secretPath(resource)) return true
   if (isShellAction(action) && matchesPatterns(resource, APPROVAL_DESTRUCTIVE)) {
     if (!deps.readonlyGateBypass) return true
     // A read-only command's arguments often mention destructive strings
