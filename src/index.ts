@@ -1421,7 +1421,7 @@ export default Plugin.define({
               // timeline row. Timing note: the synthetic row lands after the
               // result in the transcript - the model reads unannotated
               // content and learns of the verdict late.
-              await notice(`[jev-screen] ${tag}${suffix} ${unsafe ? "⚠ do-not-rely" : "pass"} - ${url || tool}`)
+              await notice(`[jev-screen] junk=${fmt(junk)} injection=${fmt(injection)}${suffix} ${unsafe ? "⚠ do-not-rely" : "pass"} - ${url || tool}`)
               return
             }
             const flag = unsafe ? ` ⚠ do-not-rely` : ""
