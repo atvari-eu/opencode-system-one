@@ -1531,13 +1531,32 @@ const approvalConfidenceOf = (answer: any): number | undefined => {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined
 }
 
+export const MIN_CONFIDENCE_DEFAULT = 0.85
+
+/** Approvals config value → one enactment bar per verdict. Accepts a single
+ * number (both bars) or a partial `{ approve, deny }` object; each bar is
+ * individually clamped to 0.5-0.99, unknown keys fall back per-verdict. */
+export function parseMinConfidence(raw: unknown): { approve: number; deny: number } {
+  const clamp = (value: number): number => Math.min(0.99, Math.max(0.5, value))
+  if (typeof raw !== "object" || raw === null) {
+    const bar = typeof raw === "number" && Number.isFinite(raw) ? clamp(raw) : MIN_CONFIDENCE_DEFAULT
+    return { approve: bar, deny: bar }
+  }
+  const entry = raw as Record<string, unknown>
+  const pick = (key: string): number =>
+    typeof entry[key] === "number" && Number.isFinite(entry[key]) ? clamp(entry[key]) : MIN_CONFIDENCE_DEFAULT
+  return { approve: pick("approve"), deny: pick("deny") }
+}
+
 export interface ApprovalInput {
   /** The judge's answer for the approval question (may be missing/malformed). */
   answer: any
   /** Feature mode: annotate never enacts, deny never approves, auto both. */
   mode: ApprovalMode
-  /** Confidence required to enact a verdict (mode auto/deny, allowlisted). */
-  minConfidence: number
+  /** Confidence required to enact an approve / deny verdict (mode
+   * auto/deny, allowlisted). Two bars so approvals can be set looser
+   * than refusals (or vice versa); the residual is the ask band. */
+  minConfidence: { approve: number; deny: number }
   /** Whether the action is in the allowlist for automatic decisions. */
   allowlisted: boolean
 }
@@ -1568,7 +1587,8 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
     return { effect: "ask", note: "[jev] verdict unavailable - review" }
   }
   const pct = fmtOf(confidence)
-  const decisive = confidence >= input.minConfidence
+  const bar = verdict === "deny" ? input.minConfidence.deny : input.minConfidence.approve
+  const decisive = confidence >= bar
   if (decisive && input.allowlisted && verdict === "approve" && input.mode === "auto") {
     return { effect: "allow", note: `[jev] approved (${pct})` }
   }
@@ -1580,8 +1600,8 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   }
   let suffix = "review"
   if (!input.allowlisted) suffix = "action not allowlisted - review"
-  else if (input.mode === "auto" && !decisive) suffix = `below ${fmtOf(input.minConfidence)} - review`
-  else if (input.mode === "deny" && !decisive) suffix = `below ${fmtOf(input.minConfidence)} - review`
+  else if (input.mode === "auto" && !decisive) suffix = `below ${fmtOf(bar)} - review`
+  else if (input.mode === "deny" && !decisive) suffix = `below ${fmtOf(bar)} - review`
   else if (input.mode === "deny" && verdict === "approve") suffix = "never auto-approved - review"
   return { effect: "ask", note: `[jev] ${approvalSuggestLabel(verdict)} (${pct}) - ${suffix}` }
 }

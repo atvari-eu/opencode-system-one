@@ -60,6 +60,7 @@ import {
   clampThreshold,
   lookupPermission,
   parsePermissions,
+  parseMinConfidence,
   doneCheckStandDown,
   doneTranscript,
   doneVerdict,
@@ -734,10 +735,7 @@ export default Plugin.define({
     const approvalsEnabled = approvalsMode !== "off"
     const approvalsAuto = approvalsMode === "auto"
     const approvalsDeny = approvalsMode === "deny"
-    const approvalsMinConfidence =
-      typeof approvalsObj.minConfidence === "number" && Number.isFinite(approvalsObj.minConfidence)
-        ? Math.min(0.99, Math.max(0.5, approvalsObj.minConfidence))
-        : 0.85
+    const approvalsMinConfidence = parseMinConfidence(approvalsObj.minConfidence)
     const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["shell", "edit"])
       .filter((action: unknown) => typeof action === "string" && action.length > 0)
       .map(String)

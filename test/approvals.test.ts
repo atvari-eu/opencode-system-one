@@ -11,8 +11,28 @@ import {
   globMatches,
   matchesPatterns,
   parsePermissions,
+  parseMinConfidence,
   resolveApproval,
 } from "../src/logic"
+
+describe("parseMinConfidence", () => {
+  test("a single number sets both bars", () => {
+    expect(parseMinConfidence(0.7)).toEqual({ approve: 0.7, deny: 0.7 })
+  })
+
+  test("per-verdict overrides win; missing keys fall back per verdict", () => {
+    expect(parseMinConfidence({ approve: 0.6 })).toEqual({ approve: 0.6, deny: 0.85 })
+    expect(parseMinConfidence({ deny: 0.9 })).toEqual({ approve: 0.85, deny: 0.9 })
+    expect(parseMinConfidence({})).toEqual({ approve: 0.85, deny: 0.85 })
+  })
+
+  test("both shapes clamp and garbage keys are ignored", () => {
+    expect(parseMinConfidence({ approve: 99, deny: 0.1 })).toEqual({ approve: 0.99, deny: 0.5 })
+    expect(parseMinConfidence({ what: 1 })).toEqual({ approve: 0.85, deny: 0.85 })
+    expect(parseMinConfidence("0.6")).toEqual({ approve: 0.85, deny: 0.85 })
+    expect(parseMinConfidence(undefined)).toEqual({ approve: 0.85, deny: 0.85 })
+  })
+})
 
 const isProjectPath = (path: string) => !path.startsWith("/") || path === "/home/dev/work" || path.startsWith("/home/dev/work/")
 const deps = {
@@ -124,61 +144,61 @@ const malformed = [undefined, null, {}, { choice: "maybe" }, { confidence: 0.9 }
 describe("resolveApproval", () => {
   test("fail-closed: malformed answers are 'unavailable', never a decision", () => {
     for (const a of malformed) {
-      const out = resolveApproval({ answer: a, mode: "auto", minConfidence: 0.85, allowlisted: true })
+      const out = resolveApproval({ answer: a, mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true })
       expect(out.effect).toBe("ask")
       expect(out.note).toContain("verdict unavailable")
     }
   })
 
   test("annotate mode never enacts, only suggests", () => {
-    expect(resolveApproval({ answer: answer("approve", 0.99), mode: "annotate", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("approve", 0.99), mode: "annotate", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] suggests approve (0.99) - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "annotate", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "annotate", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] suggests deny (0.91) - review" })
-    expect(resolveApproval({ answer: answer("ask", 0.55), mode: "annotate", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("ask", 0.55), mode: "annotate", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] uncertain (0.55) - review" })
   })
 
   test("auto mode enacts decisive approve and deny verdicts", () => {
-    expect(resolveApproval({ answer: answer("approve", 0.91), mode: "auto", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("approve", 0.91), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "allow", note: "[jev] approved (0.91)" })
-    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "auto", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "deny", note: "[jev] denied (0.91)" })
   })
 
   test("auto mode keeps the uncertain band with the human", () => {
-    expect(resolveApproval({ answer: answer("approve", 0.78), mode: "auto", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("approve", 0.78), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] suggests approve (0.78) - below 0.85 - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.4), mode: "auto", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("deny", 0.4), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] suggests deny (0.40) - below 0.85 - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.12), mode: "auto", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("deny", 0.12), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] suggests deny (0.12) - below 0.85 - review" })
-    expect(resolveApproval({ answer: answer("ask", 0.55), mode: "auto", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("ask", 0.55), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] uncertain (0.55) - review" })
-    expect(resolveApproval({ answer: answer("approve", 0.84), mode: "auto", minConfidence: 0.85, allowlisted: true }).effect).toBe("ask")
-    expect(resolveApproval({ answer: answer("approve", 0.85), mode: "auto", minConfidence: 0.85, allowlisted: true }).effect).toBe("allow")
+    expect(resolveApproval({ answer: answer("approve", 0.84), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }).effect).toBe("ask")
+    expect(resolveApproval({ answer: answer("approve", 0.85), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }).effect).toBe("allow")
   })
 
   test("deny mode enacts deny verdicts and never approves", () => {
-    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "deny", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "deny", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "deny", note: "[jev] denied (0.91)" })
-    expect(resolveApproval({ answer: answer("approve", 0.99), mode: "deny", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("approve", 0.99), mode: "deny", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] suggests approve (0.99) - never auto-approved - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.6), mode: "deny", minConfidence: 0.85, allowlisted: true }))
+    expect(resolveApproval({ answer: answer("deny", 0.6), mode: "deny", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }))
       .toEqual({ effect: "ask", note: "[jev] suggests deny (0.60) - below 0.85 - review" })
   })
 
   test("non-allowlisted actions are annotated in every mode", () => {
     for (const mode of ["annotate", "auto", "deny"] as const) {
-      expect(resolveApproval({ answer: answer("approve", 0.99), mode, minConfidence: 0.85, allowlisted: false }))
+      expect(resolveApproval({ answer: answer("approve", 0.99), mode, minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: false }))
         .toEqual({ effect: "ask", note: "[jev] suggests approve (0.99) - action not allowlisted - review" })
-      expect(resolveApproval({ answer: answer("deny", 0.99), mode, minConfidence: 0.85, allowlisted: false }))
+      expect(resolveApproval({ answer: answer("deny", 0.99), mode, minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: false }))
         .toEqual({ effect: "ask", note: "[jev] suggests deny (0.99) - action not allowlisted - review" })
     }
   })
 
   test("verdict matching is case-insensitive and whitespace-tolerant", () => {
-    expect(resolveApproval({ answer: answer(" Approve ", 0.9), mode: "auto", minConfidence: 0.85, allowlisted: true }).effect).toBe("allow")
-    expect(resolveApproval({ answer: answer("DENY", 0.9), mode: "auto", minConfidence: 0.85, allowlisted: true }).effect).toBe("deny")
+    expect(resolveApproval({ answer: answer(" Approve ", 0.9), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }).effect).toBe("allow")
+    expect(resolveApproval({ answer: answer("DENY", 0.9), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 }, allowlisted: true }).effect).toBe("deny")
   })
 })
