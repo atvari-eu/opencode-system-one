@@ -560,6 +560,62 @@ most useful when it stays deliberately asymmetric:
   coarse: the recurring commands that deserve a standing allow are captured
   by memories over time, and `permissions` carries everything else as policy.
 
+The same file shows both halves together. Host `permissions` stays a
+coarse boundary; every judgment-shaped decision lives in the plugin
+options:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // HOST: coarse boundary + final red lines. Judged stuff routes to the plugin.
+  "permissions": [
+    { "action": "shell",              "resource": "*", "effect": "ask" },
+    { "action": "edit",               "resource": "*", "effect": "ask" },
+    { "action": "external_directory", "resource": "*", "effect": "ask" },
+  ],
+
+  "plugins": [
+    {
+      "package": "github:atvari-eu/opencode-system-one",
+      "options": {
+        "provider": "opencode",
+        "model": "jev-1.13",
+        "approvals": {
+          "mode": "auto",
+          "minConfidence": 0.70,
+          "actions": ["shell", "edit"],
+          // PLUGIN: the policy. Same shape, plus "system-one" and "context".
+          // Ordered; the LAST matching rule wins.
+          "permissions": [
+            { "action": "shell", "resource": "git status *", "effect": "allow" }, // + git log/diff/branch/show, ls, ...
+            { "action": "shell", "resource": "git push *",   "effect": "ask" },
+            { "action": "shell", "resource": "sudo *",       "effect": "deny" },
+            {
+              "action": "edit",
+              "resource": "*",
+              "effect": "system-one",
+              "context": "Workspace-local edits are routine and fine. Refuse or hand to the operator any edit under secrets/ or of .env, *.key, *token* files - do not judge those yourself."
+            },
+          ],
+        },
+      },
+    },
+  ],
+}
+```
+
+Notes on the split:
+
+- Host `deny` rules (and UI "Allow always" memories) outrank the plugin
+  ruleset entirely; the example's `sudo *` deny line could equally live at
+  the host for a boundary the plugin cannot even soften.
+- `context` is injected into the judged state after the deterministic
+  gates run, so a `secrets/` edit is held before the remark matters.
+- `system-one` entries only fire for requests the host sends to `ask` - a
+  host `allow` never reaches the plugin for that request at all.
+
+
 Options:
 
 | Option | Default | Meaning |
