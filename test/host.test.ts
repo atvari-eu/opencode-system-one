@@ -105,9 +105,15 @@ const APPROVALS_OPTIONS: Record<string, any> = {
     actions: ["shell", "edit"],
     stats: true,
     permissions: [
-      { action: "shell", resource: "git status *", effect: "allow" },
+      { action: "shell", resource: "git status *", effect: "allow", hint: { allow: "clean tree makes reviews trivial" } },
       { action: "shell", resource: "git push *", effect: "ask" },
-      { action: "shell", resource: "sudo *", effect: "deny" },
+      {
+        action: "external_directory",
+        resource: "*",
+        effect: "ask",
+        hint: "for more than occasional access, prefer /cd",
+      },
+      { action: "shell", resource: "sudo *", effect: "deny", hint: { deny: "do the task without sudo or ask the operator" } },
     ],
   },
   screen: { enabled: true },
@@ -169,8 +175,41 @@ describe("plugin runtime harness", () => {
     expect(event.message ?? "").toContain("gate")
   })
 
-  test("permission evaluate: judged path fails closed without throwing", async () => {
-    // not allow-ruled, not gate-worthy: goes to the judge, which is pointed
+  test("permission rule hints post once per session to agent context", async () => {
+    const before = synthetic.length
+    // plain-string hint on an ask rule, outcome-keyed hints on allow/deny
+    // rules; repeat calls (same session, same text) never re-post
+    const st: any = { effect: "ask", action: "shell", resources: ["git status --short"], sessionID: "ses_h" }
+    const ext: any = {
+      effect: "ask",
+      action: "external_directory",
+      resources: ["/etc/nixos"],
+      sessionID: "ses_h",
+    }
+    const sudo: any = {
+      effect: "ask",
+      action: "shell",
+      resources: ["sudo nixos-rebuild test"],
+      sessionID: "ses_h",
+    }
+    const evaluate = hooks.get("permission:evaluate")!
+    await evaluate(st)
+    await evaluate(ext)
+    await evaluate(ext)
+    await evaluate(sudo)
+    expect(
+      synthetic
+        .slice(before)
+        .filter((s) => s.text.startsWith("[jev-approval] hint:"))
+        .map((s) => s.text),
+    ).toEqual([
+      "[jev-approval] hint: clean tree makes reviews trivial",
+      "[jev-approval] hint: for more than occasional access, prefer /cd",
+      "[jev-approval] hint: do the task without sudo or ask the operator",
+    ])
+  })
+
+  test("permission evaluate: judged path fails closed without throwing", async () => {    // not allow-ruled, not gate-worthy: goes to the judge, which is pointed
     // at a refused port. Fail-closed: event unchanged, no throw.
     const event: any = { effect: "ask", action: "shell", resources: ["bun run build"] }
     await hooks.get("permission:evaluate")!(event)

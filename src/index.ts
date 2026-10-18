@@ -1308,6 +1308,9 @@ export default Plugin.define({
           }
         }
 
+        // Session+hint keys already posted once (bounded).
+        const hinted = new Set<string>()
+
         await permissionApi.hook("evaluate", async (event: any) => {
           // Bound outside the try so the catch block can still log stats:
           // the judge-failure path was itself ReferenceError-ing on
@@ -1320,6 +1323,31 @@ export default Plugin.define({
           try {
             if (event?.effect !== "ask") return
             if (resources.length === 0) return
+            const matched = lookupPermission(action, resources, approvalsRules)
+
+            // Deterministic, once-per-session agent-context note from the
+            // matched permission rule's `hint` field: operator-configured
+            // guidance for what to do instead of repeating this class of
+            // request (e.g. prefer /cd over repeated external_directory
+            // access). A plain string applies to every outcome; an object
+            // keys the note by the resolved outcome, the gate counting as
+            // `ask`. The request itself still resolves by the normal
+            // rule/judgment handling below.
+            const postHint = async (outcome: "allow" | "ask" | "deny"): Promise<void> => {
+              if (!event.sessionID || !matched?.hint) return
+              const text = typeof matched.hint === "string" ? matched.hint : matched.hint[outcome]
+              if (!text) return
+              const hintKey = `${event.sessionID}|${text}`
+              if (hinted.has(hintKey)) return
+              hinted.add(hintKey)
+              if (hinted.size > 200) hinted.clear()
+              try {
+                await (ctx as any).session?.synthetic?.({
+                  sessionID: event.sessionID,
+                  text: `[jev-approval] hint: ${text}`,
+                })
+              } catch {}
+            }
 
             // Matched requests resolve from their config rule before jev:
             // allow/deny enact the rule's effect; ask keeps the configured
@@ -1328,13 +1356,13 @@ export default Plugin.define({
             // resolve to the strongest segment opinion so a `git commit … &&
             // git push` cannot evade the push ask-rule on the whole command's
             // prefix (chainPermissionEffect).
-            const matched = lookupPermission(action, resources, approvalsRules)
             const chainEffect =
               matched?.effect === "system-one" ? null : chainPermissionEffect(action, resources, approvalsRules)
             if (chainEffect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
               await recordApprovalStat(action, resources, { outcome: "allow" })
+              await postHint("allow")
               return
             }
             if (chainEffect === "deny") {
@@ -1342,11 +1370,13 @@ export default Plugin.define({
               event.message = `[jev] approval: denied by approvals.permissions rule`
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
               await recordApprovalStat(action, resources, { outcome: "deny" })
+              await postHint("deny")
               return
             }
             if (chainEffect === "ask") {
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
               await recordApprovalStat(action, resources, { outcome: "ask" })
+              await postHint("ask")
               return
             }
 
@@ -1367,6 +1397,7 @@ export default Plugin.define({
                   annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
                   console.log(`[jev] approval: gate held ${action} for manual review`)
                   await recordApprovalStat(action, resources, { outcome: "gate" })
+                  await postHint("ask")
                   return
                 }
               }
@@ -1404,6 +1435,7 @@ export default Plugin.define({
                 verdict: (reply as any).answers?.approve?.choice,
                 confidence: (reply as any).answers?.approve?.confidence,
               })
+              await postHint("allow")
               return
             }
             if (outcome.effect === "deny") {
@@ -1415,6 +1447,7 @@ export default Plugin.define({
                 verdict: (reply as any).answers?.approve?.choice,
                 confidence: (reply as any).answers?.approve?.confidence,
               })
+              await postHint("deny")
               return
             }
             annotate(event, outcome.note)
@@ -1423,6 +1456,7 @@ export default Plugin.define({
               verdict: (reply as any).answers?.approve?.choice,
               confidence: (reply as any).answers?.approve?.confidence,
             })
+            await postHint("ask")
           } catch (err: any) {
             await recordApprovalStat(statsBound.action, statsBound.resources, { outcome: "fail" })
             await surfaceJev(err?.message, event?.sessionID)

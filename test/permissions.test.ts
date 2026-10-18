@@ -76,6 +76,45 @@ describe("parsePermissions", () => {
     ])
   })
 
+  test("hint survives on any effect, trimmed and capped", () => {
+    expect(
+      parsePermissions([
+        { action: "external_directory", resource: "*", effect: "ask", hint: "  prefer /cd  " },
+        { resource: "docs/*", effect: "allow", hint: "x".repeat(500) },
+        { resource: "lib/*", effect: "ask" },
+        { resource: "vault/*", effect: "deny", hint: 42 as unknown as string },
+      ]),
+    ).toEqual([
+      { action: "external_directory", resource: "*", effect: "ask", hint: "prefer /cd" },
+      { action: "*", resource: "docs/*", effect: "allow", hint: "x".repeat(400) },
+      { action: "*", resource: "lib/*", effect: "ask" },
+      { action: "*", resource: "vault/*", effect: "deny" },
+    ])
+  })
+
+  test("hint objects keep allow/ask/deny entries, trimmed and capped", () => {
+    expect(
+      parsePermissions([
+        {
+          resource: "a/*",
+          effect: "ask",
+          hint: { deny: "  pick another approach  ", ask: "y".repeat(500), allow: 7, gate: "unknown key" },
+        },
+        { resource: "b/*", effect: "ask", hint: {} },
+        { resource: "c/*", effect: "ask", hint: { deny: "   " } },
+      ]),
+    ).toEqual([
+      {
+        action: "*",
+        resource: "a/*",
+        effect: "ask",
+        hint: { deny: "pick another approach", ask: "y".repeat(400) },
+      },
+      { action: "*", resource: "b/*", effect: "ask" },
+      { action: "*", resource: "c/*", effect: "ask" },
+    ])
+  })
+
   test("non-arrays yield no rules", () => {
     expect(parsePermissions(undefined)).toEqual([])
     expect(parsePermissions("git push *")).toEqual([])

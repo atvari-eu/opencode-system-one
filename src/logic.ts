@@ -1459,9 +1459,35 @@ export interface PermissionRule {
   effect: PermissionEffect
   /** Remark passed to jev verbatim; only meaningful with `"system-one"`. */
   context?: string
+  /** Note posted once per session to the agent context when a matching
+   * request resolves: a string fires on any prompt, an object fires the
+   * entry keyed by the resolved outcome (`allow`, `ask`, `deny`; the
+   * deterministic gate counts as `ask`). Independent of the effect. */
+  hint?: string | Partial<Record<"allow" | "ask" | "deny", string>>
 }
 
 export const PERMISSION_CONTEXT_MAX = 400
+
+// Hints post the matched rule's note once per session to the agent context.
+// A string applies to every outcome; an object keys the note by the resolved
+// outcome (`allow`, `ask`, `deny` - the deterministic gate counts as `ask`).
+const HINT_OUTCOMES = ["allow", "ask", "deny"] as const
+
+export function parseHint(raw: unknown): PermissionRule["hint"] {
+  if (typeof raw === "string") {
+    const text = raw.trim().slice(0, PERMISSION_CONTEXT_MAX)
+    return text || undefined
+  }
+  if (typeof raw !== "object" || raw === null) return undefined
+  const out: Partial<Record<"allow" | "ask" | "deny", string>> = {}
+  for (const key of HINT_OUTCOMES) {
+    const value = (raw as Record<string, unknown>)[key]
+    if (typeof value !== "string") continue
+    const text = value.trim().slice(0, PERMISSION_CONTEXT_MAX)
+    if (text) out[key] = text
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
 
 export function parsePermissions(raw: [] | unknown): PermissionRule[] {
   if (!Array.isArray(raw)) return []
@@ -1478,7 +1504,10 @@ export function parsePermissions(raw: [] | unknown): PermissionRule[] {
       effect === "system-one" && typeof entry.context === "string"
         ? entry.context.trim().slice(0, PERMISSION_CONTEXT_MAX)
         : undefined
-    rules.push({ action, resource, effect, ...(context ? { context } : {}) })
+    // hints are independent of the effect - any matching prompted request
+    // gets the note; only effect-less text is dropped
+    const hint = parseHint(entry.hint)
+    rules.push({ action, resource, effect, ...(context ? { context } : {}), ...(hint ? { hint } : {}) })
   }
   return rules
 }
