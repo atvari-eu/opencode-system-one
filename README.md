@@ -514,6 +514,52 @@ opt into**, bounded by the deterministic gates above. `auto` enacts both
 decisive verdicts (approve *and* deny), `deny` enacts only the refusal, and
 `annotate` never enacts; every automatic decision is logged.
 
+### Splitting permission config between the host and the plugin
+
+The feature does not replace OpenCode's `permissions` - it sits one layer
+below, seeing only requests the host rules resolve to `ask`. That split is
+most useful when it stays deliberately asymmetric:
+
+- **Host config: coarse trust boundary.** Keep it short and stable. The
+  minimal pattern is a single catch-all `ask` per reviewed action, and the
+  whole policy then lives in the plugin:
+
+  ```jsonc
+  "permissions": [
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    { "action": "edit", "resource": "*", "effect": "ask" },
+    { "action": "external_directory", "resource": "*", "effect": "ask" },
+  ],
+  ```
+
+  Every `shell` and `edit` request now flows into the plugin instead of
+  whenever-triggered prompts, and `approvals.rules` (next option table)
+  does the fine-grained shaping - `allow`, `ask`, `system-one` with
+  `context`, per slice. Hard red lines - requests you never want to see,
+  not even as a question with operator context - still belong here as
+  host-configured `deny` rules, since a configured `deny` is final and the
+  `evaluate` hook never runs for one.
+
+- **Plugin `rules`: the actual policy.** Same `{ action, resource, effect }`
+  entries, wildcard matching and last-match-wins as the host. Safe commands
+  get `allow`, mapped slices get `system-one` with `context` for the
+  judgment, rarely-needed things stay `ask`. An `edit *` rule with
+  `effect: "system-one"` is a typical shape: the host one-line `ask` hands
+  edits to the plugin, the gate holds `secrets/` paths before any judgment,
+  `context` tells the judge routine local edits are fine, and only the
+  genuinely uncertain band still prompts you.
+
+- **Cost note:** an `allow` effect saves more than a prompt - no jev call,
+  no annotation, no gate. Host `allow` is even cheaper because the hook
+  never runs. So actions that never benefit from judgment can skip it at
+  the host level too; put judgment where the judgment adds something.
+
+- **Escape hatch note:** "Allow always" memories created in the UI save
+  host-level `allow` patterns, and they rank above both this feature and
+  its `rules`. Long-running setups therefore tend to keep the host rules
+  coarse: the recurring commands that deserve a standing allow are captured
+  by memories over time, and `rules` carries everything else as policy.
+
 Options:
 
 | Option | Default | Meaning |
