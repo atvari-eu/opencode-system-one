@@ -1845,8 +1845,18 @@ export default Plugin.define({
             "Show which command patterns trigger jev approvals and how they resolve (auto-approved / denied / asked / gated), so recurring asks can be promoted into explicit permissions rules",
           execute: async (input: any) => {
             const sessionID = input?.sessionID
-            const post = (text: string) =>
-              (ctx as any).session?.synthetic?.({ sessionID, text }).catch(() => {})
+            // One aggregated synthetic row instead of one per pattern: the
+            // rows are diagnostics, and each synthetic message is a durable
+            // transcript item the model later sees as prompt-like text.
+            const post = async (text: string) => {
+              try {
+                await (ctx as any).session?.synthetic?.({ sessionID, text })
+              } catch (err: any) {
+                // a diagnostics command must not vanish silently - the
+                // service log is the one channel that still works here
+                console.error(`[jev] approval-stats: post failed: ${String(err?.message ?? err)}`)
+              }
+            }
             try {
               const blob = (await (ctx as any).storage.get("jev-approval-stats")) ?? {}
               const rows = Object.entries(blob).map(([key, value]: [string, any]) => ({
@@ -1858,22 +1868,25 @@ export default Plugin.define({
                 await post("[jev-approval-stats] no approval events recorded yet")
                 return
               }
-              const lines = rows.slice(0, 20).map((r: any) => {
-                const parts = [
-                  `count=${r.count ?? 0}`,
-                  `allow=${r.allow ?? 0}`,
-                  `deny=${r.deny ?? 0}`,
-                  `ask=${r.ask ?? 0}`,
-                  `gate=${r.gate ?? 0}`,
-                  `fail=${r.fail ?? 0}`,
-                  r.last ? `last=${r.last}` : "",
-                  r.bands && Object.keys(r.bands).length
-                    ? `bands=${Object.entries(r.bands).map(([k, v]) => `${k}:${v}`).join(" ")}`
-                    : "",
-                ].filter(Boolean)
-                return `[jev-approval-stats] ${r.key} - ${parts.join(" ")}`
-              })
-              for (const line of lines) await post(line)
+              const body = rows
+                .slice(0, 20)
+                .map((r: any) => {
+                  const parts = [
+                    `count=${r.count ?? 0}`,
+                    `allow=${r.allow ?? 0}`,
+                    `deny=${r.deny ?? 0}`,
+                    `ask=${r.ask ?? 0}`,
+                    `gate=${r.gate ?? 0}`,
+                    `fail=${r.fail ?? 0}`,
+                    r.last ? `last=${r.last}` : "",
+                    r.bands && Object.keys(r.bands).length
+                      ? `bands=${Object.entries(r.bands).map(([k, v]) => `${k}:${v}`).join(" ")}`
+                      : "",
+                  ].filter(Boolean)
+                  return `${r.key} - ${parts.join(" ")}`
+                })
+                .join("\n")
+              await post(`[jev-approval-stats]\n${body}`)
             } catch (err: any) {
               await post(`[jev-approval-stats] failed: ${String(err?.message ?? err)}`)
             }
