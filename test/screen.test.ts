@@ -7,6 +7,7 @@ import {
   screenRedacts,
   screenVerdict,
   parseScreenAnnotation,
+  parseScreenMode,
   SELF_SCREENED_TOOLS,
 } from "../src/logic"
 
@@ -60,6 +61,16 @@ describe("parseScreenAnnotation", () => {
     expect(parseScreenAnnotation("notice")).toBe("notice")
     expect(parseScreenAnnotation("INLINE")).toBe("notice") // case must match exactly
     expect(parseScreenAnnotation("inline")).toBe("inline")
+  })
+})
+
+describe("parseScreenMode", () => {
+  test("redact is the default; 'annotate' opts out", () => {
+    expect(parseScreenMode(undefined)).toBe("redact")
+    expect(parseScreenMode(false)).toBe("redact")
+    expect(parseScreenMode("redact")).toBe("redact")
+    expect(parseScreenMode("REDACT")).toBe("redact") // case must match exactly
+    expect(parseScreenMode("annotate")).toBe("annotate")
   })
 })
 

@@ -16,10 +16,13 @@ compaction can be decided by System One instead of a lossy summary
 
 - **screen** - tool results are judged (junk? prompt injection?) before they
   enter context: `webfetch` by default, every tool with
-  `"screen": { "tools": "all" }`. The verdict lands in a separate
+  `"screen": { "tools": "all" }`. An unsafe verdict **replaces** the
+  content fail-closed (default `mode: "redact"`) — fetched web pages note
+  why they were withheld and how to override; local tool output is never
+  withheld, only annotated. Set `"mode": "annotate"` to keep all content.
+  The verdict lands in a separate
   `[jev-screen]` timeline row by default (`"annotation": "notice"` — result
-  text stays clean; the model learns of a verdict late, and `"mode":
-  "redact"` remains the fail-closed hard stop for fetched pages). Set
+  text stays clean; the model learns of a verdict late). Set
   `"annotation": "inline"` to prefix the result instead, so the model sees
   the verdict where it reads the content (plus `⚠ do-not-rely` over
   threshold). Screened state is regex-scrubbed, sampled
@@ -174,7 +177,7 @@ meanings never share one ambiguous key:
     {
       "package": "github:atvari-eu/opencode-system-one",
       "options": {
-        "screen": { "enabled": true, "mode": "annotate", "annotation": "notice", "tools": "all" },
+        "screen": { "enabled": true, "annotation": "notice", "tools": "all" },
         "model": "jev-1.13", // optional; overrides JEV_MODEL and the default
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many

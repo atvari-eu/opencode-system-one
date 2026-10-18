@@ -68,6 +68,7 @@ import {
   parseIdleAuto,
   parseRouteSources,
   parseScreenAnnotation,
+  parseScreenMode,
   parseScreenTools,
   pinMatches,
   rankSourcePopular,
@@ -684,7 +685,7 @@ export default Plugin.define({
       console.log(`[jev] provider: ${providerOption} (from plugin options)`)
     }
     const screenEnabled = o.screen?.enabled !== false
-    const screenMode = o.screen?.mode === "redact" ? "redact" : "annotate"
+    const screenMode = parseScreenMode(o.screen?.mode)
     const screenAnnotation = parseScreenAnnotation(o.screen?.annotation)
     const scrubEnabled = o.scrub?.enabled !== false
     const toolsEnabled = o.tools !== false

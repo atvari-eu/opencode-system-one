@@ -907,6 +907,13 @@ export function parseScreenAnnotation(raw: unknown): "inline" | "notice" {
   return raw === "inline" ? "inline" : "notice"
 }
 
+// What an unsafe verdict does: "redact" replaces unsafe fetched web content
+// fail-closed (default); "annotate" only labels flagged results and keeps
+// all content. Local tool output is annotated-only in both modes.
+export function parseScreenMode(raw: unknown): "annotate" | "redact" {
+  return raw === "annotate" ? "annotate" : "redact"
+}
+
 // Fail-closed redaction deliberately stays scoped to fetched web content:
 // redacting arbitrary bash output destroys its usefulness; other tool
 // results are annotated only.
