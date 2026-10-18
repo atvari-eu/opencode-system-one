@@ -48,8 +48,9 @@ compaction can be decided by System One instead of a lossy summary
   the base model on judge failure, and a manual pick always wins. See
   [Auto model routing](#auto-model-routing).
 - **done-check** (opt-in) - after each turn goes idle, the completion probe
-  of `/jev-done-check` runs on its own; it posts one notice only when
-  completion looks unlikely. See [Auto done-check](#auto-done-check).
+  of `/jev-done-check` runs on its own; it posts one notice per user
+  message only when completion looks unlikely, and reports a repeating
+  (looping) tail as such. See [Auto done-check](#auto-done-check).
 - **find** (opt-in) - `jev_find`, a jev-backed semantic code-search cascade:
   lexical prefilter → path judgments → windowed passage judgments, ranked
   hits with line ranges. See [jev_find](#jev_find).
@@ -354,6 +355,14 @@ notices you unprompted - rules that keep it polite:
   hashed, and an unchanged transcript is never judged twice. The tail
   excludes the plugin's own notices, so a notice can never re-trigger the
   check.
+- At most one notice per user message: the agent's reply to a notice
+  changes the tail hash, so the hash gate alone cannot stop a nudge loop.
+  After a notice is posted, the checker stands down until a new user
+  message arrives.
+- Loop-aware: a run of identical rows in the tail (whitespace-normalized,
+  own notices excluded) is reported as a loop - the notice says the
+  session is repeating itself and asks you to interrupt or send a new
+  instruction, instead of re-asking for "the remaining work".
 - jev answers the same `noul` question as `/jev-done-check`
   (p(task complete), 0-1). One synthetic notice is posted only when
   completion looks unlikely - probability at or below `notifyBelow`

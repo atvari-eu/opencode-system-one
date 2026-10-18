@@ -4,14 +4,20 @@
 import { describe, expect, test } from "bun:test"
 import {
   clampThreshold,
+  doneCheckStandDown,
   doneTranscript,
   doneVerdict,
   idleSessionID,
+  isLoopingTail,
+  LOOP_MIN_RUN,
   shouldNotifyIncomplete,
+  userRowCount,
   NOTIFY_BELOW_DEFAULT,
 } from "../src/logic"
 
 const row = (text: string) => ({ info: { text }, type: "message" })
+const userRow = (text: string) => ({ info: { text, role: "user" }, type: "message" })
+const assistantRow = (text: string) => ({ info: { text, role: "assistant" }, type: "message" })
 
 describe("idleSessionID", () => {
   test("reads sessionID from the v2 event data field", () => {
@@ -72,6 +78,58 @@ describe("doneTranscript", () => {
     ])
     expect(plain.hash).toBe(afterNotice.hash)
     expect(afterNotice.text).not.toContain("[jev-done-check]")
+  })
+
+  test("loop is true on a run of identical rows, false otherwise", () => {
+    expect(doneTranscript([row("same"), row("same"), row("same")]).loop).toBe(true)
+    expect(doneTranscript([row("same"), row("same")]).loop).toBe(false)
+    expect(doneTranscript([row("a"), row("b"), row("a"), row("b")]).loop).toBe(false)
+    // whitespace-only differences do not break the run
+    expect(doneTranscript([row("same"), row("same "), row("  same")]).loop).toBe(true)
+    // own notices are removed before run detection, so a run interrupted
+    // only by a notice still counts (the notice cannot mask a loop)
+    expect(
+      doneTranscript([row("same"), row("same"), row("[jev-done-check] nudge"), row("same")]).loop,
+    ).toBe(true)
+    expect(
+      doneTranscript([row("same"), row("same"), row("[jev-done-check] nudge"), row("other")]).loop,
+    ).toBe(false)
+  })
+
+  test("isLoopingTail honors the minRun parameter and default", () => {
+    expect(LOOP_MIN_RUN).toBe(3)
+    expect(isLoopingTail(["x", "x"])).toBe(false)
+    expect(isLoopingTail(["x", "x", "x"])).toBe(true)
+    expect(isLoopingTail(["x", "x"], 2)).toBe(true)
+    expect(isLoopingTail([])).toBe(false)
+  })
+})
+
+describe("userRowCount + doneCheckStandDown", () => {
+  test("counts only real user rows, never own notices", () => {
+    const messages = [
+      userRow("fix it"),
+      assistantRow("done"),
+      row("[jev-done-check] p(complete)=0.20 → likely INCOMPLETE"),
+      assistantRow("Holding - no change."),
+      row("noop row without role"),
+    ]
+    expect(userRowCount(messages)).toBe(1)
+    expect(userRowCount([])).toBe(0)
+  })
+
+  test("stand-down holds until a new user message arrives", () => {
+    // a notice was posted for the 1st user message
+    const state = { userCountAtNotice: 1 }
+    // agent replies (no new user message) - stood down, even at p=0
+    expect(doneCheckStandDown(state, 1)).toBe(true)
+    expect(doneCheckStandDown(state, 0)).toBe(true)
+    // a new user message lifts the stand-down
+    expect(doneCheckStandDown(state, 2)).toBe(false)
+    // no notice ever posted - never stood down
+    expect(doneCheckStandDown(undefined, 1)).toBe(false)
+    expect(doneCheckStandDown(null, 0)).toBe(false)
+    expect(doneCheckStandDown({}, 0)).toBe(false)
   })
 })
 

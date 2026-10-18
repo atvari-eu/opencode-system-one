@@ -177,6 +177,18 @@ asked, so it carries extra invariants beyond fail-open:
 - **Self-exclusion invariant**: the tail excludes the plugin's own
   notices, which is what makes "at most one notice per transcript change"
   structurally true instead of best-effort.
+- **Stand-down invariant**: the hash gate alone cannot bound the notice
+  count - the agent's reply to a notice changes the tail hash, so a filler
+  reply loop would re-trigger the check forever (observed live: a session
+  stuck answering "Holding - no change." to its own nudges). After posting
+  a notice, the user-message count at notice time is stored in the same
+  row (`userCountAtNotice`); the next idle with a user-message count not
+  above it stands down before any jev request. One nudge per user turn.
+- **Loop detection**: identical consecutive tail rows (whitespace-
+  normalized, own notices removed first - a notice cannot mask a run it
+  interrupts) flip the tail's `loop` flag; the notice then reports the
+  loop ("interrupt or send a new instruction") instead of re-asking for
+  the remaining work, which would only continue the loop.
 - **Notification, not conversation**: the notice is one synthetic message;
   it never edits turns, never spawns model turns, and states p(complete)
   so the user can disagree with it.

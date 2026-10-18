@@ -706,14 +706,62 @@ export function isOwnNoticeRow(text: string): boolean {
   return typeof text === "string" && text.startsWith("[jev-")
 }
 
+// Loop detection: a run of >= loopMinRun identical consecutive non-empty rows
+// (normalized whitespace, own notices excluded) means the session is going in
+// circles - e.g. a nudge notice answered by filler replies, which would keep
+// the tail hash changing forever. Deterministic, no model call.
+export const LOOP_MIN_RUN = 3
+
+export function isLoopingTail(lines: string[], minRun: number = LOOP_MIN_RUN): boolean {
+  let run = 0
+  let prev: string | null = null
+  for (const line of lines) {
+    const norm = line.trim().replace(/\s+/g, " ")
+    if (norm === "") continue
+    if (norm === prev) {
+      run += 1
+      if (run >= minRun) return true
+    } else {
+      run = 1
+      prev = norm
+    }
+  }
+  return false
+}
+
+// Real user rows: the stand-down marker counts user messages so at most one
+// notice is posted per user message. Own notices are synthetic and never count.
+export function userRowCount(messages: any[]): number {
+  return messages.filter((m: any) => {
+    const text = typeof m?.info?.text === "string"
+      ? m.info.text
+      : typeof m?.text === "string"
+        ? m.text
+        : ""
+    if (isOwnNoticeRow(text)) return false
+    const role = m?.info?.role ?? m?.role
+    return role === "user"
+  }).length
+}
+
+// Stand-down rule: after a notice was posted (userCountAtNotice stored), no
+// further notice until a NEW user message arrives (userCount greater). This
+// bounds the auto probe to one nudge per user turn instead of one per reply.
+export function doneCheckStandDown(
+  seen: { userCountAtNotice?: number } | null | undefined,
+  userCount: number,
+): boolean {
+  return typeof seen?.userCountAtNotice === "number" && userCount <= seen.userCountAtNotice
+}
+
 export function doneTranscript(
   messages: any[],
   options?: { maxMessages?: number; perMessageChars?: number; totalChars?: number },
-): { text: string; hash: string } {
+): { text: string; hash: string; loop: boolean } {
   const maxMessages = options?.maxMessages ?? 24
   const perMessageChars = options?.perMessageChars ?? 500
   const totalChars = options?.totalChars ?? 12000
-  const text = messages
+  const lines = messages
     .slice(-maxMessages)
     .map((m: any) => {
       const text = typeof m?.info?.text === "string"
@@ -724,9 +772,12 @@ export function doneTranscript(
       return text.slice(0, perMessageChars)
     })
     .filter((line: string) => !isOwnNoticeRow(line))
-    .join("\n")
-    .slice(-totalChars)
-  return { text, hash: createHash("sha256").update(text).digest("hex") }
+  const text = lines.join("\n").slice(-totalChars)
+  return {
+    text,
+    hash: createHash("sha256").update(text).digest("hex"),
+    loop: isLoopingTail(lines),
+  }
 }
 
 export const doneVerdict = (done: number | undefined): string =>

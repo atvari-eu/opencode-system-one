@@ -56,6 +56,7 @@ import {
   jevUserError,
   candidateKey,
   clampThreshold,
+  doneCheckStandDown,
   doneTranscript,
   doneVerdict,
   idleSessionID,
@@ -73,6 +74,7 @@ import {
   screenRedacts,
   shouldNotifyIncomplete,
   toRef,
+  userRowCount,
 } from "./logic"
 import { type Candidate } from "./logic"
 import { execFile } from "node:child_process"
@@ -1624,12 +1626,12 @@ export default Plugin.define({
             const sessionID = input?.sessionID
             try {
               const messages = await (ctx as any).session.context({ sessionID })
-              const transcript = doneTranscript(messages).text
-              const { reply } = await cachedJudge([DONE_QUESTION], transcript)
+              const tail = doneTranscript(messages)
+              const { reply } = await cachedJudge([DONE_QUESTION], tail.text)
               const done = reply.answers?.done?.noul
               await (ctx as any).session.synthetic({
                 sessionID,
-                text: `[jev-done-check] p(complete)=${fmt(done)} → ${doneVerdict(done)}`,
+                text: `[jev-done-check] p(complete)=${fmt(done)} → ${doneVerdict(done)}${tail.loop ? " (loop: the tail repeats identical rows)" : ""}`,
               })
             } catch (err: any) {
               await (ctx as any).session.synthetic({
@@ -1778,18 +1780,28 @@ export default Plugin.define({
     // permission, no transcript edit beyond that notice. The judged tail is
     // scrubbed, excludes our own notices (so one notice can never re-trigger
     // the check), and its hash is the change detector - an unchanged
-    // transcript is never judged twice.
+    // transcript is never judged twice. The hash gate alone cannot stop a
+    // nudge loop (the agent's reply to a notice changes the tail), so a
+    // notice also stores the user-message count at notice time: no further
+    // notice until a NEW user message arrives (one nudge per user turn).
+    // A run of identical rows in the tail is a detected loop - the notice
+    // then says so instead of re-asking for "the remaining work".
 
     if (doneCheckAuto) {
       const handleIdle = async (sessionID: string): Promise<void> => {
         try {
           const messages = await (ctx as any).session.context({ sessionID })
-          const tail = doneTranscript(messages)
+          const userCount = userRowCount(messages)
           const key = `done-check/${String(sessionID)}`
           let seen: any
           try {
             seen = await (ctx as any).storage.get(key)
           } catch {}
+          // Stand-down: a notice already went out for this user message.
+          // The agent's reply to a notice changes the tail hash, so the hash
+          // gate alone cannot stop the loop - the user-message count can.
+          if (doneCheckStandDown(seen, userCount)) return
+          const tail = doneTranscript(messages)
           if (seen?.hash === tail.hash) return
           const { reply } = await cachedJudge([DONE_QUESTION], tail.text, AbortSignal.timeout(8_000))
           const done = reply.answers?.done?.noul
@@ -1797,11 +1809,15 @@ export default Plugin.define({
             await (ctx as any).storage.set(key, { hash: tail.hash })
           } catch {}
           if (shouldNotifyIncomplete(done, notifyBelow)) {
-            await (ctx as any).session.synthetic({
-              sessionID,
-              text: `[jev-done-check] p(complete)=${fmt(done)} → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user`,
-            })
-            console.log(`[jev] done-check: ${sessionID} p=${fmt(done)} - incomplete notice posted`)
+            const text = tail.loop
+              ? `[jev-done-check] loop detected (p(complete)=${fmt(done)}): the tail repeats identical messages - the remaining work is likely not actionable by replying again. Interrupt or send a new instruction.`
+              : `[jev-done-check] p(complete)=${fmt(done)} → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user`
+            await (ctx as any).session.synthetic({ sessionID, text })
+            // Stand-down marker: no further notice until a new user message.
+            try {
+              await (ctx as any).storage.set(key, { hash: tail.hash, userCountAtNotice: userCount })
+            } catch {}
+            console.log(`[jev] done-check: ${sessionID} p=${fmt(done)} - ${tail.loop ? "loop" : "incomplete"} notice posted`)
           }
         } catch (err: any) {
           await surfaceJev(err?.message, sessionID)
