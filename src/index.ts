@@ -59,6 +59,7 @@ import {
   doneCheckStandDown,
   doneTranscript,
   doneVerdict,
+  emergencyRealModel,
   idleSessionID,
   isAvailableModel,
   normaliseProvider,
@@ -69,6 +70,7 @@ import {
   parseScreenTools,
   pinMatches,
   rankSourcePopular,
+  refKey,
   routeTurn,
   screenApplies,
   screenRedacts,
@@ -1095,6 +1097,43 @@ export default Plugin.define({
               : (await (ctx as any).storage.get(`effort-pin/${String(event.sessionID)}`))
           } catch {}
 
+          // Fail-safe BEFORE any judging: a session parked on the auto entry
+          // must never execute a turn on it. Synthetic wakes bypass this hook
+          // entirely, and a judge that fails fast (auth blip, endpoint down)
+          // leaves no pick - observed as empty assistant rows riding
+          // provider=opencode-system-one/model=auto. Drop the session onto
+          // the last real model it ran (the pin's parked-from ref, else the
+          // newest model-switched row) right away; the judge below still
+          // refines the pick and the idle resting reset re-parks afterwards.
+          let parkedEntry = atAutoEntry
+          if (parkedEntry) {
+            const emergency = emergencyRealModel(rows, AUTO_PROVIDER, pin)
+            if (emergency) {
+              try {
+                await (ctx as any).session.switchModel({
+                  sessionID: event.sessionID,
+                  model: {
+                    providerID: emergency.providerID,
+                    id: emergency.modelID,
+                    ...(emergency.variant ? { variant: emergency.variant } : {}),
+                  },
+                })
+                parkedEntry = false
+                // routeTurn judges from the platform the turn now actually
+                // dispatches on; recordPin bookkeeping follows currentRef.
+                currentRef.providerID = emergency.providerID
+                currentRef.modelID = emergency.modelID
+                currentRef.variant = emergency.variant ?? "default"
+                try {
+                  await (ctx as any).storage.set(`route-pin/${String(event.sessionID)}`, {
+                    to: toRef(currentRef),
+                    from: { providerID: AUTO_PROVIDER, id: AUTO_MODEL },
+                  })
+                } catch {}
+              } catch {}
+            }
+          }
+
           const outcome: any = await routeTurn(
             {
               effort: effortAuto,
@@ -1130,21 +1169,50 @@ export default Plugin.define({
 
           // An auto-mode session whose turn produced no usable pick (judge
           // failure, no options, no usable candidates) must not execute on
-          // the pseudo-model: auto.fallback drops the session onto a
-          // real model instead - pinned, so the loop continues from there.
-          if (autoEntry && autoFallback && atAutoEntry && !outcome?.switchTo) {
-            const fallbackInfo = await modelInfo(autoFallback.providerID, autoFallback.modelID)
-            if (fallbackInfo && isAvailableModel(fallbackInfo)) {
-              outcome.logs.push(
-                `[jev] route: auto could not route this turn - switching to fallback ${autoEntryKeyOf(autoFallback)}`,
-              )
-              outcome.switchTo = { providerID: autoFallback.providerID, modelID: autoFallback.modelID, variant: "default" }
-              outcome.recordPin = {
-                to: toRef({ providerID: autoFallback.providerID, modelID: autoFallback.modelID, variant: "default" }),
-                from: toRef(currentRef),
+          // the pseudo-model: auto.fallback drops the session onto a real
+          // model - pinned, so the loop continues from there. Without a
+          // configured fallback, the session's own most recent real model is
+          // the last resort (reachable only if the pre-judge emergency move
+          // itself failed).
+          if (autoEntry && parkedEntry && !outcome?.switchTo) {
+            if (autoFallback) {
+              const fallbackInfo = await modelInfo(autoFallback.providerID, autoFallback.modelID)
+              if (fallbackInfo && isAvailableModel(fallbackInfo)) {
+                outcome.logs.push(
+                  `[jev] route: auto could not route this turn - switching to fallback ${autoEntryKeyOf(autoFallback)}`,
+                )
+                outcome.switchTo = { providerID: autoFallback.providerID, modelID: autoFallback.modelID, variant: "default" }
+                outcome.recordPin = {
+                  to: toRef({ providerID: autoFallback.providerID, modelID: autoFallback.modelID, variant: "default" }),
+                  from: toRef(currentRef),
+                }
+              } else {
+                console.log(`[jev] route: auto fallback unavailable`)
               }
-            } else {
-              console.log(`[jev] route: auto fallback unavailable - this turn stays on auto and will fail visibly`)
+            }
+            if (!outcome?.switchTo) {
+              const emergency = emergencyRealModel(rows, AUTO_PROVIDER, pin)
+              if (emergency) {
+                const variantLabel = emergency.variant ? `@${emergency.variant}` : ""
+                outcome.logs.push(
+                  `[jev] route: auto could not route this turn - switching to last-used ${emergency.providerID}/${emergency.modelID}${variantLabel}`,
+                )
+                outcome.switchTo = {
+                  providerID: emergency.providerID,
+                  modelID: emergency.modelID,
+                  variant: emergency.variant ?? "default",
+                }
+                outcome.recordPin = {
+                  to: toRef({
+                    providerID: emergency.providerID,
+                    modelID: emergency.modelID,
+                    ...(emergency.variant ? { variant: emergency.variant } : {}),
+                  }),
+                  from: toRef(currentRef),
+                }
+              } else {
+                console.log(`[jev] route: no fallback and no last-used model - this turn stays on auto and will fail visibly`)
+              }
             }
           }
 
@@ -1164,6 +1232,21 @@ export default Plugin.define({
             if (!once || foreignSwitch.delete(key)) {
               for (const line of outcome.logs ?? []) console.log(line)
             }
+          }
+
+          // Deduplicate: the pre-judge emergency move may already sit exactly
+          // on the judge's pick - re-issuing the same switchModel would only
+          // add a transcript row and churn the pinned ref chain.
+          if (
+            outcome?.switchTo &&
+            refKey({
+              providerID: outcome.switchTo.providerID,
+              id: outcome.switchTo.modelID,
+              variant: outcome.switchTo.variant,
+            }) === refKey(toRef(currentRef))
+          ) {
+            outcome.switchTo = undefined
+            outcome.recordPin = undefined
           }
 
           if (outcome?.switchTo) {
@@ -1826,6 +1909,36 @@ export default Plugin.define({
             await (ctx as any).storage.set(key, { hash: tail.hash })
           } catch {}
           if (shouldNotifyIncomplete(done, notifyBelow)) {
+            // The notice wakes a turn this plugin never sees admitted: the
+            // agent runs on the session's CURRENT model, so one resting at
+            // the auto entry would wake straight into the pseudo-model and
+            // die ConnectionRefused (observed: empty assistant rows riding
+            // opencode-system-one/auto). Step the session onto the last
+            // real model it ran before posting; the route resting reset
+            // re-parks at the entry after the wake turn ends.
+            try {
+              const model = (await (ctx as any).session.get({ sessionID }))?.model
+              if (isAutoEntry(autoEntry, model)) {
+                let wakePin: any
+                try {
+                  wakePin = await (ctx as any).storage.get(`route-pin/${String(sessionID)}`)
+                } catch {}
+                const emergency = emergencyRealModel(messages, AUTO_PROVIDER, wakePin)
+                if (emergency) {
+                  await (ctx as any).session.switchModel({
+                    sessionID,
+                    model: {
+                      providerID: emergency.providerID,
+                      id: emergency.modelID,
+                      ...(emergency.variant ? { variant: emergency.variant } : {}),
+                    },
+                  })
+                  console.log(
+                    `[jev] done-check: ${sessionID} - left the auto entry for the wake (${emergency.providerID}/${emergency.modelID})`,
+                  )
+                }
+              }
+            } catch {}
             const text = tail.loop
               ? `[jev-done-check] loop detected (p(complete)=${fmt(done)}): the tail repeats identical messages - the remaining work is likely not actionable by replying again. Interrupt or send a new instruction.`
               : `[jev-done-check] p(complete)=${fmt(done)} → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user`

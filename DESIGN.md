@@ -138,6 +138,21 @@ pin storage). Rationale worth remembering when extending it:
   `auto.fallback` exists because a failure *at* auto would otherwise
   leave the turn running on a dead model - the adapter (not the logic)
   switches to the fallback, keeping it pinned so the loop continues.
+  A 2026-10-18 incident showed a configured fallback alone is not
+  enough: with no fallback set and a judge that fails fast (auth blip
+  right after a service restart), admitted prompts executed the pseudo
+  entry anyway - and synthetic wakes (done-check notices, the host's
+  restart notice) bypass the prompt hook entirely, so nothing downstream
+  guarantees anything for them. The adapter now fails safe before
+  judging: at the entry every prompt first switches to the last real
+  model the session itself ran (`emergencyRealModel` - the pin's
+  parked-from ref, else the newest `model-switched` row; history, not
+  intent, so no availability re-check is possible or needed), the judge
+  refines on top of that placement, and the done-check moves a resting
+  session off the entry before posting a notice so the wake turn cannot
+  ride the pseudo-model. Irreducible remainder: a host-generated
+  synthetic reaching a session that never ran a real model before - the
+  entry's closed-port base URL keeps that failure immediate.
   Idle reset (the resting point pull-back - auto entry or, for plain
   auto effort, the model's default variant) lives in a shared idle
   subscription and only touches plugin-made switches (`pinMatches`),

@@ -9,6 +9,7 @@ import {
   buildPairOptions,
   candidateKey,
   type Candidate,
+  emergencyRealModel,
   isAvailableModel,
   MAX_OPTIONS,
   parseCandidates,
@@ -666,5 +667,66 @@ describe("isAvailableModel", () => {
     expect(isAvailableModel(null)).toBe(false)
     expect(isAvailableModel(undefined)).toBe(false)
     expect(isAvailableModel("active")).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Emergency fallback: the last real model a session actually ran, used to
+// guarantee the auto entry is never the platform of an actual turn.
+// ---------------------------------------------------------------------------
+
+describe("emergencyRealModel", () => {
+  const PSEUDO = "opencode-system-one"
+
+  test("prefers the pin's parked-from ref (id spelling drops default variant)", () => {
+    const rows = [{ type: "model-switched", model: { providerID: "zeta", id: "flagship" } }]
+    expect(
+      emergencyRealModel(rows, PSEUDO, {
+        to: { providerID: PSEUDO, id: "auto" },
+        from: { providerID: "acme", id: "base", variant: "default" },
+      }),
+    ).toEqual({ providerID: "acme", modelID: "base" })
+  })
+
+  test("keeps non-default pin variants", () => {
+    expect(
+      emergencyRealModel([], PSEUDO, {
+        to: { providerID: PSEUDO, id: "auto" },
+        from: { providerID: "munito", id: "zai-org/glm-5.3-flash", variant: "medium" },
+      }),
+    ).toEqual({ providerID: "munito", modelID: "zai-org/glm-5.3-flash", variant: "medium" })
+  })
+
+  test("skips a pin parked from the pseudo form itself, falls back to rows", () => {
+    // Defensive re-park chains can store the entry as the from-ref; the
+    // newest real switch row is then the truth.
+    const rows = [
+      { type: "user", text: "why" },
+      { type: "model-switched", model: { providerID: PSEUDO, id: "auto" }, previous: { providerID: "old", id: "gone" } },
+      { info: { type: "model-switched", model: { providerID: "acme", id: "fast", variant: "high" } } },
+    ]
+    expect(emergencyRealModel(rows, PSEUDO, { to: { providerID: PSEUDO, id: "auto" }, from: { providerID: PSEUDO, id: "auto" } })).toEqual({
+      providerID: "acme",
+      modelID: "fast",
+      variant: "high",
+    })
+  })
+
+  test("scans newest-first and ignores non-switch rows and pseudo targets", () => {
+    const rows = [
+      { type: "assistant" },
+      { type: "model-switched", model: { providerID: "acme", id: "fast" } },
+      { type: "model-switched", model: { providerID: PSEUDO, id: "auto" } },
+    ]
+    expect(emergencyRealModel(rows, PSEUDO, null)).toEqual({ providerID: "acme", modelID: "fast" })
+  })
+
+  test("undefined when nothing real is known and accepts both ref spellings", () => {
+    expect(emergencyRealModel([], PSEUDO, null)).toBeUndefined()
+    expect(emergencyRealModel([], PSEUDO, { to: { providerID: PSEUDO, id: "auto" }, from: { providerID: PSEUDO, id: "auto" } })).toBeUndefined()
+    expect(
+      emergencyRealModel([{ type: "model-switched", model: { providerID: "acme", modelID: "fast" } }], PSEUDO),
+    ).toEqual({ providerID: "acme", modelID: "fast" })
+    expect(emergencyRealModel([], PSEUDO, undefined)).toBeUndefined()
   })
 })

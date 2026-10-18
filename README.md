@@ -284,9 +284,17 @@ display name.
   than reverting to the not-runnable entry.
 - `auto.fallback` names a real model (`provider/model`) switched to when an
   auto-entry turn cannot be routed (judge failure, no usable candidates) -
-  the switch is pinned, so the loop continues from there. Without it the
-  turn stays on the pseudo-entry and fails visibly when it runs; the
-  closed-port base URL makes that failure immediate rather than hanging.
+  the switch is pinned, so the loop continues from there.
+- Fail-safes make a turn on the pseudo-entry effectively unreachable,
+  config or not: at the entry every prompt first drops the session onto
+  the last real model it ran (its own pin's parked-from model, else the
+  newest `model-switched` row) *before* the judge refines the pick, and
+  without `auto.fallback` that same last-used model closes the routing
+  chain. Idle notices (done-check) move a resting session off the entry
+  before posting, so their wake turns run real too - synthetic admissions
+  never pass the prompt hook, only this head start protects them. The
+  pseudo-entry itself fails fast when hit (closed-port base URL makes the
+  failure immediate rather than hanging).
 - Re-engaging is simply selecting `auto` in the picker again.
 
 The judgment is cached per prompt - repeating the same prompt costs
@@ -331,7 +339,7 @@ Options:
 | `auto.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
 | `auto.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
 | `auto.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
-| `auto.fallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the turn fails visibly on the pseudo-model. |
+| `auto.fallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the session's last-used model is the fallback. |
 | `auto.name` | `Auto` | Picker display name of the auto entry. |
 | `auto.aliases` | `[]` | Extra search aliases, shown as a name suffix (`Auto (Jev)`). |
 | `effort.auto` | `false` | Off unless explicitly enabled; routes the plain per-variant thinking level of any current model, and pairs with auto inside the loop. |

@@ -264,6 +264,41 @@ export function pinMatches(last: { to: any; from: any } | undefined | null, pin:
   return refKey(last.to) === refKey(pin.to) && refKey(last.from) === refKey(pin.from)
 }
 
+// Emergency fallback target when a session sits on the auto entry and its
+// turn must not execute there (judge failure, no usable candidates, no
+// configured fallback, or a synthetic wake that bypasses the prompt hook):
+// the most recent REAL model the session itself ran. First the pin's
+// parked-from ref (the model the previous judged turn landed on before the
+// resting reset), else the newest real model-switched row of the
+// transcript. Both are history, not intent, so neither needs a fresh
+// availability check - the model ran on this session seconds ago. Pure
+// over rows + pin; refs accept either spelling (pins store "id" like
+// OpenCode emits it, some sources use "modelID").
+export function emergencyRealModel(
+  rows: ReadonlyArray<any>,
+  pseudoProviderID: string,
+  pin?: { to?: any; from?: any } | null,
+): { providerID: string; modelID: string; variant?: string } | undefined {
+  const consider = (ref: any): { providerID: string; modelID: string; variant?: string } | undefined => {
+    const modelID = ref?.id ?? ref?.modelID
+    if (!ref?.providerID || !modelID || ref.providerID === pseudoProviderID) return undefined
+    const variant =
+      typeof ref?.variant === "string" && ref.variant.trim() !== "" && ref.variant !== "default"
+        ? ref.variant.trim()
+        : undefined
+    return variant ? { providerID: ref.providerID, modelID, variant } : { providerID: ref.providerID, modelID }
+  }
+  const parked = consider(pin?.from)
+  if (parked) return parked
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const message: any = rows[i]?.info ?? rows[i]
+    if (message?.type !== "model-switched") continue
+    const landed = consider(message?.model)
+    if (landed) return landed
+  }
+  return undefined
+}
+
 // The manual-pick lattice for the model-routing path. A missing pin record
 // means no own switch exists yet, so the newest switch (if any) is foreign.
 //   "go"    - judge this prompt normally
