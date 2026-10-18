@@ -874,7 +874,7 @@ export default Plugin.define({
                 ...Provider.Info.empty(entryProviderID),
                 name: "opencode-system-one",
                 activation: "enabled",
-                package: "@ai-sdk/openai-compatible",
+                package: "@opencode/ai/providers/openai-compatible",
                 settings: { baseURL: "http://127.0.0.1:1/v1" },
               },
               models: [{ ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: autoEntry.title }],
