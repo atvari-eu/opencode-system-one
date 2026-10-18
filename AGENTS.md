@@ -64,6 +64,19 @@ behavior change instead of duplicating them here.
 
 ## Environment gotchas
 
+- Always check the current OpenCode v2 plugin API (docs at
+  https://opencode.ai/v2/docs/build/plugins and /build/plugins/cli) before
+  using a host feature in a new way - the API has shifted between 2.0.x
+  releases and our codebases. Bugs shipped here by trusting older shapes or
+  memory of an API: `storage.store(key, { initial: value })` (not a raw
+  default, and the docs' `[value, updater]` pair is the shape to guard
+  against), `command.transform` editor details, keymap/panel/slot
+  registrations, and hook-returned cleanup functions (hosts have had our
+  cleanups be `undefined` - always skip non-function entries). Anything not
+  covered by tests should be verified against the docs page, not from
+  memory. `bun test` only proves module-load integrity, NOT runtime host
+  behavior.
+
 - The end-user CLI binary may be `opencode2` (localhost wrapper) rather than
   `opencode`; the credential loader tries `OPENCODE_BIN` → `opencode` →
   `opencode2` in that order. Keep that fallback list intact.
