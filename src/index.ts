@@ -1782,6 +1782,37 @@ export default Plugin.define({
       return false
     }
 
+    // Step a resting session off the auto entry before something posts a
+    // synthetic or triggers a turn-shaped job. Both wake paths bypass the
+    // prompt hook's fail-safe (a synthetic notice wakes a turn on the
+    // session's CURRENT model; the built-in summarizer inside session.compact
+    // makes a model call the same way), so one parked at the entry would die
+    // ConnectionRefused mid-wake. Best effort: if the move fails, the wake
+    // fails visibly exactly as it would have before the fail-safe.
+    const ensureOffEntry = async (sessionID: string, messages: ReadonlyArray<any>): Promise<void> => {
+      try {
+        const model = (await (ctx as any).session.get({ sessionID }))?.model
+        if (!isAutoEntry(autoEntry, model)) return
+        let wakePin: any
+        try {
+          wakePin = await (ctx as any).storage.get(`route-pin/${String(sessionID)}`)
+        } catch {}
+        const emergency = emergencyRealModel(messages, AUTO_PROVIDER, wakePin)
+        if (!emergency) return
+        await (ctx as any).session.switchModel({
+          sessionID,
+          model: {
+            providerID: emergency.providerID,
+            id: emergency.modelID,
+            ...(emergency.variant ? { variant: emergency.variant } : {}),
+          },
+        })
+        console.log(
+          `[jev] wake: ${sessionID} left the auto entry (${emergency.providerID}/${emergency.modelID}) before a posted turn`,
+        )
+      } catch {}
+    }
+
     // -- resting reset: pull auto picks back to their resting point at turn end --
     //
     // Auto routing leaves the session parked on the last judged pick. When the
@@ -1909,36 +1940,10 @@ export default Plugin.define({
             await (ctx as any).storage.set(key, { hash: tail.hash })
           } catch {}
           if (shouldNotifyIncomplete(done, notifyBelow)) {
-            // The notice wakes a turn this plugin never sees admitted: the
-            // agent runs on the session's CURRENT model, so one resting at
-            // the auto entry would wake straight into the pseudo-model and
-            // die ConnectionRefused (observed: empty assistant rows riding
-            // opencode-system-one/auto). Step the session onto the last
-            // real model it ran before posting; the route resting reset
-            // re-parks at the entry after the wake turn ends.
-            try {
-              const model = (await (ctx as any).session.get({ sessionID }))?.model
-              if (isAutoEntry(autoEntry, model)) {
-                let wakePin: any
-                try {
-                  wakePin = await (ctx as any).storage.get(`route-pin/${String(sessionID)}`)
-                } catch {}
-                const emergency = emergencyRealModel(messages, AUTO_PROVIDER, wakePin)
-                if (emergency) {
-                  await (ctx as any).session.switchModel({
-                    sessionID,
-                    model: {
-                      providerID: emergency.providerID,
-                      id: emergency.modelID,
-                      ...(emergency.variant ? { variant: emergency.variant } : {}),
-                    },
-                  })
-                  console.log(
-                    `[jev] done-check: ${sessionID} - left the auto entry for the wake (${emergency.providerID}/${emergency.modelID})`,
-                  )
-                }
-              }
-            } catch {}
+            // The notice wakes a turn this plugin never sees admitted - get
+            // the session off the entry first (ensureOffEntry); the route
+            // resting reset re-parks at the entry after the wake turn ends.
+            await ensureOffEntry(sessionID, messages)
             const text = tail.loop
               ? `[jev-done-check] loop detected (p(complete)=${fmt(done)}): the tail repeats identical messages - the remaining work is likely not actionable by replying again. Interrupt or send a new instruction.`
               : `[jev-done-check] p(complete)=${fmt(done)} → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user`
@@ -2160,6 +2165,12 @@ export default Plugin.define({
               console.log(
                 `[jev] idle-compaction: ~${estimated}tok ≥ ${target} - triggering compaction for ${sessionID}`,
               )
+              // The built-in summarizer inside session.compact runs a model
+              // call on the session's CURRENT model - with this idle event
+              // having just parked the session at the entry, that call would
+              // ride the pseudo-model and fail. Same cure as the done-check
+              // wake.
+              await ensureOffEntry(sessionID, messages)
               await (ctx as any).session.compact?.({ sessionID })
               IDLE_POSTED.set(sessionID, Date.now())
             } catch (err: any) {

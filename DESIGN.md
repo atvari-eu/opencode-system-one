@@ -148,9 +148,12 @@ pin storage). Rationale worth remembering when extending it:
   model the session itself ran (`emergencyRealModel` - the pin's
   parked-from ref, else the newest `model-switched` row; history, not
   intent, so no availability re-check is possible or needed), the judge
-  refines on top of that placement, and the done-check moves a resting
-  session off the entry before posting a notice so the wake turn cannot
-  ride the pseudo-model. Irreducible remainder: a host-generated
+  refines on top of that placement, and one shared adapter helper
+  (`ensureOffEntry`) moves a resting session off the entry before every
+  plugin-posted wake - the done-check notice and the idle-triggered
+  `session.compact` alike (the built-in summarizer runs a model call on
+  the session's current model, exactly the hazard of a synthetic wake
+  turn). Irreducible remainder: a host-generated
   synthetic reaching a session that never ran a real model before - the
   entry's closed-port base URL keeps that failure immediate.
   Idle reset (the resting point pull-back - auto entry or, for plain

@@ -290,11 +290,12 @@ display name.
   the last real model it ran (its own pin's parked-from model, else the
   newest `model-switched` row) *before* the judge refines the pick, and
   without `auto.fallback` that same last-used model closes the routing
-  chain. Idle notices (done-check) move a resting session off the entry
-  before posting, so their wake turns run real too - synthetic admissions
-  never pass the prompt hook, only this head start protects them. The
-  pseudo-entry itself fails fast when hit (closed-port base URL makes the
-  failure immediate rather than hanging).
+  chain. Idle notices (done-check) and idle-triggered compaction move a
+  resting session off the entry before posting or summarizing, so their
+  wake turns run real too - those admissions never pass the prompt hook,
+  only this head start protects them. The pseudo-entry itself fails fast
+  when hit (closed-port base URL makes the failure immediate rather than
+  hanging).
 - Re-engaging is simply selecting `auto` in the picker again.
 
 The judgment is cached per prompt - repeating the same prompt costs
