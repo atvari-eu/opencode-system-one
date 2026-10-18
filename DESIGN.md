@@ -146,7 +146,12 @@ pin storage). Rationale worth remembering when extending it:
   subscription and only touches plugin-made switches (`pinMatches`),
   is best effort (no usable idle events = stays parked until the next
   prompt re-routes), and writes its own pin so the chain stays
-  verifiable. `route-base/<sid>` had a latent `.id` vs `.modelID`
+  verifiable. In v2 the end of a turn is the terminal
+  `session.execution.{succeeded,failed,interrupted}` event - builds of
+  this era never broadcast `session.idle` on the stream, so the shared
+  extractor accepts both; subscribing to execution events also puts the
+  resting point back IMMEDIATELY after the turn, so the picker reads the
+  auto entry at rest and the per-turn pick stays invisible to the user. `route-base/<sid>` had a latent `.id` vs `.modelID`
   mismatch that made the stored base a no-op; fixed while wiring the
   entry, and a session observed at the entry re-records its base as the
   entry (covers switching `autoModel` on after a real-model era).

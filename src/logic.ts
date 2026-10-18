@@ -749,17 +749,22 @@ export function shouldNotifyIncomplete(done: number | undefined, notifyBelow: nu
 
 export const NOTIFY_BELOW_DEFAULT = 0.45
 
-// session.idle transport: v2 events arrive as { type, data: { sessionID } },
-// legacy v1 shapes carry { name, properties: {...} } or a payload object, and
-// some wrappers put the sessionID straight on the event. One extractor serves
-// every idle feature (resting reset, done-check, idle-compaction).
+// "Turn is over" transport. v2 builds never broadcast `session.idle`; the
+// terminal `session.execution.{succeeded,failed,interrupted}` events mark the
+// end of a turn instead (legacy shapes carry `session.idle` in `name` or
+// `type` with `properties`/`payload`). One extractor serves every idle
+// feature (resting reset, done-check, idle-compaction).
 export function idleSessionID(e: unknown): string | undefined {
   const ev = e as any
   const type = String(ev?.type ?? ev?.name ?? "")
-  if (type !== "session.idle" && !type.endsWith("session.idle")) return undefined
-  const p = ev?.data ?? ev?.properties ?? ev?.payload ?? ev
-  const sid = p?.sessionID ?? ev?.sessionID
-  return typeof sid === "string" && sid.trim() !== "" ? sid.trim() : undefined
+  const extract = (): string | undefined => {
+    const p = ev?.data ?? ev?.properties ?? ev?.payload ?? ev
+    const sid = p?.sessionID ?? ev?.sessionID
+    return typeof sid === "string" && sid.trim() !== "" ? sid.trim() : undefined
+  }
+  if (type === "session.idle" || type.endsWith("session.idle")) return extract()
+  if (/^session\.execution\.(succeeded|failed|interrupted)$/.test(type)) return extract()
+  return undefined
 }
 
 // ---------------------------------------------------------------------------

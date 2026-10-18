@@ -1691,10 +1691,12 @@ export default Plugin.define({
       return false
     }
 
-    // -- resting reset: pull auto picks back to their resting point at idle --
+    // -- resting reset: pull auto picks back to their resting point at turn end --
     //
     // Auto routing leaves the session parked on the last judged pick. When the
-    // turn ends (idle), the plugin restores the resting point: the auto
+    // turn ends (in v2 that is the terminal session.execution.* event -
+    // session.idle is not broadcast on the event stream), the plugin restores
+    // the resting point: the auto
     // entry itself (route.autoModel), or - for plain auto effort - the model's
     // default variant, so the picker shows the base the user actually chose.
     // Only plugin-made switches (pinMatches) are touched: a manual pick sleeps

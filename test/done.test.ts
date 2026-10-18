@@ -19,6 +19,14 @@ describe("idleSessionID", () => {
     expect(idleSessionID(e)).toBe("ses_abc")
   })
 
+  test("treats terminal v2 execution events as end-of-turn", () => {
+    for (const status of ["succeeded", "failed", "interrupted"]) {
+      const e = { type: `session.execution.${status}`, data: { sessionID: `ses_${status}` } }
+      expect(idleSessionID(e)).toBe(`ses_${status}`)
+    }
+    expect(idleSessionID({ type: "session.execution.started", data: { sessionID: "ses_1" } })).toBeUndefined()
+  })
+
   test("matches qualified idle type names and skips other events", () => {
     expect(idleSessionID({ type: "app.session.idle", data: { sessionID: "ses_1" } })).toBe("ses_1")
     expect(idleSessionID({ type: "session.created", data: { sessionID: "ses_1" } })).toBeUndefined()
@@ -32,6 +40,7 @@ describe("idleSessionID", () => {
   test("never returns a non-string or blank sessionID", () => {
     expect(idleSessionID({ type: "session.idle", data: {} })).toBeUndefined()
     expect(idleSessionID({ type: "session.idle", data: { sessionID: "  " } })).toBeUndefined()
+    expect(idleSessionID({ type: "session.execution.succeeded", data: { sessionID: 42 } })).toBeUndefined()
     expect(idleSessionID(undefined)).toBeUndefined()
   })
 })
