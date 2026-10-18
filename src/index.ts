@@ -58,6 +58,7 @@ import {
   clampThreshold,
   doneTranscript,
   doneVerdict,
+  idleSessionID,
   isAvailableModel,
   normaliseProvider,
   parseAuthExport,
@@ -1642,8 +1643,8 @@ export default Plugin.define({
     }
 
     // Shared idle-event subscription. session.idle distinguishes nothing about
-    // which feature wants it, so one helper serves both done-check and the
-    // auto resting reset below. Returns false when no subscription is usable.
+    // which feature wants it, so one helper (idleSessionID in logic.ts) serves
+    // the resting reset below, done-check and idle-compaction alike.
     // Newest model-switched message in the transcript ({ model, previous }),
     // or undefined - declared at setup scope because the idle resting reset
     // needs it even when route.auto itself is off (plain auto effort).
@@ -1653,13 +1654,6 @@ export default Plugin.define({
         if (message?.type === "model-switched") return { to: message.model, from: message.previous }
       }
       return undefined
-    }
-    const idleSessionID = (e: any): string | undefined => {
-      const type = String(e?.type ?? e?.name ?? "")
-      if (type !== "session.idle" && !type.endsWith("session.idle")) return undefined
-      const p = e?.properties ?? e?.payload ?? e
-      const sid = p?.sessionID ?? e?.sessionID
-      return typeof sid === "string" && sid ? sid : undefined
     }
     const subscribeIdle = async (handler: (sessionID: string) => Promise<void>, tag: string): Promise<boolean> => {
       const events: any = (ctx as any).event
@@ -2020,13 +2014,6 @@ export default Plugin.define({
               console.error(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
             }
           }
-          const idleOnly = (e: any): string | undefined => {
-            const type = String(e?.type ?? e?.name ?? "")
-            if (type !== "session.idle" && !type.endsWith("session.idle")) return undefined
-            const p = e?.properties ?? e?.payload ?? e
-            const sid = p?.sessionID ?? e?.sessionID
-            return typeof sid === "string" && sid ? sid : undefined
-          }
           try {
             const stream: any = await events.subscribe()
             if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
@@ -2034,7 +2021,7 @@ export default Plugin.define({
               ;(async () => {
                 try {
                   for await (const e of stream as any) {
-                    const sessionID = idleOnly(e)
+                    const sessionID = idleSessionID(e)
                     if (sessionID) await handleIdleCompaction(sessionID)
                   }
                 } catch (err: any) {
@@ -2043,7 +2030,7 @@ export default Plugin.define({
               })()
             } else if (typeof stream === "function") {
               await stream("session.idle", (e: any) => {
-                const sessionID = idleOnly(e)
+                const sessionID = idleSessionID(e)
                 if (sessionID) void handleIdleCompaction(sessionID)
               })
               registered = true

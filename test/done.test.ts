@@ -6,11 +6,35 @@ import {
   clampThreshold,
   doneTranscript,
   doneVerdict,
+  idleSessionID,
   shouldNotifyIncomplete,
   NOTIFY_BELOW_DEFAULT,
 } from "../src/logic"
 
 const row = (text: string) => ({ info: { text }, type: "message" })
+
+describe("idleSessionID", () => {
+  test("reads sessionID from the v2 event data field", () => {
+    const e = { id: "evt_1", type: "session.idle", data: { sessionID: "ses_abc" } }
+    expect(idleSessionID(e)).toBe("ses_abc")
+  })
+
+  test("matches qualified idle type names and skips other events", () => {
+    expect(idleSessionID({ type: "app.session.idle", data: { sessionID: "ses_1" } })).toBe("ses_1")
+    expect(idleSessionID({ type: "session.created", data: { sessionID: "ses_1" } })).toBeUndefined()
+  })
+
+  test("still supports the legacy v1 name/properties shapes", () => {
+    expect(idleSessionID({ name: "session.idle", properties: { sessionID: "ses_old" } })).toBe("ses_old")
+    expect(idleSessionID({ type: "session.idle", sessionID: "ses_direct" })).toBe("ses_direct")
+  })
+
+  test("never returns a non-string or blank sessionID", () => {
+    expect(idleSessionID({ type: "session.idle", data: {} })).toBeUndefined()
+    expect(idleSessionID({ type: "session.idle", data: { sessionID: "  " } })).toBeUndefined()
+    expect(idleSessionID(undefined)).toBeUndefined()
+  })
+})
 
 describe("doneTranscript", () => {
   test("joins the tail, capping per message and in total", () => {

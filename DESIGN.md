@@ -159,7 +159,13 @@ asked, so it carries extra invariants beyond fail-open:
 - **Trigger**: the `session.idle` event, probed destructively - the
   subscription surface differs across OpenCode versions (async-iterable
   stream vs effect-style `subscribe(name, handler)`), so setup tries both
-  and logs a skip when neither fits. No event, no feature.
+  and logs a skip when neither fits. The payload extractor (`idleSessionID`
+  in logic.ts) is shared with the resting reset and idle-compaction and
+  normalizes both eras: v2 events carry the session in `data.sessionID`,
+  legacy shapes in `properties`/top level - reading the wrong field does not
+  error, it just sees no idle events at all and every idle feature silently
+  dies, so the extractor is regression-tested against the v2 shape.
+  No event, no feature.
 - **Dedupe**: the judged transcript tail (`doneTranscript`) is hashed and
   stored per session (`done-check/<id>`); an unchanged tail is never
   judged twice, and multiple idle fires after one turn cost nothing.
