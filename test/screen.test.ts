@@ -11,6 +11,7 @@ import {
   parseScreenAnnotation,
   parseScreenMode,
   SELF_SCREENED_TOOLS,
+  parseScreenNotice,
 } from "../src/logic"
 
 describe("parseScreenTools", () => {
@@ -145,5 +146,48 @@ describe("screenVerdict", () => {
   test("non-numbers never verdict on their own", () => {
     expect(screenVerdict(undefined, undefined)).toBe("pass")
     expect(screenVerdict(null, "high")).toBe("pass")
+  })
+})
+
+describe("parseScreenNotice", () => {
+  const parse = (s: string) => parseScreenNotice(s)
+
+  test("auto notice row with numbers and tool tail", () => {
+    const item = parse("[jev-screen] junk=0.26 injection=0.20 pass - bash")
+    expect(item?.verdict).toBe("pass")
+    expect(item?.label).toBe("bash")
+    expect(item?.junk).toBeCloseTo(0.26)
+    expect(item?.injection).toBeCloseTo(0.2)
+  })
+
+  test("do-not-rely auto row reads unsafe", () => {
+    const item = parse("[jev-screen] junk=0.9 injection=0.8 scrubbed=1 ⚠ do-not-rely - webfetch")
+    expect(item?.verdict).toBe("unsafe")
+    expect(item?.label).toBe("webfetch")
+  })
+
+  test("inline flagged notice", () => {
+    const item = parse("[jev-screen] ⚠ https://x.test flagged (jev-screen: junk=0.6 injection=0.9) - result annotated, do not rely on it")
+    expect(item?.verdict).toBe("flagged")
+    expect(item?.label).toContain("x.test")
+  })
+
+  test("redact withheld row", () => {
+    const item = parse("[jev-screen] ✗ https://x.test: content withheld (fail-closed) - jev-screen: junk=0.9 injection=0.9")
+    expect(item?.verdict).toBe("unsafe")
+    expect(item?.label).toBe("https://x.test")
+    expect(item?.note).toContain("withheld")
+  })
+
+  test("command row with arrow verdict", () => {
+    expect(parse("[jev-screen] https://y.test: junk=0.1 injection=0.2 → pass")?.verdict).toBe("pass")
+    expect(parse("[jev-screen] https://y.test: junk=0.6 injection=0.2 → flagged - proceed with caution")?.verdict).toBe("flagged")
+    expect(parse("[jev-screen] https://y.test: junk=0.9 injection=0.9 → FAIL - do not rely on this page; read manually")?.verdict).toBe("unsafe")
+  })
+
+  test("failures and non-rows are undefined", () => {
+    expect(parse("[jev-screen] failed: endpoint refused")).toBeUndefined()
+    expect(parse("[jev-error] something else")).toBeUndefined()
+    expect(parse("plain text")).toBeUndefined()
   })
 })

@@ -1128,6 +1128,97 @@ export function fmtFindReport(input: {
 /** Synthetic notice marker the TUI plugin converts into an error toast. */
 export const JEVS_ERROR_MARK = "[jev-error] "
 
+// Plain screening-notice rows, posted by the auto screen hook (and the
+// /jev-screen command). The TUI half parses them into the verdict panel and
+// flags/unsafe toasts; passes stay silent in the UI.
+export const SCREEN_NOTICE_MARK = "[jev-screen]"
+
+export type ScreenVerdict = "pass" | "flagged" | "unsafe"
+
+export interface ScreenVerdictItem {
+  /** URL or tool name the verdict is about, as printed in the row. */
+  label: string
+  junk: number | undefined
+  injection: number | undefined
+  verdict: ScreenVerdict
+  /** Extra wording from row styles without numbers (e.g. "result annotated"). */
+  note: string | undefined
+}
+
+/**
+ * Parses the screening notice row formats into a verdict item:
+ * - `jev-screen: junk=0.2x injection=0.3x pass - shell` (auto notice row)
+ * - `⚠ <url> flagged (jev-screen: ...) - result annotated...` (inline flagged)
+ * - `✗ <url>: content withheld (fail-closed) - <tag>` (redact withheld)
+ * - `<url>: junk=… injection=… → <verdict text>` (/jev-screen command row)
+ * Returns undefined for anything else (failures, unrelated rows).
+ */
+export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
+  const body = typeof text === "string" && text.startsWith(SCREEN_NOTICE_MARK)
+    ? text.slice(SCREEN_NOTICE_MARK.length).trim()
+    : ""
+  if (!body || body.startsWith("failed:") || body.startsWith("usage:")) return undefined
+
+  const num = (m: string | undefined): number | undefined => {
+    if (m === undefined) return undefined
+    const v = Number(m)
+    return Number.isFinite(v) ? v : undefined
+  }
+
+  // ✗ withheld — the redact-mode stop. The label is everything before the
+  // "content withheld" clause — URLs contain colons, so ":" alone won't do.
+  const withheld = body.match(/^✗\s*(.+?):\s*content withheld/)
+  if (withheld) {
+    return { label: withheld[1].trim(), junk: undefined, injection: undefined, verdict: "unsafe", note: "content withheld (fail-closed)" }
+  }
+
+  // ⚠ flagged (inline mode flagged notice)
+  const warned = body.match(/^⚠\s*(.+?)\s+flagged\s*\(/)
+  if (warned) {
+    const nums = Object.fromEntries([...warned[1].matchAll(/(junk|injection)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
+    return {
+      label: warned[1].replace(/\s*(junk|injection)=[0-9.]+/g, "").trim(),
+      junk: "junk" in nums ? num(nums.junk) : undefined,
+      injection: "injection" in nums ? num(nums.injection) : undefined,
+      verdict: "flagged",
+      note: "result annotated, do not rely on it",
+    }
+  }
+
+  // /jev-screen command row: `<url>: junk=… injection=… → <verdict>`
+  const command = body.match(/^(.*?):\s*(.*?)\s*→\s*(.+)$/)
+  if (command) {
+    const nums = Object.fromEntries([...command[2].matchAll(/(junk|injection)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
+    const verdictText = command[3]
+    const verdict: ScreenVerdict =
+      /FAIL|unsafe|do not rely/i.test(verdictText) ? "unsafe" : /flagged/i.test(verdictText) ? "flagged" : "pass"
+    return {
+      label: command[1].trim(),
+      junk: "junk" in nums ? num(nums.junk) : undefined,
+      injection: "injection" in nums ? num(nums.injection) : undefined,
+      verdict,
+      note: undefined,
+    }
+  }
+
+  // Auto notice row: `junk=… injection=… scrubbed=N pass - <tool>`
+  const nums = Object.fromEntries([...body.matchAll(/(junk|injection)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
+  if (nums.junk === undefined && nums.injection === undefined) return undefined
+  const verdict: ScreenVerdict = /⚠|do-not-rely/i.test(body)
+    ? "unsafe"
+    : /\bflagged\b/i.test(body)
+      ? "flagged"
+      : "pass"
+  const label = body.includes(" - ") ? body.split(/\s-\s/).pop()!.trim() : "tool"
+  return {
+    label,
+    junk: "junk" in nums ? num(nums.junk) : undefined,
+    injection: "injection" in nums ? num(nums.injection) : undefined,
+    verdict,
+    note: undefined,
+  }
+}
+
 export interface JevUserError {
   /** The part of the message that matters to the user, without internal detail. */
   title: string
