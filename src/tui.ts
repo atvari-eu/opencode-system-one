@@ -104,7 +104,12 @@ export default {
     }
 
     return async () => {
-      for (const cleanup of cleanups) await cleanup()
+      for (const cleanup of cleanups) {
+        // hosts have logged "cleanup is not a function" when a registration
+        // API returned nothing - never let one missing unregister break the
+        // others
+        if (typeof cleanup === "function") await cleanup()
+      }
     }
   },
 }

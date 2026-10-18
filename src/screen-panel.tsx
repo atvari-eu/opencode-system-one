@@ -38,7 +38,9 @@ function Row(props: { item: ScreenVerdictItem; index: number }): JSX.Element {
 }
 
 function Panel(props: { store: readonly [Store, unknown] }): JSX.Element {
-  const items = props.store[0].items
+  // store[0] is the reactive value; items can be briefly undefined while the
+  // initial value syncs, or if an older host ignored the { initial } default
+  const items = props.store?.[0]?.items ?? []
   return (
     <box flexDirection="column" paddingLeft={1} paddingRight={1}>
       <box marginBottom={1}>
@@ -52,7 +54,10 @@ function Panel(props: { store: readonly [Store, unknown] }): JSX.Element {
 export default {
   id: "atvari.jev.tui.screen",
   async setup(context: any) {
-    const store = context.storage.store<Store>("jev-screen-verdicts", { items: [] })
+    // Docs shape: context.storage.store("key", { initial: value }) returns a
+    // [value, updater] pair. The { initial } wrap prevents hosts that treat
+    // the second argument as options from dropping a malformed raw default.
+    const store = context.storage.store<Store>("jev-screen-verdicts", { initial: { items: [] } })
 
     const unlisten = context.data.on("session.synthetic", (event: { text?: unknown }) => {
       const text = typeof event?.text === "string" ? event.text : ""
