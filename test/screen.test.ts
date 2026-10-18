@@ -2,7 +2,7 @@
 // canonical runScreen flow shared by the tool and the automatic hook.
 
 import { describe, expect, test } from "bun:test"
-import { runScreen } from "../src/screen"
+import { runScreen, SCREEN_QUESTIONS } from "../src/screen"
 import {
   parseScreenTools,
   screenApplies,
@@ -77,16 +77,27 @@ describe("parseScreenMode", () => {
   })
 })
 
-// Fixture deps for runScreen: fake judge/scrub, no plugin host.
+// Fixture deps for runScreen: fake judge/scrub, no plugin host. The secret
+// question is a score, junk/injection are noul - shaped accordingly.
 const runScreenDeps = (answers: Record<string, number>) => ({
   judge: async () => ({
-    answers: Object.fromEntries(Object.entries(answers).map(([k, v]) => [k, { noul: v }])),
+    answers: Object.fromEntries(
+      Object.entries(answers).map(([k, v]) => [k, k === "secret" ? { score: v } : { noul: v }]),
+    ),
     cached: false,
   }),
   scrub: (text: string) => ({ text: text.replace(/sk-[a-z0-9]+/g, "REDACTED"), hits: 0 }),
 })
 
 describe("runScreen", () => {
+  test("asks the three shared questions, secret among them", async () => {
+    expect(SCREEN_QUESTIONS.map((q) => `${q.id}:${q.type}`)).toEqual([
+      "junk:noul",
+      "injection:noul",
+      "secret:score",
+    ])
+  })
+
   test("bands junk/injection into the shared verdict", async () => {
     const clean = await runScreen(runScreenDeps({ junk: 0.1, injection: 0.2 }), "fine")
     expect(clean.verdict).toBe("pass")
@@ -120,6 +131,41 @@ describe("runScreen", () => {
     expect(outcome.verdict).toBe("pass")
     expect(outcome.junk).toBeUndefined()
     expect(outcome.injection).toBeUndefined()
+    expect(outcome.secret).toBeUndefined()
+    expect(outcome.secretFlag).toBe(false)
+  })
+
+  test("secret score at/above the threshold flags (advisory)", async () => {
+    const flagged = await runScreen(runScreenDeps({ junk: 0.1, injection: 0.2, secret: 0.8 }), "creds")
+    expect(flagged.secret).toBeCloseTo(0.8)
+    expect(flagged.secretFlag).toBe(true)
+    expect(flagged.verdict).toBe("flagged")
+    expect(flagged.verdictText).toContain("proceed with caution")
+    const clean = await runScreen(runScreenDeps({ junk: 0.1, injection: 0.2, secret: 0.59 }), "ok")
+    expect(clean.secretFlag).toBe(false)
+    expect(clean.verdict).toBe("pass")
+  })
+
+  test("secret never escalates to unsafe on its own and never downgrades one", async () => {
+    // 0.99 secret with clean junk/injection stays flagged
+    const high = await runScreen(runScreenDeps({ junk: 0, injection: 0, secret: 0.99 }), "blob")
+    expect(high.verdict).toBe("flagged")
+    // a high injection verdict stays unsafe even with a clean secret
+    const unsafe = await runScreen(runScreenDeps({ junk: 0, injection: 0.9, secret: 0 }), "hostile")
+    expect(unsafe.verdict).toBe("unsafe")
+  })
+
+  test("secretThreshold option overrides the default band", async () => {
+    const strict = await runScreen(runScreenDeps({ junk: 0, injection: 0, secret: 0.7 }), "mid", {
+      secretThreshold: 0.9,
+    })
+    expect(strict.secretFlag).toBe(false)
+    expect(strict.verdict).toBe("pass")
+    const loose = await runScreen(runScreenDeps({ junk: 0, injection: 0, secret: 0.3 }), "low", {
+      secretThreshold: 0.2,
+    })
+    expect(loose.secretFlag).toBe(true)
+    expect(loose.verdict).toBe("flagged")
   })
 })
 
@@ -158,6 +204,21 @@ describe("parseScreenNotice", () => {
     expect(item?.label).toBe("bash")
     expect(item?.junk).toBeCloseTo(0.26)
     expect(item?.injection).toBeCloseTo(0.2)
+    expect(item?.secret).toBeUndefined()
+  })
+
+  test("secret score parses from auto and command rows", () => {
+    const auto = parse("[jev-screen] junk=0.10 injection=0.20 secret=0.83 flagged - read")
+    expect(auto?.verdict).toBe("flagged")
+    expect(auto?.label).toBe("read")
+    expect(auto?.secret).toBeCloseTo(0.83)
+    const cmd = parse("[jev-screen] /etc/nixos/secrets/x.age: junk=0.10 injection=0.20 secret=0.90 → flagged")
+    expect(cmd?.label).toBe("/etc/nixos/secrets/x.age")
+    expect(cmd?.secret).toBeCloseTo(0.9)
+    expect(cmd?.verdict).toBe("flagged")
+    // missing secret stays undefined, row still parses
+    const bare = parse("[jev-screen] junk=0.26 injection=0.20 pass - bash")
+    expect(bare?.secret).toBeUndefined()
   })
 
   test("do-not-rely auto row reads unsafe", () => {

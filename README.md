@@ -27,8 +27,11 @@ compaction can be decided by System One instead of a lossy summary
   `⚠ do-not-rely` over threshold). Screened state is regex-scrubbed and
   sampled to 12 kB; both paths share the judgment cache (same content
   costs nothing on repeat). The plugin's own judgment tools are never
-  screened. For content that is not a tool result, the agent can call
-  `jev_screen` itself — same judgment, its own tool row, a
+  screened. A third question scores residual credential material the redaction
+  may have missed (`"screen": { "secretThreshold": 0.6 }` - at/above the
+  threshold the verdict rises to flagged, advisory only: it never withholds
+  or downgrades a higher band). For content that is not a tool result, the
+  agent can call `jev_screen` itself — same judgment, its own tool row, a
   pass/flagged/unsafe verdict.
 - **scrub** - deterministic redaction (pure regex, never a model call) of
   known secret formats in **tool inputs** and **user prompts**: PEM private
@@ -38,8 +41,9 @@ compaction can be decided by System One instead of a lossy summary
 - **tools** - `jev_decide`: one request = one state + typed questions
   (noul/choice/score); `jev_judge_many`: one judgment per item, launched in
   parallel and aggregated in code (weighted mean + low-confidence flags);
-  `jev_screen`: on-demand junk/prompt-injection screening of pasted or
-  suspect content, back to back with the automatic fetched-result screen.
+  `jev_screen`: on-demand junk/prompt-injection/secret-material screening of
+  pasted or suspect content, back to back with the automatic fetched-result
+  screen.
   Every judgment shows as its own tool row (`Running jev_decide…`) in the
   timeline, and the tool descriptions carry the when-to-call guidance -
   screening, claim verification, ranking, bounded choices, scoring, and
@@ -48,8 +52,8 @@ compaction can be decided by System One instead of a lossy summary
 - **cache** - replies for identical (endpoint, model, state, questions) are
   served from durable plugin storage; only answers are persisted, never the
   state text.
-- **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
-  for any URL; `/jev-done-check` runs a completion self-check over the recent
+- **commands** - `/jev-screen <url | file>` gives a one-shot junk/injection/
+  secret verdict for any URL or local file; `/jev-done-check` runs a completion self-check over the recent
   session transcript; `/jev-compact` compacts the session now with jev
   decisions only, never falling back to the built-in summarizer;
   `/jev-approval-stats` lists which command patterns trigger approvals and how

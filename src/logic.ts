@@ -1140,6 +1140,8 @@ export interface ScreenVerdictItem {
   label: string
   junk: number | undefined
   injection: number | undefined
+  /** Score of the secret-material question (post-redaction residual). */
+  secret: number | undefined
   verdict: ScreenVerdict
   /** Extra wording from row styles without numbers (e.g. "result annotated"). */
   note: string | undefined
@@ -1169,17 +1171,18 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
   // "content withheld" clause — URLs contain colons, so ":" alone won't do.
   const withheld = body.match(/^✗\s*(.+?):\s*content withheld/)
   if (withheld) {
-    return { label: withheld[1].trim(), junk: undefined, injection: undefined, verdict: "unsafe", note: "content withheld (fail-closed)" }
+    return { label: withheld[1].trim(), junk: undefined, injection: undefined, secret: undefined, verdict: "unsafe", note: "content withheld (fail-closed)" }
   }
 
   // ⚠ flagged (inline mode flagged notice)
   const warned = body.match(/^⚠\s*(.+?)\s+flagged\s*\(/)
   if (warned) {
-    const nums = Object.fromEntries([...warned[1].matchAll(/(junk|injection)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
+    const nums = Object.fromEntries([...warned[1].matchAll(/(junk|injection|secret)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
     return {
-      label: warned[1].replace(/\s*(junk|injection)=[0-9.]+/g, "").trim(),
+      label: warned[1].replace(/\s*(junk|injection|secret)=[0-9.]+/g, "").trim(),
       junk: "junk" in nums ? num(nums.junk) : undefined,
       injection: "injection" in nums ? num(nums.injection) : undefined,
+      secret: "secret" in nums ? num(nums.secret) : undefined,
       verdict: "flagged",
       note: "result annotated, do not rely on it",
     }
@@ -1188,7 +1191,7 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
   // /jev-screen command row: `<url>: junk=… injection=… → <verdict>`
   const command = body.match(/^(.*?):\s*(.*?)\s*→\s*(.+)$/)
   if (command) {
-    const nums = Object.fromEntries([...command[2].matchAll(/(junk|injection)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
+    const nums = Object.fromEntries([...command[2].matchAll(/(junk|injection|secret)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
     const verdictText = command[3]
     const verdict: ScreenVerdict =
       /FAIL|unsafe|do not rely/i.test(verdictText) ? "unsafe" : /flagged/i.test(verdictText) ? "flagged" : "pass"
@@ -1196,13 +1199,14 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
       label: command[1].trim(),
       junk: "junk" in nums ? num(nums.junk) : undefined,
       injection: "injection" in nums ? num(nums.injection) : undefined,
+      secret: "secret" in nums ? num(nums.secret) : undefined,
       verdict,
       note: undefined,
     }
   }
 
-  // Auto notice row: `junk=… injection=… scrubbed=N pass - <tool>`
-  const nums = Object.fromEntries([...body.matchAll(/(junk|injection)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
+  // Auto notice row: `junk=… injection=… secret=… scrubbed=N pass - <tool>`
+  const nums = Object.fromEntries([...body.matchAll(/(junk|injection|secret)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
   if (nums.junk === undefined && nums.injection === undefined) return undefined
   const verdict: ScreenVerdict = /⚠|do-not-rely/i.test(body)
     ? "unsafe"
@@ -1214,6 +1218,7 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
     label,
     junk: "junk" in nums ? num(nums.junk) : undefined,
     injection: "injection" in nums ? num(nums.injection) : undefined,
+    secret: "secret" in nums ? num(nums.secret) : undefined,
     verdict,
     note: undefined,
   }

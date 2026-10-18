@@ -30,6 +30,7 @@ function Row(props: { item: ScreenVerdictItem; index: number }): JSX.Element {
   const counts = [
     props.item.junk !== undefined ? `junk=${props.item.junk.toFixed(2)}` : undefined,
     props.item.injection !== undefined ? `injection=${props.item.injection.toFixed(2)}` : undefined,
+    props.item.secret !== undefined ? `secret=${props.item.secret.toFixed(2)}` : undefined,
   ]
     .filter(Boolean)
     .join(" ")
