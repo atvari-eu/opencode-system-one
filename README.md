@@ -271,9 +271,10 @@ session returns to the auto entry, so the picker keeps showing `auto`.
 The picker's search matches the model's display name and provider name
 only (the model schema has no alias/tag field), so you can give the entry
 search aliases through the name: `"autoModel": { "aliases": ["Jev"] }`
-(default) shows the entry as `Auto (Jev)` - typing `jev` or `auto`
-finds it, and the provider appears under `opencode-system-one`.
-`"autoModel": { "name": "Autopilot" }` selects a custom display name.
+shows the entry as `Auto (Jev)` so typing `jev` finds it too; the default
+displays just `Auto` (findable via `auto` and the `opencode-system-one`
+provider name). `"autoModel": { "name": "Autopilot" }` selects a custom
+display name.
 
 - Mid-loop (session on a judged pick whose base is the entry) the normal
   lattice applies: jev may keep or change the pick; judge failures keep the
@@ -330,7 +331,7 @@ Options:
 | `route.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
 | `route.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
 | `route.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
-| `route.autoModel` | `false` | Register the `opencode-system-one/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. `true`, or `{ "name": "...", "aliases": [...] }` to shape the picker title (defaults: `Auto` + `(Jev)` alias suffix for search). Requires `route.auto`. |
+| `route.autoModel` | `false` | Register the `opencode-system-one/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. `true`, or `{ "name": "...", "aliases": [...] }` to shape the picker title (defaults: `Auto`, no alias suffix). Requires `route.auto`. |
 | `route.autoFallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the turn fails visibly on the pseudo-model. |
 | `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
 | `effort.minConfidence` | `0.45` | Minimum jev answer confidence required to switch the reasoning variant. |

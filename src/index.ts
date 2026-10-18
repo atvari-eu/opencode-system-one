@@ -722,7 +722,7 @@ export default Plugin.define({
     const autoModelRaw: unknown = routeRaw?.autoModel
     const autoModelCfg: { name?: unknown; aliases?: unknown } | null =
       typeof autoModelRaw === "object" && autoModelRaw !== null ? (autoModelRaw as any) : autoModelRaw === true ? {} : null
-    const autoEntryAliases = (Array.isArray(autoModelCfg?.aliases) ? autoModelCfg!.aliases : ["Jev"])
+    const autoEntryAliases = (Array.isArray(autoModelCfg?.aliases) ? autoModelCfg!.aliases : [])
       .filter((a): a is string => typeof a === "string" && a.trim() !== "")
       .map((a) => a.trim())
     const autoEntryName: string =
