@@ -20,18 +20,16 @@ compaction can be decided by System One instead of a lossy summary
   content fail-closed (default `mode: "redact"`) — fetched web pages note
   why they were withheld and how to override; local tool output is never
   withheld, only annotated. Set `"mode": "annotate"` to keep all content.
-  The verdict lands in a separate
-  `[jev-screen]` timeline row by default (`"annotation": "notice"` — result
-  text stays clean; the model learns of a verdict late). Set
-  `"annotation": "inline"` to prefix the result instead, so the model sees
-  the verdict where it reads the content (plus `⚠ do-not-rely` over
-  `"annotation": "inline"` to prefix the result instead, so the model sees
-  the verdict where it reads the content (plus `⚠ do-not-rely` over
-  threshold). Screened state is regex-scrubbed and sampled to 12 kB; both
-  paths share the judgment cache (same content costs nothing on repeat). The plugin's own
-  judgment tools are never screened. For
-  content that is not a tool result, the agent can call `jev_screen` itself
-  — same judgment, its own tool row, a pass/flagged/unsafe verdict.
+  The verdict lands in a separate `[jev-screen]` timeline row by default
+  (`"annotation": "notice"` — result text stays clean; the model learns of
+  a verdict late). Set `"annotation": "inline"` to prefix the result
+  instead, so the model sees the verdict where it reads the content (plus
+  `⚠ do-not-rely` over threshold). Screened state is regex-scrubbed and
+  sampled to 12 kB; both paths share the judgment cache (same content
+  costs nothing on repeat). The plugin's own judgment tools are never
+  screened. For content that is not a tool result, the agent can call
+  `jev_screen` itself — same judgment, its own tool row, a
+  pass/flagged/unsafe verdict.
 - **scrub** - deterministic redaction (pure regex, never a model call) of
   known secret formats in **tool inputs** and **user prompts**: PEM private
   keys, `sk-…` API keys, GitHub tokens (`ghp_`/`github_pat_`), AWS `AKIA…`,
