@@ -75,6 +75,7 @@ import {
   normaliseProvider,
   parseAuthExport,
   parseCandidates,
+  parseGates,
   parseIdleAuto,
   parseRouteSources,
   parseScreenAnnotation,
@@ -762,12 +763,10 @@ export default Plugin.define({
     // directly, `ask` stays exactly as configured (plain prompt, no verdict,
     // no annotation). Real configured denies outrank everything already.
     const approvalsRules = parsePermissions(approvalsObj.permissions)
-    // Read-only shell commands skip the destructive-regex gate (their
-    // arguments mention dangerous strings without performing them);
-    // false restores strict whole-string matching.
-    const approvalsReadonlyGateBypass = approvalsObj.readonlyGateBypass !== false
-    // Built-in secret-path gate; false disables it (default: on).
-    const approvalsSecretsGate = approvalsObj.secretsGate !== false
+    // Deterministic gate toggles (approvals.gates): defaults are
+    // secrets=true (secret-path gate on) and readonlyBypass=true (read-only
+    // shell commands skip the destructive-string check).
+    const approvalsGates = parseGates(approvalsObj.gates)
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1334,8 +1333,8 @@ export default Plugin.define({
 
             // Built-in secret-path gate, ahead of rule resolution so a
             // config allow (read * / grep *) cannot wave secret paths
-            // through; approvals.secretsGate = false skips it.
-            if (approvalsSecretsGate && secretPathAction(action)) {
+            // through; approvals.gates.secrets = false skips it.
+            if (approvalsGates.secrets && secretPathAction(action)) {
               const hit = resources.some((resource) =>
                 isShellAction(action) && !secretPath(resource)
                   ? shellChainSegments(resource).some((segment) => secretPath(segment))
@@ -1416,8 +1415,7 @@ export default Plugin.define({
                   approvalGate(action, part, {
                     isRedactedOrSecret,
                     isProjectPath,
-                    readonlyGateBypass: approvalsReadonlyGateBypass,
-                    secretsGate: approvalsSecretsGate,
+                    gates: approvalsGates,
                   })
                 ) {
                   annotate(event, "[jev] gate: potentially destructive or sensitive - review required")

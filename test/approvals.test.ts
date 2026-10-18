@@ -17,6 +17,7 @@ import {
   parsePermissions,
   parseMinConfidence,
   resolveApproval,
+  parseGates,
   secretPath,
   secretPathAction,
 } from "../src/logic"
@@ -104,10 +105,8 @@ const isProjectPath = (path: string) => !path.startsWith("/") || path === "/home
 const deps = {
   isRedactedOrSecret: (r: string) => r.includes("[REDACTED:") || r.includes("sk-ant-"),
   isProjectPath,
-  readonlyGateBypass: true,
-  secretsGate: true,
+  gates: { secrets: true, readonlyBypass: true },
 }
-
 // ---------------------------------------------------------------------------
 // The question: one three-way choice
 // ---------------------------------------------------------------------------
@@ -192,8 +191,8 @@ describe("approvalGate", () => {
     expect(approvalGate("shell", "git status && sudo make install", deps)).toBe(true)
   })
 
-  test("readonlyGateBypass: false restores strict whole-string matching", () => {
-    const strict = { ...deps, readonlyGateBypass: false }
+  test("gates.readonlyBypass: false restores strict whole-string matching", () => {
+    const strict = { ...deps, gates: { ...deps.gates, readonlyBypass: false } }
     expect(approvalGate("shell", "grep -rn 'sudo' /etc/nixos/home/ai.nix", strict)).toBe(true)
     expect(approvalGate("shell", "ls -la src", strict)).toBe(false)
   })
@@ -252,8 +251,8 @@ describe("approvalGate", () => {
       expect(approvalGate("read", "src/tokenizer.ts", deps)).toBe(false)
     })
 
-    test("gate can be disabled; value-level secret check stays", () => {
-      const off = { ...deps, secretsGate: false }
+    test("gates.secrets = false skips the path gate, not the value-level check", () => {
+      const off = { ...deps, gates: { ...deps.gates, secrets: false } }
       expect(approvalGate("read", "/home/felschr/.ssh/id_rsa", off)).toBe(false)
       expect(approvalGate("read", "cat [REDACTED:api-key]", off)).toBe(true)
     })
@@ -293,8 +292,20 @@ describe("approvalGate", () => {
 const answer = (choice: string, confidence: number) => ({ type: "choice", choice, confidence })
 const malformed = [undefined, null, {}, { choice: "maybe" }, { confidence: 0.9 }, { choice: 7 }]
 
-describe("resolveApproval", () => {
-  test("fail-closed: malformed answers are 'unavailable', never a decision", () => {
+describe("parseGates", () => {
+  test("defaults on; explicit false turns each off; garbage falls back", () => {
+    expect(parseGates(undefined)).toEqual({ secrets: true, readonlyBypass: true })
+    expect(parseGates("x" as any)).toEqual({ secrets: true, readonlyBypass: true })
+    expect(parseGates({ secrets: false })).toEqual({ secrets: false, readonlyBypass: true })
+    expect(parseGates({ readonlyBypass: false })).toEqual({ secrets: true, readonlyBypass: false })
+    expect(parseGates({ secrets: false, readonlyBypass: false, other: 1 })).toEqual({
+      secrets: false,
+      readonlyBypass: false,
+    })
+  })
+})
+
+describe("resolveApproval", () => {  test("fail-closed: malformed answers are 'unavailable', never a decision", () => {
     for (const a of malformed) {
       const out = resolveApproval({ answer: a, mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } })
       expect(out.effect).toBe("ask")

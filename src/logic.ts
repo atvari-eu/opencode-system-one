@@ -1418,17 +1418,25 @@ export function matchesPatterns(text: string, patterns: Array<RegExp>): boolean 
 export const READ_ONLY_SHELL =
   /^\s*(?:grep|rg|ls|cat|tail|head|find|stat|file|diff|echo|wc|sort|awk|pwd|which|readlink|sha256sum|du|tree|jq|column|man|whoami|basename|dirname)\b/
 
+/** The two deterministic-gate toggles (approvals.gates): `secrets` gates
+ * credential-ish paths (default on, outranks config allow rules at the hook
+ * level so a broad `read *` allow cannot wave secret paths through);
+ * `readonlyBypass` lets read-only shell commands (`grep`, `cat`, `ls`, …)
+ * skip the destructive-regex check - their arguments legitimately mention
+ * dangerous strings without performing anything (default on; secret paths
+ * still gate: the secrets check runs first). False = stricter, each. */
+export interface ApprovalGates {
+  secrets: boolean
+  readonlyBypass: boolean
+}
+
 export interface ApprovalGateDeps {
   /** Secret-like tokens or [REDACTED:] markers in the resource string. */
   isRedactedOrSecret: (resource: string) => boolean
   /** True for paths inside the workspace (relative paths are project-local). */
   isProjectPath: (resource: string) => boolean
-  /** False disables the read-only destructive-regex bypass (op-level strictness). */
-  readonlyGateBypass: boolean
-  /** False disables the built-in secret-path gate (approvals.secretsGate).
-   * Defaults true. It outranks config allow rules at the hook level, so a
-   * broad `read *` allow cannot wave secret paths through. */
-  secretsGate: boolean
+  /** Gate toggles, parsed from approvals.gates. */
+  gates: ApprovalGates
 }
 
 // Glob matching for plugin-level approval rules, mirroring OpenCode 2 permission
@@ -1635,9 +1643,9 @@ export function secretPathAction(action: string): boolean {
 // whole, so one bad command holds the entire request.
 export function approvalGate(action: string, resource: string, deps: ApprovalGateDeps): boolean {
   if (deps.isRedactedOrSecret(resource)) return true
-  if (deps.secretsGate && secretPathAction(action) && secretPath(resource)) return true
+  if (deps.gates.secrets && secretPathAction(action) && secretPath(resource)) return true
   if (isShellAction(action) && matchesPatterns(resource, APPROVAL_DESTRUCTIVE)) {
-    if (!deps.readonlyGateBypass) return true
+    if (!deps.gates.readonlyBypass) return true
     // A read-only command's arguments often mention destructive strings
     // without performing them (grep patterns, quoted log lines) - only a
     // chain with at least one mutating segment can destroy anything.
@@ -1658,11 +1666,23 @@ const approvalConfidenceOf = (answer: any): number | undefined => {
 
 export const MIN_CONFIDENCE_DEFAULT = 0.85
 
+export const GATES_DEFAULT: ApprovalGates = { secrets: true, readonlyBypass: true }
+
+/** approvals.gates object → the two deterministic-gate toggles. Unknown
+ * keys are ignored; a non-object (or absent) value yields the defaults. */
+export function parseGates(raw: unknown): ApprovalGates {
+  if (typeof raw !== "object" || raw === null) return { ...GATES_DEFAULT }
+  const obj = raw as Record<string, unknown>
+  return {
+    secrets: obj.secrets !== false,
+    readonlyBypass: obj.readonlyBypass !== false,
+  }
+}
+
 /** Approvals config value → one enactment bar per verdict. Accepts a single
  * number (both bars) or a partial `{ approve, deny }` object; each bar is
  * individually clamped to 0.5-0.99, unknown keys fall back per-verdict. */
-export function parseMinConfidence(raw: unknown): { approve: number; deny: number } {
-  const clamp = (value: number): number => Math.min(0.99, Math.max(0.5, value))
+export function parseMinConfidence(raw: unknown): { approve: number; deny: number } {  const clamp = (value: number): number => Math.min(0.99, Math.max(0.5, value))
   if (typeof raw !== "object" || raw === null) {
     const bar = typeof raw === "number" && Number.isFinite(raw) ? clamp(raw) : MIN_CONFIDENCE_DEFAULT
     return { approve: bar, deny: bar }
