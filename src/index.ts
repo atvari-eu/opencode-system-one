@@ -1305,12 +1305,16 @@ export default Plugin.define({
         }
 
         await permissionApi.hook("evaluate", async (event: any) => {
+          // Bound outside the try so the catch block can still log stats:
+          // the judge-failure path was itself ReferenceError-ing on
+          // out-of-scope names (3176904's live "action is not defined").
+          const action = String(event?.action ?? "")
+          const resources: string[] = Array.isArray(event?.resources)
+            ? event.resources.map((item: unknown) => String(item ?? ""))
+            : []
+          const statsBound = { action, resources }
           try {
             if (event?.effect !== "ask") return
-            const action = String(event.action ?? "")
-            const resources: string[] = Array.isArray(event.resources)
-              ? event.resources.map((item: unknown) => String(item ?? ""))
-              : []
             if (resources.length === 0) return
 
             // Matched requests resolve from their config rule before jev:
@@ -1410,7 +1414,7 @@ export default Plugin.define({
               confidence: (reply as any).answers?.approve?.confidence,
             })
           } catch (err: any) {
-            await recordApprovalStat(action, resources, { outcome: "fail" })
+            await recordApprovalStat(statsBound.action, statsBound.resources, { outcome: "fail" })
             await surfaceJev(err?.message, event?.sessionID)
             console.error(`[jev] approval: judgment skipped (${String(err?.message ?? err)})`)
           }
