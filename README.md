@@ -533,14 +533,14 @@ most useful when it stays deliberately asymmetric:
   ```
 
   Every `shell` and `edit` request now flows into the plugin instead of
-  whenever-triggered prompts, and `approvals.rules` (next option table)
+  whenever-triggered prompts, and `approvals.permissions` (next option table)
   does the fine-grained shaping - `allow`, `ask`, `system-one` with
   `context`, per slice. Hard red lines - requests you never want to see,
   not even as a question with operator context - still belong here as
   host-configured `deny` rules, since a configured `deny` is final and the
   `evaluate` hook never runs for one.
 
-- **Plugin `rules`: the actual policy.** Same `{ action, resource, effect }`
+- **Plugin `permissions`: the actual policy.** Same `{ action, resource, effect }`
   entries, wildcard matching and last-match-wins as the host. Safe commands
   get `allow`, mapped slices get `system-one` with `context` for the
   judgment, rarely-needed things stay `ask`. An `edit *` rule with
@@ -556,9 +556,9 @@ most useful when it stays deliberately asymmetric:
 
 - **Escape hatch note:** "Allow always" memories created in the UI save
   host-level `allow` patterns, and they rank above both this feature and
-  its `rules`. Long-running setups therefore tend to keep the host rules
+  its `permissions`. Long-running setups therefore tend to keep the host rules
   coarse: the recurring commands that deserve a standing allow are captured
-  by memories over time, and `rules` carries everything else as policy.
+  by memories over time, and `permissions` carries everything else as policy.
 
 Options:
 
@@ -567,7 +567,7 @@ Options:
 | `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` enacts approve and deny verdicts for allowlisted actions above `minConfidence`; `"deny"` does the same minus the automatic approve. Omit or `false` keeps the feature off. |
 | `minConfidence` | `0.85` | Confidence in the winning verdict required to enact it (approve in `auto`; deny in `auto` and `deny`), clamped to 0.5-0.99. Lower it to enact more verdicts (fewer asks), raise it to hand more to the bar. |
 | `actions` | `["shell", "edit"]` | Actions eligible for automatic decisions in `auto` and `deny`; annotations apply to every prompt-worthy request regardless. Entries must match the CLI's permission action name - `shell` on OpenCode v2, `bash` on older releases (the gate itself accepts both names). Widening the list (e.g. adding `"webfetch"`) is the main dial for cutting prompts further - MCP tools should stay out of it. |
-| `rules` | `[]` | Plugin-level permission rules evaluated before jev looks at a request. Entries use the same shape as OpenCode 2 permission rules: `{ "action": "shell", "resource": "git push *", "effect": "deny" }` - `action` is optional and defaults to any action, `resource` is an OpenCode glob (`*` spans any characters incl. `/`, `?` is one character; a shell pattern ending in `" *"` also matches the bare command), and `effect` is `allow`, `ask`, `deny` or `system-one`. Rules apply in order with the last match winning; `allow` and `deny` are enacted directly, `ask` leaves the request exactly as configured (plain prompt, no jev verdict, no annotation), and `system-one` falls through to the regular jev judgment with the entry's optional `context` remark (max 400 chars) injected verbatim into the judged state - use it to steer the verdict for a specific slice, e.g. `{ "action": "edit", "resource": "*", "effect": "system-one", "context": "Workspace edits are routine; edits under secrets/ are operator territory, never judge those yourself - ask." }`. Host-configured deny rules and saved approvals still rank above these. |
+| `permissions` | `[]` | Plugin-level permission rules evaluated before jev looks at a request. Entries use the same shape as OpenCode 2 permission rules: `{ "action": "shell", "resource": "git push *", "effect": "deny" }` - `action` is optional and defaults to any action, `resource` is an OpenCode glob (`*` spans any characters incl. `/`, `?` is one character; a shell pattern ending in `" *"` also matches the bare command), and `effect` is `allow`, `ask`, `deny` or `system-one`. Rules apply in order with the last match winning; `allow` and `deny` are enacted directly, `ask` leaves the request exactly as configured (plain prompt, no jev verdict, no annotation), and `system-one` falls through to the regular jev judgment with the entry's optional `context` remark (max 400 chars) injected verbatim into the judged state - use it to steer the verdict for a specific slice, e.g. `{ "action": "edit", "resource": "*", "effect": "system-one", "context": "Workspace edits are routine; edits under secrets/ are operator territory, never judge those yourself - ask." }`. Host-configured deny rules and saved approvals still rank above these. |
 
 ## System One compaction
 

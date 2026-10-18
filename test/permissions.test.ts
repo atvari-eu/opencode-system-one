@@ -3,7 +3,7 @@
 // last match wins; unmatched requests fall through to jev.
 
 import { describe, expect, test } from "bun:test"
-import { lookupRule, globMatches, parseApprovalRules } from "../src/logic"
+import { lookupPermission, globMatches, parsePermissions } from "../src/logic"
 
 const shellGit = [
   {
@@ -35,10 +35,10 @@ describe("globMatches", () => {
   })
 })
 
-describe("parseApprovalRules", () => {
+describe("parsePermissions", () => {
   test("keeps well-formed rules, drops malformed ones", () => {
     expect(
-      parseApprovalRules([
+      parsePermissions([
         { action: "shell", resource: "git push *", effect: "deny" },
         { resource: "src/*.md", effect: "allow" },
         { resource: "", effect: "allow" },
@@ -54,7 +54,7 @@ describe("parseApprovalRules", () => {
 
   test("system-one keeps a trimmed, capped context; other effects drop it", () => {
     expect(
-      parseApprovalRules([
+      parsePermissions([
         { resource: "src/*", effect: "system-one", context: "  routine edits - trust  " },
         { resource: "docs/*", effect: "system-one", context: "x".repeat(500) },
         { resource: "bin/*", effect: "allow", context: "ignored" },
@@ -71,47 +71,47 @@ describe("parseApprovalRules", () => {
   })
 
   test("system-one without context is valid", () => {
-    expect(parseApprovalRules([{ resource: "src/*", effect: "system-one" }])).toEqual([
+    expect(parsePermissions([{ resource: "src/*", effect: "system-one" }])).toEqual([
       { action: "*", resource: "src/*", effect: "system-one" },
     ])
   })
 
   test("non-arrays yield no rules", () => {
-    expect(parseApprovalRules(undefined)).toEqual([])
-    expect(parseApprovalRules("git push *")).toEqual([])
+    expect(parsePermissions(undefined)).toEqual([])
+    expect(parsePermissions("git push *")).toEqual([])
   })
 })
 
-describe("lookupRule", () => {
+describe("lookupPermission", () => {
   test("matching deny rule enacts deny only when configured", () => {
-    expect(lookupRule("shell", ["git push origin main"], [...shellGit])?.effect).toBe("deny")
+    expect(lookupPermission("shell", ["git push origin main"], [...shellGit])?.effect).toBe("deny")
   })
 
   test("non-matching requests fall through to jev", () => {
-    expect(lookupRule("shell", ["git status"], [...shellGit])).toBe(null)
-    expect(lookupRule("edit", ["git push *"], [...shellGit])).toBe(null)
+    expect(lookupPermission("shell", ["git status"], [...shellGit])).toBe(null)
+    expect(lookupPermission("edit", ["git push *"], [...shellGit])).toBe(null)
   })
 
   test("rules apply in order and the last match wins", () => {
-    const rules = parseApprovalRules([
+    const rules = parsePermissions([
       { action: "shell", resource: "*", effect: "ask" },
       { action: "shell", resource: "git status *", effect: "ask" },
       { action: "shell", resource: "git diff *", effect: "ask" },
     ])
-    expect(lookupRule("shell", ["git diff --stat"], rules)?.effect).toBe("ask")
-    expect(lookupRule("shell", ["bun test"], rules)?.effect).toBe("ask")
+    expect(lookupPermission("shell", ["git diff --stat"], rules)?.effect).toBe("ask")
+    expect(lookupPermission("shell", ["bun test"], rules)?.effect).toBe("ask")
   })
 
   test("bare * action matches every action", () => {
-    const rules = parseApprovalRules([{ resource: "raises/are/welcome", effect: "allow" }])
-    expect(lookupRule("shell", ["raises/are/welcome"], rules)?.effect).toBe("allow")
-    expect(lookupRule("edit", ["raises/are/welcome"], rules)?.effect).toBe("allow")
+    const rules = parsePermissions([{ resource: "raises/are/welcome", effect: "allow" }])
+    expect(lookupPermission("shell", ["raises/are/welcome"], rules)?.effect).toBe("allow")
+    expect(lookupPermission("edit", ["raises/are/welcome"], rules)?.effect).toBe("allow")
   })
 
   test("system-one returns the whole rule so the context rides along", () => {
-    const rules = parseApprovalRules([
+    const rules = parsePermissions([
       { action: "edit", resource: "*", effect: "system-one", context: "local repo edits are fine unless touching secrets" },
     ])
-    expect(lookupRule("edit", ["src/logic.ts"], rules)).toEqual(rules[0])
+    expect(lookupPermission("edit", ["src/logic.ts"], rules)).toEqual(rules[0])
   })
 })

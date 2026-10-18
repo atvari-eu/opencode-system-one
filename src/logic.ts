@@ -1432,10 +1432,10 @@ export function globMatches(text: string, glob: string): boolean {
   return false
 }
 
-export const RULE_EFFECTS = ["allow", "ask", "deny", "system-one"] as const
-export type ApprovalEffect = (typeof RULE_EFFECTS)[number]
+export const PERMISSION_EFFECTS = ["allow", "ask", "deny", "system-one"] as const
+export type PermissionEffect = (typeof PERMISSION_EFFECTS)[number]
 
-export interface ApprovalRule {
+export interface PermissionRule {
   /** Permission action to match; omit or `*` matches every action. */
   action?: string
   /** Resource glob the request resources must match. */
@@ -1446,16 +1446,16 @@ export interface ApprovalRule {
    * prompt, no jev verdict, no annotation), `"system-one"` routes the
    * request through the jev judgment with the rule's `context` remark.
    */
-  effect: ApprovalEffect
+  effect: PermissionEffect
   /** Remark passed to jev verbatim; only meaningful with `"system-one"`. */
   context?: string
 }
 
-export const RULE_CONTEXT_MAX = 400
+export const PERMISSION_CONTEXT_MAX = 400
 
-export function parseApprovalRules(raw: [] | unknown): ApprovalRule[] {
+export function parsePermissions(raw: [] | unknown): PermissionRule[] {
   if (!Array.isArray(raw)) return []
-  const rules: ApprovalRule[] = []
+  const rules: PermissionRule[] = []
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue
     const entry = item as Record<string, unknown>
@@ -1466,7 +1466,7 @@ export function parseApprovalRules(raw: [] | unknown): ApprovalRule[] {
       continue
     const context =
       effect === "system-one" && typeof entry.context === "string"
-        ? entry.context.trim().slice(0, RULE_CONTEXT_MAX)
+        ? entry.context.trim().slice(0, PERMISSION_CONTEXT_MAX)
         : undefined
     rules.push({ action, resource, effect, ...(context ? { context } : {}) })
   }
@@ -1478,12 +1478,12 @@ export function parseApprovalRules(raw: [] | unknown): ApprovalRule[] {
  * the LAST matching rule wins. Returns the matching rule, or null when no
  * ruleset rule matches (straight to the jev judgment).
  */
-export function lookupRule(
+export function lookupPermission(
   action: string,
   resources: readonly string[],
-  rules: readonly ApprovalRule[],
-): ApprovalRule | null {
-  let matched: ApprovalRule | null = null
+  rules: readonly PermissionRule[],
+): PermissionRule | null {
+  let matched: PermissionRule | null = null
   for (const rule of rules) {
     if (rule.action !== "*" && rule.action !== action) continue
     if (resources.some((resource) => globMatches(resource, rule.resource))) matched = rule

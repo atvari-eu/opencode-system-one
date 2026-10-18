@@ -58,8 +58,8 @@ import {
   approvalQuestion,
   candidateKey,
   clampThreshold,
-  lookupRule,
-  parseApprovalRules,
+  lookupPermission,
+  parsePermissions,
   doneCheckStandDown,
   doneTranscript,
   doneVerdict,
@@ -748,7 +748,7 @@ export default Plugin.define({
     // matched request never reaches jev: `allow` and `deny` are enacted
     // directly, `ask` stays exactly as configured (plain prompt, no verdict,
     // no annotation). Real configured denies outrank everything already.
-    const approvalsRules = parseApprovalRules(approvalsObj.rules)
+    const approvalsRules = parsePermissions(approvalsObj.permissions)
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1290,7 +1290,7 @@ export default Plugin.define({
             // allow/deny enact the rule's effect; ask keeps the configured
             // prompt untouched. system-one falls through to the judgment
             // below, with the rule's context remark included.
-            const matched = lookupRule(action, resources, approvalsRules)
+            const matched = lookupPermission(action, resources, approvalsRules)
             if (matched?.effect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
@@ -1298,7 +1298,7 @@ export default Plugin.define({
             }
             if (matched?.effect === "deny") {
               event.effect = "deny"
-              event.message = `[jev] approval: denied by approvals.rules rule`
+              event.message = `[jev] approval: denied by approvals.permissions rule`
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
               return
             }
