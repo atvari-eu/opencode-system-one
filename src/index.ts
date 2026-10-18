@@ -2045,6 +2045,16 @@ export default Plugin.define({
         }
         const idleOrigin = idlePostedAt !== undefined && Date.now() - idlePostedAt <= IDLE_POSTED_MAX_MS
         try {
+          // Every compaction trigger (core auto, manual, idle) funnels
+          // through this hook before the summarizer's model call - the one
+          // seat that can guarantee the session is not parked on the auto
+          // entry when OpenCode consumes its "current model" (compaction
+          // uses the session's model; the yield and in-place paths below
+          // hand to the built-in summarizer just the same). Without this,
+          // a compaction on a resting session rides the pseudo-model and
+          // fails (observed: the compaction hangs out to a timeout).
+          // Best effort, same contract as the wake paths.
+          await ensureOffEntry(sid, event?.messages ?? [])
           if (!Array.isArray(event?.messages) || event.messages.length === 0) return
           if (event.result) return // another hook already supplied a summary
           const now = Date.now()
