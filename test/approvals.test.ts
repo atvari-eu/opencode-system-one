@@ -9,6 +9,7 @@ import {
   approvalGate,
   approvalStatsBand,
   approvalStatsBucket,
+  chainPermissionEffect,
   lookupPermission,
   globMatches,
   matchesPatterns,
@@ -52,6 +53,29 @@ describe("approval stats", () => {
       fail: 1,
       bands: { "allow/0.7-0.8": 1, "allow/>=0.9": 1, "ask/<0.5": 1, "asked-deny": 1 },
     })
+  })
+})
+
+describe("chain permission lookup", () => {
+  test("chain lookup is only as privileged as its weakest segment", () => {
+    const rules = [
+      { action: "shell", resource: "git commit *", effect: "allow" } as const,
+      { action: "shell", resource: "git push *", effect: "ask" } as const,
+      { action: "shell", resource: "sudo *", effect: "deny" } as const,
+    ]
+    // chain bypass: the whole string starts with git commit
+    expect(
+      chainPermissionEffect("shell", ["git commit -m x && git push origin main"], rules),
+    ).toBe("ask")
+    expect(chainPermissionEffect("shell", ["git commit -m x && sudo echo"], rules)).toBe("deny")
+    expect(chainPermissionEffect("shell", ["git commit -m x ; git commit -m y"], rules)).toBe("allow")
+    // every segment ruled allow is required, not just the first
+    expect(
+      chainPermissionEffect("shell", ["git commit -m x && nixos-rebuild switch"], rules),
+    ).toBe(null)
+    expect(chainPermissionEffect("shell", ["git push origin main"], rules)).toBe("ask")
+    // non-shell actions keep whole-string semantics
+    expect(chainPermissionEffect("edit", ["git push file.txt"], rules)).toBe(null)
   })
 })
 

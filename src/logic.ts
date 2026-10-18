@@ -1510,6 +1510,42 @@ export const HINTS_MAX = 5
 // older releases; the gate accepts both so one install covers either.
 const isShellAction = (action: string): boolean => action === "shell" || action === "bash"
 
+/** Split a shell resource into chain segments (`&&`, `||`, `;`, newline).
+ * Best-effort: semicolons inside quotes are out of scope for a pure split -
+ * the fail-closed callers check the whole string as well as every segment. */
+export function shellChainSegments(resource: string): string[] {
+  return resource
+    .split(/\s*(?:&&|\|\||;|\n)\s*/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+}
+
+/**
+ * Ruleset opinion on a shell chain. A prefix rule can only see the start of
+ * the string, so `git commit x && git push` must not sail past a `git push *`
+ * ask-rule; every segment gets the single-resource lookup (last match wins)
+ * and the whole string keeps an opinion too. The strongest rule wins - a
+ * chain is only as privileged as its weakest part: deny > ask > allow, and
+ * allow only when EVERY candidate string matched an allow rule. Returns null
+ * to fall through to the jev judgment.
+ */
+export function chainPermissionEffect(
+  action: string,
+  resources: readonly string[],
+  rules: readonly PermissionRule[],
+): "allow" | "deny" | "ask" | null {
+  const candidates: string[] = []
+  for (const resource of resources) {
+    candidates.push(resource)
+    if (isShellAction(action)) candidates.push(...shellChainSegments(resource))
+  }
+  const effects = candidates.map((candidate) => lookupPermission(action, [candidate], rules)?.effect)
+  if (effects.includes("deny")) return "deny"
+  if (effects.includes("ask")) return "ask"
+  if (effects.length > 0 && effects.every((effect) => effect === "allow")) return "allow"
+  return null
+}
+
 // The deterministic gate for one resource: properties that make auto-approval
 // impossible before any judgment. Multi-command shell calls are judged as a
 // whole, so one bad command holds the entire request.

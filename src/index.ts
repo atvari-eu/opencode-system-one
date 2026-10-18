@@ -1313,22 +1313,27 @@ export default Plugin.define({
             // Matched requests resolve from their config rule before jev:
             // allow/deny enact the rule's effect; ask keeps the configured
             // prompt untouched. system-one falls through to the judgment
-            // below, with the rule's context remark included.
+            // below, with the rule's context remark included. Shell chains
+            // resolve to the strongest segment opinion so a `git commit … &&
+            // git push` cannot evade the push ask-rule on the whole command's
+            // prefix (chainPermissionEffect).
             const matched = lookupPermission(action, resources, approvalsRules)
-            if (matched?.effect === "allow") {
+            const chainEffect =
+              matched?.effect === "system-one" ? null : chainPermissionEffect(action, resources, approvalsRules)
+            if (chainEffect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
               await recordApprovalStat(action, resources, { outcome: "allow" })
               return
             }
-            if (matched?.effect === "deny") {
+            if (chainEffect === "deny") {
               event.effect = "deny"
               event.message = `[jev] approval: denied by approvals.permissions rule`
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
               await recordApprovalStat(action, resources, { outcome: "deny" })
               return
             }
-            if (matched?.effect === "ask") {
+            if (chainEffect === "ask") {
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
               await recordApprovalStat(action, resources, { outcome: "ask" })
               return
@@ -1339,11 +1344,14 @@ export default Plugin.define({
             // as secret usage; multi-command shell calls are judged as a
             // whole, so one bad command holds the entire request.
             for (const resource of resources) {
-              if (approvalGate(action, resource, { isRedactedOrSecret, isProjectPath })) {
-                annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
-                console.log(`[jev] approval: gate held ${action} for manual review`)
-                await recordApprovalStat(action, resources, { outcome: "gate" })
-                return
+              const parts = isShellAction(action) ? [resource, ...shellChainSegments(resource)] : [resource]
+              for (const part of new Set(parts)) {
+                if (approvalGate(action, part, { isRedactedOrSecret, isProjectPath })) {
+                  annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
+                  console.log(`[jev] approval: gate held ${action} for manual review`)
+                  await recordApprovalStat(action, resources, { outcome: "gate" })
+                  return
+                }
               }
             }
 
