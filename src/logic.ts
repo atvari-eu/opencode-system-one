@@ -1412,7 +1412,7 @@ export interface ApprovalGateDeps {
   isProjectPath: (resource: string) => boolean
 }
 
-// Glob matching for approval-bypass rules, mirroring OpenCode 2 permission
+// Glob matching for plugin-level approval rules, mirroring OpenCode 2 permission
 // patterns: the pattern must match the whole value, `*` spans any characters
 // (including `/`), `?` is exactly one character, everything else is literal.
 // A shell pattern ending in " *" also matches the bare command without
@@ -1432,10 +1432,10 @@ export function globMatches(text: string, glob: string): boolean {
   return false
 }
 
-export const BYPASS_EFFECTS = ["allow", "ask", "deny", "system-one"] as const
-export type BypassEffect = (typeof BYPASS_EFFECTS)[number]
+export const RULE_EFFECTS = ["allow", "ask", "deny", "system-one"] as const
+export type ApprovalEffect = (typeof RULE_EFFECTS)[number]
 
-export interface BypassRule {
+export interface ApprovalRule {
   /** Permission action to match; omit or `*` matches every action. */
   action?: string
   /** Resource glob the request resources must match. */
@@ -1446,16 +1446,16 @@ export interface BypassRule {
    * prompt, no jev verdict, no annotation), `"system-one"` routes the
    * request through the jev judgment with the rule's `context` remark.
    */
-  effect: BypassEffect
+  effect: ApprovalEffect
   /** Remark passed to jev verbatim; only meaningful with `"system-one"`. */
   context?: string
 }
 
-export const BYPASS_CONTEXT_MAX = 400
+export const RULE_CONTEXT_MAX = 400
 
-export function parseBypassRules(raw: [] | unknown): BypassRule[] {
+export function parseApprovalRules(raw: [] | unknown): ApprovalRule[] {
   if (!Array.isArray(raw)) return []
-  const rules: BypassRule[] = []
+  const rules: ApprovalRule[] = []
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue
     const entry = item as Record<string, unknown>
@@ -1466,7 +1466,7 @@ export function parseBypassRules(raw: [] | unknown): BypassRule[] {
       continue
     const context =
       effect === "system-one" && typeof entry.context === "string"
-        ? entry.context.trim().slice(0, BYPASS_CONTEXT_MAX)
+        ? entry.context.trim().slice(0, RULE_CONTEXT_MAX)
         : undefined
     rules.push({ action, resource, effect, ...(context ? { context } : {}) })
   }
@@ -1476,14 +1476,14 @@ export function parseBypassRules(raw: [] | unknown): BypassRule[] {
 /**
  * Same matching as OpenCode 2 permission rules: entries apply in order, and
  * the LAST matching rule wins. Returns the matching rule, or null when no
- * bypass rule matches (straight to the jev judgment).
+ * ruleset rule matches (straight to the jev judgment).
  */
-export function bypassLookup(
+export function lookupRule(
   action: string,
   resources: readonly string[],
-  rules: readonly BypassRule[],
-): BypassRule | null {
-  let matched: BypassRule | null = null
+  rules: readonly ApprovalRule[],
+): ApprovalRule | null {
+  let matched: ApprovalRule | null = null
   for (const rule of rules) {
     if (rule.action !== "*" && rule.action !== action) continue
     if (resources.some((resource) => globMatches(resource, rule.resource))) matched = rule
@@ -1493,8 +1493,7 @@ export function bypassLookup(
 
 // Per-entry context passed to the judge: like a permission rule minus the
 // effect - matching requests get the remark verbatim into the state. Unlike
-// the decisive bypass effect these can overlap: every matching hint applies,
-// in config order, first occurrence wins over exact duplicates.
+// the plugin-level ruleset applies, with optional context for system-one.
 export interface HintRule {
   /** Permission action to match; omit or `*` matches every action. */
   action?: string

@@ -7,10 +7,10 @@ import {
   APPROVAL_DESTRUCTIVE,
   approvalQuestion,
   approvalGate,
-  bypassLookup,
+  lookupRule,
   globMatches,
   matchesPatterns,
-  parseBypassRules,
+  parseApprovalRules,
   resolveApproval,
 } from "../src/logic"
 

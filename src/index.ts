@@ -58,8 +58,8 @@ import {
   approvalQuestion,
   candidateKey,
   clampThreshold,
-  bypassLookup,
-  parseBypassRules,
+  lookupRule,
+  parseApprovalRules,
   doneCheckStandDown,
   doneTranscript,
   doneVerdict,
@@ -741,14 +741,14 @@ export default Plugin.define({
     const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["shell", "edit"])
       .filter((action: unknown) => typeof action === "string" && action.length > 0)
       .map(String)
-    // Rule-scoped bypass, reusing the OpenCode 2 permission interface:
+    // Rule-scoped plugin permission ruleset, reusing the OpenCode 2 permission interface:
     // `{ action, resource, effect }` with `action` optional (defaults to any
     // action) and `effect` one of `allow`, `ask`, `deny`. Matching follows the
     // host semantics - ordered rules, glob resources, last match wins. A
     // matched request never reaches jev: `allow` and `deny` are enacted
     // directly, `ask` stays exactly as configured (plain prompt, no verdict,
     // no annotation). Real configured denies outrank everything already.
-    const approvalsBypass = parseBypassRules(approvalsObj.bypass)
+    const approvalsRules = parseApprovalRules(approvalsObj.rules)
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1286,24 +1286,24 @@ export default Plugin.define({
               : []
             if (resources.length === 0) return
 
-            // Bypassed requests resolve from their config rule without jev:
+            // Matched requests resolve from their config rule before jev:
             // allow/deny enact the rule's effect; ask keeps the configured
             // prompt untouched. system-one falls through to the judgment
             // below, with the rule's context remark included.
-            const bypassed = bypassLookup(action, resources, approvalsBypass)
-            if (bypassed?.effect === "allow") {
+            const matched = lookupRule(action, resources, approvalsRules)
+            if (matched?.effect === "allow") {
               event.effect = "allow"
-              console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
+              console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
               return
             }
-            if (bypassed?.effect === "deny") {
+            if (matched?.effect === "deny") {
               event.effect = "deny"
-              event.message = `[jev] bypass: denied by approvals.bypass rule`
-              console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
+              event.message = `[jev] approval: denied by approvals.rules rule`
+              console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
               return
             }
-            if (bypassed?.effect === "ask") {
-              console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
+            if (matched?.effect === "ask") {
+              console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
               return
             }
 
@@ -1323,8 +1323,8 @@ export default Plugin.define({
             for (const resource of resources) detail.push(`- ${resource.slice(0, 2000)}`)
             if (event.metadata && typeof event.metadata === "object")
               detail.push(`details: ${JSON.stringify(event.metadata).slice(0, 2000)}`)
-            if (bypassed?.effect === "system-one" && bypassed.context)
-              detail.push(`operator context: ${bypassed.context}`)
+            if (matched?.effect === "system-one" && matched.context)
+              detail.push(`operator context: ${matched.context}`)
             const state =
               "An OpenCode coding agent requests permission for the operation(s) below. Decide how it should be handled.\n\n" +
               redactText(detail.join("\n").slice(0, 6000)).text

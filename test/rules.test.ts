@@ -1,9 +1,9 @@
-// Bypass tests: OpenCode 2-style permission rules ({ action, resource,
+// Plugin approval rules: OpenCode 2-style permission rules ({ action, resource,
 // effect }) resolved against approval requests. Ordered, glob resources,
 // last match wins; unmatched requests fall through to jev.
 
 import { describe, expect, test } from "bun:test"
-import { bypassLookup, globMatches, parseBypassRules } from "../src/logic"
+import { lookupRule, globMatches, parseApprovalRules } from "../src/logic"
 
 const shellGit = [
   {
@@ -35,10 +35,10 @@ describe("globMatches", () => {
   })
 })
 
-describe("parseBypassRules", () => {
+describe("parseApprovalRules", () => {
   test("keeps well-formed rules, drops malformed ones", () => {
     expect(
-      parseBypassRules([
+      parseApprovalRules([
         { action: "shell", resource: "git push *", effect: "deny" },
         { resource: "src/*.md", effect: "allow" },
         { resource: "", effect: "allow" },
@@ -54,7 +54,7 @@ describe("parseBypassRules", () => {
 
   test("system-one keeps a trimmed, capped context; other effects drop it", () => {
     expect(
-      parseBypassRules([
+      parseApprovalRules([
         { resource: "src/*", effect: "system-one", context: "  routine edits - trust  " },
         { resource: "docs/*", effect: "system-one", context: "x".repeat(500) },
         { resource: "bin/*", effect: "allow", context: "ignored" },
@@ -71,47 +71,47 @@ describe("parseBypassRules", () => {
   })
 
   test("system-one without context is valid", () => {
-    expect(parseBypassRules([{ resource: "src/*", effect: "system-one" }])).toEqual([
+    expect(parseApprovalRules([{ resource: "src/*", effect: "system-one" }])).toEqual([
       { action: "*", resource: "src/*", effect: "system-one" },
     ])
   })
 
   test("non-arrays yield no rules", () => {
-    expect(parseBypassRules(undefined)).toEqual([])
-    expect(parseBypassRules("git push *")).toEqual([])
+    expect(parseApprovalRules(undefined)).toEqual([])
+    expect(parseApprovalRules("git push *")).toEqual([])
   })
 })
 
-describe("bypassLookup", () => {
+describe("lookupRule", () => {
   test("matching deny rule enacts deny only when configured", () => {
-    expect(bypassLookup("shell", ["git push origin main"], [...shellGit])?.effect).toBe("deny")
+    expect(lookupRule("shell", ["git push origin main"], [...shellGit])?.effect).toBe("deny")
   })
 
   test("non-matching requests fall through to jev", () => {
-    expect(bypassLookup("shell", ["git status"], [...shellGit])).toBe(null)
-    expect(bypassLookup("edit", ["git push *"], [...shellGit])).toBe(null)
+    expect(lookupRule("shell", ["git status"], [...shellGit])).toBe(null)
+    expect(lookupRule("edit", ["git push *"], [...shellGit])).toBe(null)
   })
 
   test("rules apply in order and the last match wins", () => {
-    const rules = parseBypassRules([
+    const rules = parseApprovalRules([
       { action: "shell", resource: "*", effect: "ask" },
       { action: "shell", resource: "git status *", effect: "ask" },
       { action: "shell", resource: "git diff *", effect: "ask" },
     ])
-    expect(bypassLookup("shell", ["git diff --stat"], rules)?.effect).toBe("ask")
-    expect(bypassLookup("shell", ["bun test"], rules)?.effect).toBe("ask")
+    expect(lookupRule("shell", ["git diff --stat"], rules)?.effect).toBe("ask")
+    expect(lookupRule("shell", ["bun test"], rules)?.effect).toBe("ask")
   })
 
   test("bare * action matches every action", () => {
-    const rules = parseBypassRules([{ resource: "raises/are/welcome", effect: "allow" }])
-    expect(bypassLookup("shell", ["raises/are/welcome"], rules)?.effect).toBe("allow")
-    expect(bypassLookup("edit", ["raises/are/welcome"], rules)?.effect).toBe("allow")
+    const rules = parseApprovalRules([{ resource: "raises/are/welcome", effect: "allow" }])
+    expect(lookupRule("shell", ["raises/are/welcome"], rules)?.effect).toBe("allow")
+    expect(lookupRule("edit", ["raises/are/welcome"], rules)?.effect).toBe("allow")
   })
 
   test("system-one returns the whole rule so the context rides along", () => {
-    const rules = parseBypassRules([
+    const rules = parseApprovalRules([
       { action: "edit", resource: "*", effect: "system-one", context: "local repo edits are fine unless touching secrets" },
     ])
-    expect(bypassLookup("edit", ["src/logic.ts"], rules)).toEqual(rules[0])
+    expect(lookupRule("edit", ["src/logic.ts"], rules)).toEqual(rules[0])
   })
 })
