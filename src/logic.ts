@@ -1256,6 +1256,32 @@ export function jevUserError(message: unknown): JevUserError | undefined {
   return undefined
 }
 
+// Footer attribution: "(auto)" markers for the prompt footer. The TUI half
+// derives them from the transcript - the model-switched rows carry {model,
+// previous} - because the TUI storage API exposes no cross-half channel to
+// the service plugin's route-pin records, and synthetic rows are not
+// timeline-rendered. Accepted ambiguity: a MANUAL pick chosen while the
+// session rested at the auto entry has the same {picked, previous: auto}
+// shape as the plugin's grab and will also show the marker.
+export const AUTO_PROVIDER = "opencode-system-one"
+
+export function footerAutoMarker(
+  current: { providerID: string; modelID: string; variant?: string } | undefined,
+  lastSwitched: { model: { providerID: string; id: string; variant?: string }; previous?: { providerID: string; id: string; variant?: string } } | undefined,
+): boolean {
+  if (!current) return false
+  if (current.providerID === AUTO_PROVIDER && !(current as any).id) {
+    // parked at the auto entry (Model.Ref via ui.model.current())
+    return true
+  }
+  if (lastSwitched?.previous?.providerID === AUTO_PROVIDER) {
+    // last placement went auto-entry -> a real model (the plugin grab, or a
+    // manual pick made from the resting state)
+    return true
+  }
+  return false
+}
+
 // ---------------------------------------------------------------------------
 // Jev auth plumbing: parsing `opencode auth export` and status-aware error
 // text. Pure functions; src/index.ts owns resolution order, caching and HTTP.

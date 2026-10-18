@@ -61,6 +61,15 @@ export default {
       console.log(`[jev] tui: screen panel unavailable: ${String((err as Error)?.message ?? err)}`)
     }
 
+    // -- prompt footer "(auto)" marker --
+    try {
+      const { default: footerMarker } = await import("./footer-marker.tsx")
+      const markerCleanup = await footerMarker.setup(context)
+      cleanups.push(markerCleanup)
+    } catch (err) {
+      console.log(`[jev] tui: footer marker unavailable: ${String((err as Error)?.message ?? err)}`)
+    }
+
     return async () => {
       for (const cleanup of cleanups) await cleanup()
     }
