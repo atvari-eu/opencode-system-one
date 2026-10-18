@@ -449,15 +449,15 @@ describe("offline routing fixtures", () => {
 // ---------------------------------------------------------------------------
 
 describe("auto pseudo-model entry", () => {
-  const AUTO = { providerID: "jev-auto", modelID: "auto" }
-  const AUTO_CURRENT = { providerID: "jev-auto", modelID: "auto", variant: "default" }
+  const AUTO = { providerID: "system-one", modelID: "auto" }
+  const AUTO_CURRENT = { providerID: "system-one", modelID: "auto", variant: "default" }
 
   test("auto entry: options are candidate pairs only (no stay-on-auto choice)", async () => {
     const criteriaKeys: string[] = []
     await turn(PAIR_CONFIG, {
       current: AUTO_CURRENT,
       autoEntry: AUTO,
-      levelsFor: async (p, m) => (p === "jev-auto" ? [] : (LEVELS[`${p}/${m}`] ?? [])),
+      levelsFor: async (p, m) => (p === "system-one" ? [] : (LEVELS[`${p}/${m}`] ?? [])),
       judge: async (questions: any) => {
         criteriaKeys.push(...Object.keys(questions[0].criteria))
         return { answers: { route: { choice: "acme/fast#low", confidence: 0.9 } } }
@@ -479,20 +479,20 @@ describe("auto pseudo-model entry", () => {
       current: AUTO_CURRENT,
       autoEntry: AUTO,
       base: AUTO,
-      levelsFor: async (p, m) => (p === "jev-auto" ? [] : (LEVELS[`${p}/${m}`] ?? [])),
+      levelsFor: async (p, m) => (p === "system-one" ? [] : (LEVELS[`${p}/${m}`] ?? [])),
       judge: async () => ({ answers: { route: { choice: "zeta/flagship#high", confidence: 0.9 } } }),
     })
     expect(outcome.switchTo).toEqual({ providerID: "zeta", modelID: "flagship", variant: "high" })
     expect(outcome.recordPin).toEqual({
       to: { providerID: "zeta", id: "flagship", variant: "high" },
-      from: { providerID: "jev-auto", id: "auto", variant: "default" },
+      from: { providerID: "system-one", id: "auto", variant: "default" },
     })
   })
 
   test("mid-loop judge failure keeps the pick (never reverts back to auto)", async () => {
     const last = {
       to: { providerID: "zeta", id: "flagship", variant: "high" },
-      from: { providerID: "jev-auto", id: "auto" },
+      from: { providerID: "system-one", id: "auto" },
     }
     const outcome = await turn(PAIR_CONFIG, {
       current: { providerID: "zeta", modelID: "flagship", variant: "high" },

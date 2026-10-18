@@ -262,7 +262,7 @@ next prompt re-routes it.
 ### The auto entry (`route.autoModel`)
 
 `"route": { "auto": true, "autoModel": true, "autoFallback": "provider/model" }`
-registers a pseudo-model `jev-auto/auto` that appears in the model picker
+registers a pseudo-model `system-one/auto` that appears in the model picker
 as a normal entry. Pick it once and the plugin takes over: it is never
 actually invoked - each prompt while the session sits on it is routed to a
 real `(model, level)` pair by the normal routing path, and at idle the
@@ -323,7 +323,7 @@ Options:
 | `route.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
 | `route.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
 | `route.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
-| `route.autoModel` | `false` | Register the `jev-auto/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. Requires `route.auto`. |
+| `route.autoModel` | `false` | Register the `system-one/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. Requires `route.auto`. |
 | `route.autoFallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the turn fails visibly on the pseudo-model. |
 | `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
 | `effort.minConfidence` | `0.45` | Minimum jev answer confidence required to switch the reasoning variant. |

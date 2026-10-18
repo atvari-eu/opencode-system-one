@@ -585,7 +585,7 @@ const DONE_QUESTION: Question = {
 
 // Auto pseudo-model entry: "auto" is not a runnable model - it is a resting
 // point the plugin routes away from at every prompt and restores at idle.
-const AUTO_PROVIDER = "jev-auto"
+const AUTO_PROVIDER = "system-one"
 const AUTO_MODEL = "auto"
 const autoEntryKeyOf = (e: { providerID: string; modelID: string }): string => `${e.providerID}/${e.modelID}`
 const isAutoEntry = (autoEntry: { providerID: string; modelID: string } | null | undefined, model: any): boolean =>
@@ -707,7 +707,7 @@ export default Plugin.define({
         '[jev] route: auto enabled without candidates - set "route": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "opencode": true }; routing stays off',
       )
     }
-    // route.autoModel: register a "jev-auto/auto" pseudo-model the user can
+    // route.autoModel: register a "system-one/auto" pseudo-model the user can
     // select in the TUI picker. The plugin is its only controller: at every
     // prompt while the session rides auto, jev routes the turn to a real
     // (model, level) pair, and at idle the session is pulled back to the
@@ -852,17 +852,17 @@ export default Plugin.define({
             editor.add({
               info: {
                 ...Provider.Info.empty(entryProviderID),
-                name: "Jev Auto",
+                name: "System One Auto",
                 activation: "enabled",
                 package: "@opencode-ai/providers/openai-compatible",
                 settings: { baseURL: "http://127.0.0.1:1/v1" },
               },
               models: [
-                { ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: "Jev Auto" },
+                { ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: "System One Auto" },
               ],
             })
           })
-          console.log("[jev] route: registered auto entry jev-auto/auto")
+          console.log("[jev] route: registered auto entry system-one/auto")
         } catch (err: any) {
           console.error(`[jev] route: auto entry registration failed (${String(err?.message ?? err)})`)
         }

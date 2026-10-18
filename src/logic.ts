@@ -585,7 +585,7 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
     const ours = last ? pinMatches(last, input.pin) : false
     if (!ours) return { mode: "model", logs, errors: [...errors, message], ...(rearmed ? { rearm: true } : {}) }
     // Keeping current also covers the auto entry: when the session rides the
-    // auto loop (base is jev-auto/auto), a revert would switch back to the
+    // auto loop (base is system-one/auto), a revert would switch back to the
     // pseudo-model mid-loop, which is not runnable - so the current selection
     // stays and the adapter decides whether a fallback applies.
     if (currentKey === baseKey || autoMode)
