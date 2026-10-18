@@ -7,13 +7,53 @@ import {
   APPROVAL_DESTRUCTIVE,
   approvalQuestion,
   approvalGate,
+  approvalStatsBand,
+  approvalStatsBucket,
   lookupPermission,
   globMatches,
   matchesPatterns,
+  mergeApprovalStats,
   parsePermissions,
   parseMinConfidence,
   resolveApproval,
 } from "../src/logic"
+
+describe("approval stats", () => {
+  test("bucket = first two whitespace tokens, capped", () => {
+    expect(approvalStatsBucket("  git   status --porcelain  ")).toBe("git status")
+    expect(approvalStatsBucket("podman compose up -d --build extra args here")).toBe("podman compose")
+    expect(approvalStatsBucket("x".repeat(100))).toHaveLength(60)
+  })
+
+  test("band boundaries", () => {
+    expect(approvalStatsBand(undefined)).toBe("-")
+    expect(approvalStatsBand(0.49)).toBe("<0.5")
+    expect(approvalStatsBand(0.72)).toBe("0.7-0.8")
+    expect(approvalStatsBand(0.93)).toBe(">=0.9")
+  })
+
+  test("merge folds outcomes and bands", () => {
+    let agg: unknown = undefined
+    for (const ev of [
+      { outcome: "allow" as const, confidence: 0.72 },
+      { outcome: "allow" as const, confidence: 0.95 },
+      { outcome: "ask" as const, verdict: "deny" as const, confidence: 0.3 },
+      { outcome: "gate" as const },
+      { outcome: "fail" as const },
+    ]) {
+      agg = mergeApprovalStats(agg, ev)
+    }
+    expect(agg).toMatchObject({
+      count: 5,
+      allow: 2,
+      deny: 0,
+      ask: 1,
+      gate: 1,
+      fail: 1,
+      bands: { "allow/0.7-0.8": 1, "allow/>=0.9": 1, "ask/<0.5": 1, "asked-deny": 1 },
+    })
+  })
+})
 
 describe("parseMinConfidence", () => {
   test("a single number sets both bars", () => {

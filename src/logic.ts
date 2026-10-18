@@ -1605,3 +1605,68 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   else if (input.mode === "deny" && verdict === "approve") suffix = "never auto-approved - review"
   return { effect: "ask", note: `[jev] ${approvalSuggestLabel(verdict)} (${pct}) - ${suffix}` }
 }
+
+// Approval-stats diagnostics: which (action, resource) slices actually ask,
+// and why - so owners can promote hot slices into explicit permissions
+// rules with evidence instead of guesswork.
+
+/** Grouping key for one event: the first two whitespace tokens of the
+ * resource (a command prefix like "git status" or "nix build"), capped. */
+export function approvalStatsBucket(resource: string): string {
+  const tokens = resource.trim().split(/\s+/)
+  return tokens.slice(0, 2).join(" ").slice(0, 60)
+}
+
+export interface ApprovalStatsEvent {
+  /** "allow" | "deny" enacted, "gate" held, "fail" judge failed, "ask" prompted. */
+  outcome: "allow" | "deny" | "gate" | "fail" | "ask"
+  /** Judge verdict behind the outcome, when known. */
+  verdict?: "approve" | "ask" | "deny"
+  /** Judge confidence behind the outcome, when known. */
+  confidence?: number
+}
+
+const STATS_BANDS: Array<{ hi: number; label: string }> = [
+  { hi: 0.5, label: "<0.5" },
+  { hi: 0.6, label: "0.5-0.6" },
+  { hi: 0.7, label: "0.6-0.7" },
+  { hi: 0.8, label: "0.7-0.8" },
+  { hi: 0.9, label: "0.8-0.9" },
+  { hi: Infinity, label: ">=0.9" },
+]
+
+export function approvalStatsBand(confidence: number | undefined): string {
+  if (confidence === undefined || !Number.isFinite(confidence)) return "-"
+  return STATS_BANDS.find((band) => confidence < band.hi)?.label ?? ">=0.9"
+}
+
+/** Fold one event into the running aggregate. Pure; unknown shapes rebuild. */
+export function mergeApprovalStats(existing: unknown, event: ApprovalStatsEvent): Record<string, unknown> {
+  const base =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {}
+  const num = (key: string): number => (typeof base[key] === "number" ? (base[key] as number) : 0)
+  const bands =
+    base.bands && typeof base.bands === "object" && !Array.isArray(base.bands)
+      ? (base.bands as Record<string, unknown>)
+      : {}
+  const band = event.outcome === "allow" || event.outcome === "deny" || event.outcome === "ask"
+    ? (approvalStatsBand(event.confidence))
+    : null
+  const nextBands = { ...bands }
+  if (band) nextBands[`${event.outcome}/${band}`] = (typeof nextBands[`${event.outcome}/${band}`] === "number" ? nextBands[`${event.outcome}/${band}`] as number : 0) + 1
+  if (event.outcome === "ask" && (event.verdict === "approve" || event.verdict === "deny")) {
+    nextBands[`asked-${event.verdict}`] = (typeof nextBands[`asked-${event.verdict}`] === "number" ? nextBands[`asked-${event.verdict}`] as number : 0) + 1
+  }
+  return {
+    count: num("count") + 1,
+    allow: num("allow") + (event.outcome === "allow" ? 1 : 0),
+    deny: num("deny") + (event.outcome === "deny" ? 1 : 0),
+    gate: num("gate") + (event.outcome === "gate" ? 1 : 0),
+    fail: num("fail") + (event.outcome === "fail" ? 1 : 0),
+    ask: num("ask") + (event.outcome === "ask" ? 1 : 0),
+    bands: nextBands,
+    last: new Date().toISOString().slice(0, 16),
+  }
+}

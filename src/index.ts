@@ -55,6 +55,7 @@ import {
   jevAuthError,
   jevUserError,
   approvalGate,
+  approvalStatsBucket,
   approvalQuestion,
   candidateKey,
   clampThreshold,
@@ -68,6 +69,7 @@ import {
   idleSessionID,
   isAvailableModel,
   matchesPatterns,
+  mergeApprovalStats,
   normaliseProvider,
   parseAuthExport,
   parseCandidates,
@@ -735,6 +737,10 @@ export default Plugin.define({
     const approvalsEnabled = approvalsMode !== "off"
     const approvalsAuto = approvalsMode === "auto"
     const approvalsDeny = approvalsMode === "deny"
+    // Approval-stats diagnostics (default on with approvals): every request
+    // is folded into plugin storage so /jev-approval-stats can show which
+    // slices prompt and why. Opt out with approvals.stats = false.
+    const approvalsStats = approvalsObj.stats !== false
     const approvalsMinConfidence = parseMinConfidence(approvalsObj.minConfidence)
     const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["shell", "edit"])
       .filter((action: unknown) => typeof action === "string" && action.length > 0)
@@ -1275,6 +1281,26 @@ export default Plugin.define({
         const isRedactedOrSecret = (resource: string): boolean =>
           REDACTED_MARKER.test(resource) || matchesPatterns(resource, secretPatterns)
 
+        // One aggregate blob (single storage key) keeps I/O to get+set; the
+        // pure fold lives in logic.ts. Events key on `${action}/${bucket}`.
+        const recordApprovalStat = async (
+          action: string,
+          resources: readonly string[],
+          event0: Record<string, unknown>,
+        ): Promise<void> => {
+          if (!approvalsStats) return
+          try {
+            const storage = (ctx as any).storage
+            const bucket = approvalStatsBucket(resources[0] ?? "")
+            const key = `${action}/${bucket}`
+            const blob = (await storage.get("jev-approval-stats")) ?? {}
+            blob[key] = mergeApprovalStats(blob[key], event0)
+            await storage.set("jev-approval-stats", blob)
+          } catch {
+            // diagnostics only - never let stats I/O affect the decision
+          }
+        }
+
         await permissionApi.hook("evaluate", async (event: any) => {
           try {
             if (event?.effect !== "ask") return
@@ -1292,16 +1318,19 @@ export default Plugin.define({
             if (matched?.effect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
+              await recordApprovalStat(action, resources, { outcome: "allow" })
               return
             }
             if (matched?.effect === "deny") {
               event.effect = "deny"
               event.message = `[jev] approval: denied by approvals.permissions rule`
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
+              await recordApprovalStat(action, resources, { outcome: "deny" })
               return
             }
             if (matched?.effect === "ask") {
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
+              await recordApprovalStat(action, resources, { outcome: "ask" })
               return
             }
 
@@ -1313,6 +1342,7 @@ export default Plugin.define({
               if (approvalGate(action, resource, { isRedactedOrSecret, isProjectPath })) {
                 annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
                 console.log(`[jev] approval: gate held ${action} for manual review`)
+                await recordApprovalStat(action, resources, { outcome: "gate" })
                 return
               }
             }
@@ -1344,16 +1374,32 @@ export default Plugin.define({
               console.log(
                 `[jev] approval: auto-approved ${action} ${resources.join(" && ").slice(0, 120)} - ${outcome.note}`,
               )
+              await recordApprovalStat(action, resources, {
+                outcome: "allow",
+                verdict: (reply as any).answers?.approve?.choice,
+                confidence: (reply as any).answers?.approve?.confidence,
+              })
               return
             }
             if (outcome.effect === "deny") {
               event.effect = "deny"
               annotate(event, `${outcome.note} - the agent must pick another approach`)
               console.log(`[jev] approval: denied ${action} ${resources.join(" && ").slice(0, 120)} - ${outcome.note}`)
+              await recordApprovalStat(action, resources, {
+                outcome: "deny",
+                verdict: (reply as any).answers?.approve?.choice,
+                confidence: (reply as any).answers?.approve?.confidence,
+              })
               return
             }
             annotate(event, outcome.note)
+            await recordApprovalStat(action, resources, {
+              outcome: "ask",
+              verdict: (reply as any).answers?.approve?.choice,
+              confidence: (reply as any).answers?.approve?.confidence,
+            })
           } catch (err: any) {
+            await recordApprovalStat(action, resources, { outcome: "fail" })
             await surfaceJev(err?.message, event?.sessionID)
             console.error(`[jev] approval: judgment skipped (${String(err?.message ?? err)})`)
           }
@@ -1730,6 +1776,47 @@ export default Plugin.define({
                 sessionID,
                 text: `[jev-screen] failed: ${String(err?.message ?? err)}`,
               })
+            }
+          },
+        })
+
+        editor.add({
+          name: "jev-approval-stats",
+          description:
+            "Show which command patterns trigger jev approvals and how they resolve (auto-approved / denied / asked / gated), so recurring asks can be promoted into explicit permissions rules",
+          execute: async (input: any) => {
+            const sessionID = input?.sessionID
+            const post = (text: string) =>
+              (ctx as any).session?.synthetic?.({ sessionID, text }).catch(() => {})
+            try {
+              const blob = (await (ctx as any).storage.get("jev-approval-stats")) ?? {}
+              const rows = Object.entries(blob).map(([key, value]: [string, any]) => ({
+                key,
+                ...(value && typeof value === "object" ? value : {}),
+              }))
+              rows.sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+              if (!rows.length) {
+                await post("[jev-approval-stats] no approval events recorded yet")
+                return
+              }
+              const lines = rows.slice(0, 20).map((r: any) => {
+                const parts = [
+                  `count=${r.count ?? 0}`,
+                  `allow=${r.allow ?? 0}`,
+                  `deny=${r.deny ?? 0}`,
+                  `ask=${r.ask ?? 0}`,
+                  `gate=${r.gate ?? 0}`,
+                  `fail=${r.fail ?? 0}`,
+                  r.last ? `last=${r.last}` : "",
+                  r.bands && Object.keys(r.bands).length
+                    ? `bands=${Object.entries(r.bands).map(([k, v]) => `${k}:${v}`).join(" ")}`
+                    : "",
+                ].filter(Boolean)
+                return `[jev-approval-stats] ${r.key} - ${parts.join(" ")}`
+              })
+              for (const line of lines) await post(line)
+            } catch (err: any) {
+              await post(`[jev-approval-stats] failed: ${String(err?.message ?? err)}`)
             }
           },
         })

@@ -51,7 +51,9 @@ compaction can be decided by System One instead of a lossy summary
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
   session transcript; `/jev-compact` compacts the session now with jev
-  decisions only, never falling back to the built-in summarizer. All three
+  decisions only, never falling back to the built-in summarizer;
+  `/jev-approval-stats` lists which command patterns trigger approvals and how
+  they resolve, so recurring asks can become explicit permissions rules. All
   answer without loading a skill.
 - **route** (opt-in) - before each turn, jev picks which model runs the turn
   and/or how much reasoning effort it gets, in one judgment, applied through
@@ -184,7 +186,7 @@ meanings never share one ambiguous key:
         "model": "jev-1.13", // optional; overrides JEV_MODEL and the default
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many
-        "commands": true,    // /jev-screen + /jev-done-check + /jev-compact
+        "commands": true,    // /jev-screen + /jev-done-check + /jev-compact + /jev-approval-stats
         "cache": true,
         "auto": {            // the "Auto" entry + per-turn routing; see "Auto model routing"
           "candidates": ["openrouter/anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4"],
@@ -622,6 +624,7 @@ Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `stats` | `true` | Records one aggregate in plugin storage (`jev-approval-stats`): every approval event folds into a per `(action, command-prefix)` entry with outcome counts (allow / deny / ask / gate / fail), confidence bands and `asked-<verdict>` counters. `/jev-approval-stats` prints the top slices; hot ask slices become candidates for explicit `permissions` rules. Set `false` to skip recording. |
 | `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` enacts approve and deny verdicts for allowlisted actions above `minConfidence`; `"deny"` does the same minus the automatic approve. Omit or `false` keeps the feature off. |
 | `minConfidence` | `{ approve, deny } = 0.85` | Confidence required to enact a verdict, per verdict type - a single number sets both bars, a partial object overrides only what it names (`{ "approve": 0.6 }` keeps the deny bar at the default), each bar clamped to 0.5-0.99. `approve` gates enactment in `auto`, `deny` in `auto` and `deny`; below-bar verdicts and `ask` winners form the prompted ask band. Lower a bar to enact more of that verdict, raise it to hand more to you. |
 | `actions` | `["shell", "edit"]` | Actions eligible for automatic decisions in `auto` and `deny`; annotations apply to every prompt-worthy request regardless. Entries must match the CLI's permission action name - `shell` on OpenCode v2, `bash` on older releases (the gate itself accepts both names). Widening the list (e.g. adding `"webfetch"`) is the main dial for cutting prompts further - MCP tools should stay out of it. |
