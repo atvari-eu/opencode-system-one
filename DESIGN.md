@@ -76,7 +76,7 @@ Auto model routing and the older auto effort feature share one engine
 OpenCode-side I/O the outcome declares (catalog lookups, `session.switchModel`,
 pin storage). Rationale worth remembering when extending it:
 
-- **Pair mode**: when `effort.auto` and `route.auto` are both on, the
+- **Pair mode**: when `effort.auto` and `auto` are both on, the
   prompt hook asks one `(model, level)` question over the candidates that
   support variants, not two stacked judgments. Two separate calls would
   race each other's switches and double the latency; one call also lets
@@ -89,12 +89,15 @@ pin storage). Rationale worth remembering when extending it:
   to base - but only if the newest switch is the plugin's own, otherwise
   it is a plain skip. The lattice is pure logic and fixture-tested; hooks
   stay thin on purpose.
-- **`route` key rename**: the routing config moved from `model` to `route`
+- **`auto` key rename**: the routing config moved from `model` to `route`
   because `options.model` is also the judgment-model override (a string) -
   one key carrying both a string and an object meaning is ambiguous in
   every config merger, not just OpenCode's. `effort-pin/...` keys are read
-  as fallbacks so upgrades from the pre-rename storage keep working.
-- **Candidate sources** (`route.sources`): the pool may extend past the
+  as fallbacks so upgrades from the pre-rename storage keep working. A
+  later rename folded the whole group under `auto` when the engagement
+  gate changed (see below); that rename carried no backward compatibility
+  by decision of the repo owner.
+- **Candidate sources** (`auto.sources`): the pool may extend past the
   static `candidates` list with what the session itself knows - TUI
   favorites (`~/.local/state/opencode/model.json` under `XDG_STATE_HOME`)
   and OpenCode's own most-used models (`session_message` rows read
@@ -126,19 +129,13 @@ pin storage). Rationale worth remembering when extending it:
 - **`tierOf`**: a defensive read across catalog cost shapes (`cost.input`,
   `price.perMillion.input`, bare number) that feeds a per-Mtok hint into
   option criteria; missing data simply yields no hint.
-- **The auto entry** (`route.autoModel`): OpenCode has no "auto" model
+- **The auto entry** (`auto.enable`): OpenCode has no "auto" model
   concept, so the plugin registers `opencode-system-one/auto` itself via
   `ctx.provider.transform` (Provider.Info.empty + Model.Info.default, a
   closed-port base URL so a direct invocation fails fast instead of
   hanging - fail-visible, never fail-silent). The entry is only ever a
-  *resting point* the plugin routes away from; semantically it just makes
-  the session base equal `opencode-system-one/auto`, so the existing stand-down
-  lattice applies unchanged (a manual pick stands down until the user
-  selects `auto` again, which is the base-return re-arm). Two
-  lattice adjustments were needed: at the entry the options exclude a
-  "stay" choice (auto is not runnable), and mid-loop judge failures keep
-  the current pick instead of reverting to the not-runnable base.
-  `route.autoFallback` exists because a failure *at* auto would otherwise
+  *resting point* the plugin routes away from.
+  `auto.fallback` exists because a failure *at* auto would otherwise
   leave the turn running on a dead model - the adapter (not the logic)
   switches to the fallback, keeping it pinned so the loop continues.
   Idle reset (the resting point pull-back - auto entry or, for plain
@@ -151,10 +148,26 @@ pin storage). Rationale worth remembering when extending it:
   this era never broadcast `session.idle` on the stream, so the shared
   extractor accepts both; subscribing to execution events also puts the
   resting point back IMMEDIATELY after the turn, so the picker reads the
-  auto entry at rest and the per-turn pick stays invisible to the user. `route-base/<sid>` had a latent `.id` vs `.modelID`
-  mismatch that made the stored base a no-op; fixed while wiring the
-  entry, and a session observed at the entry re-records its base as the
-  entry (covers switching `autoModel` on after a real-model era).
+  auto entry at rest and the per-turn pick stays invisible to the user.
+- **Engagement gate rework** (after the entry's lived reality): originally
+  auto routing engaged on every prompt of any session and used pins to
+  detect foreign manual picks ("stand down until back at base"). Gating it
+  on the *current* model being the auto entry is strictly stronger and
+  simpler: a manual pick IS the stand-down (the session leaves auto's
+  reach; selecting `Auto` again is the re-arm), so no route-base storage
+  and no foreign-switch lattice remains for the model path. The pin
+  record survives with a different job: its storage KEY is the loop's
+  provenance (`route-pin` = a session of the auto loop, `effort-pin` = a
+  plain effort session), and the per-prompt write keys off the outcome's
+  mode (`pair`/`model` → route, `effort` → effort) so the two features
+  compose correctly when both are enabled. `auto.enable` defaults to
+  `true` - with nothing to opt out of, registering the picker entry for
+  everyone is the honest expose of the feature (and it cannot interfere
+  with any model the user picks by hand).
+  In the model path the pin lattice code remains reachable only in its
+  benign branches (own switches, or a failed pin read = fail open); the
+  foreign-switch seats are structurally unreachable and fixture-tested
+  as dead ends.
 
 ## Auto done-check: the unprompted-notice carve-out
 

@@ -174,12 +174,10 @@ meanings never share one ambiguous key:
         "tools": true,       // jev_decide + jev_judge_many
         "commands": true,    // /jev-screen + /jev-done-check
         "cache": true,
-        "route": {           // auto model (+ effort) routing; see "Auto model routing"
-          "auto": true,
+        "auto": {            // the "Auto" entry + per-turn routing; see "Auto model routing"
           "candidates": ["openrouter/anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4"],
           "minConfidence": 0.6,
-          "autoModel": true, // register the "auto" pseudo-model entry (optional)
-          "autoFallback": "openrouter/anthropic/claude-3.5-haiku"
+          "fallback": "openrouter/anthropic/claude-3.5-haiku"
         },
         "effort": { "auto": true }, // per-prompt thinking level (pairs with route)
         "doneCheck": { "auto": true }, // see "Auto done-check"
@@ -211,15 +209,20 @@ optionally, the model. Two toggles, one judgment path:
 - `"effort": { "auto": true }` routes only the *reasoning variant*
   (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - the levels
   the UI's effort picker offers) of the session's current model.
-- `"route": { "auto": true, "candidates": [...] }` additionally routes the
-  *model itself*, from the candidate list you name - typically a cheap fast
-  model alongside the expensive one. Candidates may be bare ids as
-  `provider/model` strings, or `{ providerID, id }` objects.
+- `"auto"` (enabled by default) routes the *model itself* from the
+  candidate list you name - typically a cheap fast model alongside the
+  expensive one. Candidates may be bare ids as `provider/model` strings,
+  or `{ providerID, id }` objects.
 - Instead of naming candidates, or on top of them, you can let the pool come
   from OpenCode's own state via `"sources"` (see below).
-- With both on, they are one combined decision per prompt (a single
-  `(model, level)` question over the candidates that support variants),
-  not two competing ones.
+- **Auto only ever routes a session parked on the `opencode-system-one/auto`
+  entry.** Pick `Auto` in the model picker and every turn from there is
+  routed to a real `(model, level)` pair, returning to `auto` at idle. Pick
+  any other model and auto never touches the session at all — no jev call,
+  no switching — until you select `Auto` again.
+- With effort routing also on, an auto-entry turn runs as one combined
+  decision per prompt (a single `(model, level)` question over the
+  candidates that support variants), not two competing ones.
 
 How a turn is routed:
 
@@ -238,57 +241,53 @@ How a turn is routed:
   small status line in the timeline), so routing decisions are visible and
   auditable.
 
-**Manual picks win.** Every switch lands in the transcript, so your own
-picks are detected automatically: when the newest switch is not one the
-plugin made, auto stands down for that session (no jev call, no switching)
-until the model/variant returns to the session's base, which re-arms it. A
-missing attribution record (cleared storage, fresh install) errs toward
-the user and keeps auto off until then. The comparison is a plain equality
-check, no model call.
+**Manual picks win.** Auto only routes a session parked on the auto entry,
+so a manual pick needs no detection at all: selecting any real model in
+the picker takes the session out of auto's reach until you (re-)select
+`Auto`. Inside the auto loop the judged picks are all the plugin's own;
+their pin records exist only to identify the loop for the resting reset.
 
 **Judge failure reverts.** If routing picked a candidate but the model
 cannot be resolved at turn time (bad catalog name, provider outage), the
-session is switched back to its base model before the turn fails, and the
-candidate is not offered again for that prompt.
+session is switched back to the auto entry, and the candidate is not
+offered again for that prompt.
 
-**Resting point.** Auto routing parks the session on the last judged pick.
-At session idle the plugin pulls it back to the resting point - the auto
-entry itself when `route.autoModel` is on, otherwise the current model's
-`default` variant for auto effort. Only plugin-made switches are reset: a
-manual pick stays selected until you return to your resting point yourself
-(which re-arms auto on the next prompt). Resets are best effort - without a
-usable idle event subscription the session simply stays parked until the
-next prompt re-routes it.
+**Resting point.** A routed turn parks the session on the judged pick. At
+session idle the plugin pulls it back to the auto entry, so the picker
+shows `Auto` again. Only plugin-made switches are reset: a manual pick of
+another model stays selected (it is out of auto's reach anyway), and the
+loop resumes the moment you select `Auto` again. Resets are best effort -
+without a usable idle event subscription the session simply stays parked
+until the next prompt re-routes it.
 
-### The auto entry (`route.autoModel`)
+### The auto entry (`auto.enable`)
 
-`"route": { "auto": true, "autoModel": true, "autoFallback": "provider/model" }`
-registers a pseudo-model `opencode-system-one/auto` that appears in the model picker
-as a normal entry. Pick it once and the plugin takes over: it is never
-actually invoked - each prompt while the session sits on it is routed to a
-real `(model, level)` pair by the normal routing path, and at idle the
-session returns to the auto entry, so the picker keeps showing `auto`.
+`auto` is on by default. It registers the pseudo-model
+`opencode-system-one/auto` in the model picker as a normal entry. Selecting
+it is the *only* way auto engages: the plugin is its only controller, the
+entry is never actually invoked - each prompt while the session sits on it
+is routed to a real `(model, level)` pair by the normal routing path, and
+at idle the session returns to the auto entry, so the picker keeps showing
+`auto`. On any other model the plugin leaves turns untouched. Set
+`"auto": { "enable": false }` to drop the entry (and all routing).
 
 The picker's search matches the model's display name and provider name
 only (the model schema has no alias/tag field), so you can give the entry
-search aliases through the name: `"autoModel": { "aliases": ["Jev"] }`
+search aliases through the name: `"auto": { "aliases": ["Jev"] }`
 shows the entry as `Auto (Jev)` so typing `jev` finds it too; the default
 displays just `Auto` (findable via `auto` and the `opencode-system-one`
-provider name). `"autoModel": { "name": "Autopilot" }` selects a custom
+provider name). `"auto": { "name": "Autopilot" }` selects a custom
 display name.
 
-- Mid-loop (session on a judged pick whose base is the entry) the normal
-  lattice applies: jev may keep or change the pick; judge failures keep the
-  current pick rather than reverting to the not-runnable entry.
-- `autoFallback` names a real model (`provider/model`) switched to when an
-  auto-mode turn cannot be routed (judge failure, no usable candidates) -
+- Mid-loop (session on a judged pick) the normal path applies: jev may
+  keep or change the pick; judge failures keep the current pick rather
+  than reverting to the not-runnable entry.
+- `auto.fallback` names a real model (`provider/model`) switched to when an
+  auto-entry turn cannot be routed (judge failure, no usable candidates) -
   the switch is pinned, so the loop continues from there. Without it the
   turn stays on the pseudo-entry and fails visibly when it runs; the
   closed-port base URL makes that failure immediate rather than hanging.
-- Choosing auto requires `route.auto` (model routing) enabled; plain
-  `effort.auto` sessions rest on the model's default variant instead.
-- The entry is re-armed simply by selecting `auto` in the picker again,
-  which behaves exactly like returning to a session's base model.
+- Re-engaging is simply selecting `auto` in the picker again.
 
 The judgment is cached per prompt - repeating the same prompt costs
 nothing. Each new prompt costs one jev round-trip (capped by the 8 s
@@ -327,17 +326,18 @@ Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `route.auto` | `false` | Off unless explicitly enabled. |
-| `route.candidates` | `[]` | Models jev may route to (`provider/model` strings or `{ providerID, id }`). |
-| `route.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
-| `route.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
-| `route.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
-| `route.autoModel` | `false` | Register the `opencode-system-one/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. `true`, or `{ "name": "...", "aliases": [...] }` to shape the picker title (defaults: `Auto`, no alias suffix). Requires `route.auto`. |
-| `route.autoFallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the turn fails visibly on the pseudo-model. |
-| `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
+| `auto.enable` | `true` | Register the `opencode-system-one/auto` pseudo-model entry and enable per-turn routing. Auto engages only while the session sits on the entry; set `false` to drop the entry and all routing. |
+| `auto.candidates` | `[]` | Models jev may route to (`provider/model` strings or `{ providerID, id }`). |
+| `auto.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
+| `auto.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
+| `auto.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
+| `auto.fallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the turn fails visibly on the pseudo-model. |
+| `auto.name` | `Auto` | Picker display name of the auto entry. |
+| `auto.aliases` | `[]` | Extra search aliases, shown as a name suffix (`Auto (Jev)`). |
+| `effort.auto` | `false` | Off unless explicitly enabled; routes the plain per-variant thinking level of any current model, and pairs with auto inside the loop. |
 | `effort.minConfidence` | `0.45` | Minimum jev answer confidence required to switch the reasoning variant. |
 
-The routing options live under `route` instead of `model` because the
+The routing options live under `auto` instead of `model` because the
 judgment-model override is the string form of `"model"` (see Options
 above); sharing one key for a string and a routing object would be
 ambiguous.

@@ -691,14 +691,17 @@ export default Plugin.define({
         ? o.effort.minConfidence
         : 0.45
     const screenTools = parseScreenTools(o.screen?.tools)
-    // Routing config lives under "route" so that the judgment-model override
-    // ("model": "<id>" string) and the model-routing options never share one
+    // Auto options live under "auto" so that the judgment-model override
+    // ("model": "<id>" string) and the auto-routing options never share one
     // ambiguous key (a string there is not a routing config and vice versa).
-    const routeRaw: any = (o as any).route
-    const modelAuto = routeRaw?.auto === true
-    const modelCandidates: Candidate[] = parseCandidates(routeRaw?.candidates)
-    const modelMinConfidence = clampThreshold(routeRaw?.minConfidence, 0.25, 0.99, 0.45)
-    const routeSources = parseRouteSources(routeRaw?.sources)
+    const autoRaw: any = (o as any).auto ?? {}
+    // Default ON: auto only ever engages while the session is parked on the
+    // opencode-system-one/auto entry, so it cannot interfere with any other
+    // model the user picks - there is nothing to opt out of for such users.
+    const modelAuto = autoRaw?.enable !== false
+    const modelCandidates: Candidate[] = parseCandidates(autoRaw?.candidates)
+    const modelMinConfidence = clampThreshold(autoRaw?.minConfidence, 0.25, 0.99, 0.45)
+    const routeSources = parseRouteSources(autoRaw?.sources)
     const routeSourcesTag = [
       routeSources.favorites ? "favorites" : "",
       routeSources.opencode.enabled ? `opencode(${routeSources.opencode.plan}:${routeSources.opencode.limit})` : "",
@@ -707,33 +710,29 @@ export default Plugin.define({
       .join("+")
     if (modelAuto && modelCandidates.length === 0 && !routeSourcesTag) {
       console.log(
-        '[jev] route: auto enabled without candidates - set "route": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "opencode": true }; routing stays off',
+        '[jev] auto: enabled without candidates - set "auto": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "opencode": true }; routing stays off',
       )
     }
-    // route.autoModel: register a "opencode-system-one/auto" pseudo-model the user can
-    // select in the TUI picker. The plugin is its only controller: at every
-    // prompt while the session rides auto, jev routes the turn to a real
+    // auto.enable registers a "opencode-system-one/auto" pseudo-model the user can
+    // select in the TUI picker. The plugin is its only controller: while the
+    // session is parked on the entry, jev routes each turn to a real
     // (model, level) pair, and at idle the session is pulled back to the
-    // auto entry so the picker keeps showing "auto". route.autoFallback
-    // ("provider/model") is switched to when an auto-mode turn cannot be
+    // auto entry so the picker keeps showing "auto". auto.fallback
+    // ("provider/model") is switched to when an auto-entry turn cannot be
     // routed (judge failure, no options) so the pseudo-model is never
     // actually invoked - set it to a local default-capable model.
     //
     // Searchability: the picker's filter matches the model name + provider
     // name only - the model schema has no alias/tag field - so configured
     // aliases ride in the display title ("Auto (Jev)").
-    const autoModelRaw: unknown = routeRaw?.autoModel
-    const autoModelCfg: { name?: unknown; aliases?: unknown } | null =
-      typeof autoModelRaw === "object" && autoModelRaw !== null ? (autoModelRaw as any) : autoModelRaw === true ? {} : null
-    const autoEntryAliases = (Array.isArray(autoModelCfg?.aliases) ? autoModelCfg!.aliases : [])
+    const autoEntryAliases = (Array.isArray(autoRaw?.aliases) ? autoRaw.aliases : [])
       .filter((a): a is string => typeof a === "string" && a.trim() !== "")
       .map((a) => a.trim())
     const autoEntryName: string =
-      typeof autoModelCfg?.name === "string" && autoModelCfg.name.trim() !== "" ? autoModelCfg.name.trim() : "Auto"
+      typeof autoRaw?.name === "string" && autoRaw.name.trim() !== "" ? autoRaw.name.trim() : "Auto"
     const autoEntryTitle = autoEntryAliases.length > 0 ? `${autoEntryName} (${autoEntryAliases.join(", ")})` : autoEntryName
-    const autoEntry =
-      modelAuto && autoModelCfg ? { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL, title: autoEntryTitle } : null
-    const autoFallbackRaw: unknown = routeRaw?.autoFallback
+    const autoEntry = modelAuto ? { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL, title: autoEntryTitle } : null
+    const autoFallbackRaw: unknown = autoRaw?.fallback
     const autoFallbackList = Array.isArray(autoFallbackRaw)
       ? autoFallbackRaw
       : typeof autoFallbackRaw === "string"
@@ -742,7 +741,7 @@ export default Plugin.define({
     const autoFallback: Candidate | null = parseCandidates(autoFallbackList)[0] ?? null
     if (autoEntry && !autoFallback) {
       console.log(
-        '[jev] route: autoModel set without autoFallback - an unroutable turn stays on "auto" and fails visibly when it invokes the pseudo-model',
+        '[jev] auto: enabled without fallback - an unroutable turn stays on "auto" and fails visibly when it invokes the pseudo-model',
       )
     }
     const doneCheckAuto = o.doneCheck?.auto === true
@@ -854,7 +853,12 @@ export default Plugin.define({
       })
     }
 
-    // -- route: jev decides the thinking level and/or model per prompt (opt-in) --
+    // -- auto: the opencode-system-one/auto entry + per-turn routing --
+    //
+    // auto.enable (default true) registers the pseudo-model entry. Routing
+    // engages ONLY while the session is parked on the entry; on any real
+    // model the plugin leaves the turn untouched (plain effort.auto is the
+    // separate, still opt-in per-variant feature).
 
     if (effortAuto || modelAuto) {
       // Register the auto pseudo-model entry so it appears in the TUI picker.
@@ -1016,6 +1020,12 @@ export default Plugin.define({
           const session: any = await (ctx as any).session.get({ sessionID: event.sessionID })
           const model = session?.model
           if (!model?.providerID || !model?.id) return
+          // The auto model feature engages only where the user parked the
+          // session on the auto entry. On any real model it must not touch
+          // the turn at all (unless plain effort.auto is opted in) - the
+          // manual pick IS the stand-down, no pin bookkeeping needed.
+          const atAutoEntry = isAutoEntry(autoEntry, model)
+          if (!atAutoEntry && !effortAuto) return
 
           const currentRef = {
             providerID: model.providerID,
@@ -1024,7 +1034,7 @@ export default Plugin.define({
           }
 
           const usableCandidates: Candidate[] = []
-          if (modelAuto) {
+          if (atAutoEntry) {
             // Providers activate asynchronously; the registry is complete
             // only after setup, so candidates are validated against a fresh
             // read on every prompt rather than the startup snapshot.
@@ -1068,27 +1078,13 @@ export default Plugin.define({
             }
           }
 
-          // The base model this session routes from, recorded on first sight.
-          // Judge failures revert to it and a manual pick re-arms when the
-          // active model returns to it; the plugin never switches it itself.
-          // A session riding the auto entry always bases on the entry - this
-          // also re-bases sessions that previously recorded a real model.
-          let base: any = currentRef
-          if (modelAuto) {
-            let stored: any = null
-            try {
-              stored = await (ctx as any).storage.get(`route-base/${String(event.sessionID)}`)
-            } catch {}
-            if (!isAutoEntry(autoEntry, model) && stored?.providerID && stored?.modelID) base = stored
-            try {
-              await (ctx as any).storage.set(`route-base/${String(event.sessionID)}`, base)
-            } catch {}
-          }
-
-          // Manual picks win. Every switch lands in the transcript as a
-          // model-switched message; the pin record tells own switches apart
-          // from foreign ones. A missing or unreadable record fails open into
-          // the plain auto behavior.
+          // Manual picks of a real model never reach this handler (the gate
+          // above returns first), so no pin stand-down is needed here - the
+          // pin record only marks the plugin's own picks for the idle
+          // resting reset.
+          // Manual picks of a real model never reach this handler, so the
+          // pin read only feeds routeTurn's bookkeeping (it records whose
+          // switch it was for the idle resting reset).
           const rows: any[] = await ((ctx as any).session.context({ sessionID: event.sessionID }).catch(() => []))
           const last = latestSwitch(rows)
           let pin: any
@@ -1102,7 +1098,7 @@ export default Plugin.define({
           const outcome: any = await routeTurn(
             {
               effort: effortAuto,
-              model: modelAuto && usableCandidates.length > 0,
+              model: atAutoEntry && usableCandidates.length > 0,
               candidates: usableCandidates,
               effortMinConfidence,
               modelMinConfidence,
@@ -1113,7 +1109,6 @@ export default Plugin.define({
               levelsFor,
               lastSwitch: last ?? null,
               pin: pin ?? null,
-              base,
               autoEntry: autoEntry ?? null,
               // Transcript tail so the judge weighs the turn's actual work
               // (files touched, prior failures), not the often-brief prompt.
@@ -1135,9 +1130,8 @@ export default Plugin.define({
 
           // An auto-mode session whose turn produced no usable pick (judge
           // failure, no options, no usable candidates) must not execute on
-          // the pseudo-model: route.autoFallback drops the session onto a
+          // the pseudo-model: auto.fallback drops the session onto a
           // real model instead - pinned, so the loop continues from there.
-          const atAutoEntry = isAutoEntry(autoEntry, model)
           if (autoEntry && autoFallback && atAutoEntry && !outcome?.switchTo) {
             const fallbackInfo = await modelInfo(autoFallback.providerID, autoFallback.modelID)
             if (fallbackInfo && isAvailableModel(fallbackInfo)) {
@@ -1185,10 +1179,13 @@ export default Plugin.define({
             })
             if (outcome.recordPin) {
               try {
-                await (ctx as any).storage.set(
-                  `${modelAuto ? "route-pin" : "effort-pin"}/${String(event.sessionID)}`,
-                  outcome.recordPin,
-                )
+                // Key reflects the turn's actual mode, not a global flag:
+                // both auto routing and plain effort-auto can be on, and the
+                // resting reset reads the provenance back (route = a session
+                // of the auto loop, effort = a default-variant session).
+                const pinKey =
+                  outcome.mode === "pair" || outcome.mode === "model" ? "route-pin" : "effort-pin"
+                await (ctx as any).storage.set(`${pinKey}/${String(event.sessionID)}`, outcome.recordPin)
               } catch {}
             }
           }
@@ -1649,7 +1646,7 @@ export default Plugin.define({
     // the resting reset below, done-check and idle-compaction alike.
     // Newest model-switched message in the transcript ({ model, previous }),
     // or undefined - declared at setup scope because the idle resting reset
-    // needs it even when route.auto itself is off (plain auto effort).
+    // needs it even when the auto entry itself is off (plain auto effort).
     const latestSwitch = (rows: ReadonlyArray<any>): { to: any; from: any } | undefined => {
       for (let i = rows.length - 1; i >= 0; i--) {
         const message: any = rows[i]?.info ?? rows[i]
@@ -1698,25 +1695,29 @@ export default Plugin.define({
     // Auto routing leaves the session parked on the last judged pick. When the
     // turn ends (in v2 that is the terminal session.execution.* event -
     // session.idle is not broadcast on the event stream), the plugin restores
-    // the resting point: the auto
-    // entry itself (route.autoModel), or - for plain auto effort - the model's
-    // default variant, so the picker shows the base the user actually chose.
-    // Only plugin-made switches (pinMatches) are touched: a manual pick sleeps
-    // through resets until the user returns to their resting point, which
-    // re-arms auto on the next prompt exactly as the stand-down lattice says.
-    // Best effort: without a usable idle subscription the session stays on the
-    // last pick until the next prompt re-routes it.
+    // the resting point: the auto entry for sessions of the auto loop, or -
+    // for plain auto effort - the model's default variant, so the picker
+    // shows the base the user actually chose. Only plugin-made switches are
+    // touched: a manual pick sleeps through resets until the user returns to
+    // their resting point. Best effort: without a usable idle subscription
+    // the session stays on the last pick until the next prompt re-routes it.
     if (autoEntry || effortAuto) {
       const resetResting = async (sessionID: string): Promise<void> => {
         try {
           // Only plugin-touched sessions reset: a stored pin must exist and
-          // match the newest switch in the transcript.
+          // match the newest switch in the transcript. The pin's KEY is the
+          // provenance: route-pin = a session of the auto loop (rest back at
+          // the auto entry), effort-pin = a plain effort session (rest at the
+          // default variant).
           let pin: any
+          let pinIsRoute = false
           try {
-            pin = modelAuto
-              ? ((await (ctx as any).storage.get(`route-pin/${sessionID}`)) ??
-                (await (ctx as any).storage.get(`effort-pin/${sessionID}`)))
-              : (await (ctx as any).storage.get(`effort-pin/${sessionID}`))
+            pin = await (ctx as any).storage.get(`route-pin/${sessionID}`)
+            if (pin) {
+              pinIsRoute = true
+            } else {
+              pin = await (ctx as any).storage.get(`effort-pin/${sessionID}`)
+            }
           } catch {}
           if (!pin) return
           const rows: any[] = await ((ctx as any).session.context({ sessionID }).catch(() => []))
@@ -1731,20 +1732,12 @@ export default Plugin.define({
             modelID: model.id,
             variant: typeof model.variant === "string" && model.variant.trim() !== "" ? model.variant.trim() : "default",
           }
-          // Resting point: the auto entry when this session is in the auto
-          // loop (its recorded base IS the entry), else the default variant.
+          // Resting point: the auto entry for auto-loop sessions, else the
+          // default variant of the model the last judged turn landed on.
           if (isAutoEntry(autoEntry, model)) return // already resting on auto
-          let storedBase: any = null
-          try {
-            storedBase = await (ctx as any).storage.get(`route-base/${sessionID}`)
-          } catch {}
-          const autoLoopActive =
-            !!autoEntry &&
-            storedBase?.providerID === autoEntry.providerID &&
-            storedBase?.modelID === autoEntry.modelID
-          if (!autoLoopActive && currentRef.variant === "default") return
-          const resting = autoLoopActive
-            ? { providerID: autoEntry!.providerID, modelID: autoEntry!.modelID, variant: "default" }
+          if (!pinIsRoute && currentRef.variant === "default") return
+          const resting = pinIsRoute && autoEntry
+            ? { providerID: autoEntry.providerID, modelID: autoEntry.modelID, variant: "default" }
             : { providerID: currentRef.providerID, modelID: currentRef.modelID, variant: "default" }
 
           await (ctx as any).session.switchModel({
@@ -1752,19 +1745,21 @@ export default Plugin.define({
             model: { providerID: resting.providerID, id: resting.modelID },
           })
           try {
-            await (ctx as any).storage.set(pinKey2(sessionID), {
-              to: toRef(resting),
-              from: toRef(currentRef),
-            })
+            await (ctx as any).storage.set(
+              `${pinIsRoute ? "route-pin" : "effort-pin"}/${sessionID}`,
+              {
+                to: toRef(resting),
+                from: toRef(currentRef),
+              },
+            )
           } catch {}
           console.log(
-            `[jev] rest: ${autoLoopActive ? `back to auto (${autoEntryKeyOf(autoEntry!)})` : `back to ${resting.providerID}/${resting.modelID} @default`} - ${sessionID}`,
+            `[jev] rest: ${pinIsRoute ? `back to auto (${autoEntryKeyOf(autoEntry!)})` : `back to ${resting.providerID}/${resting.modelID} @default`} - ${sessionID}`,
           )
         } catch (err: any) {
           console.error(`[jev] rest: reset skipped (${String(err?.message ?? err)})`)
         }
       }
-      const pinKey2 = (sessionID: string): string => `${modelAuto ? "route-pin" : "effort-pin"}/${sessionID}`
       if (await subscribeIdle((sid) => resetResting(sid), "route-rest")) {
         console.log(`[jev] route-rest: idle reset active (${autoEntry ? "auto entry" : "default variant"} resting point)`)
       }
@@ -2062,7 +2057,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"}${autoEntry ? "+auto-model" : ""}${autoFallback ? "+auto-fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
   },
 })

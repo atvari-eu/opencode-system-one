@@ -53,8 +53,9 @@ behavior change instead of duplicating them here.
   (DESIGN.md "Prompt-notes" has the history); description-led guidance is the
   escalation path.
 - Option keys: `model` is the judgment-model override (a string); per-turn
-  model routing lives under `route` — one key must never carry both a string
-  and an object meaning.
+  model routing lives under `auto` (`auto.enable` default true, engages
+  only while the session sits on the `opencode-system-one/auto` entry) —
+  one key must never carry both a string and an object meaning.
 
 ## Conventions
 
