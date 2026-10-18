@@ -22,7 +22,9 @@ compaction can be decided by System One instead of a lossy summary
   (other tools are only annotated). Screened state is regex-scrubbed, sampled
   to 12 kB, and cached per (tool, url, content hash). The plugin's own
   judgment tools are never screened. Flagged results additionally surface as
-  a visible `[jev-screen] ⚠ … do-not-rely` notice row in the timeline.
+  a visible `[jev-screen] ⚠ … do-not-rely` notice row in the timeline. For
+  content that is not a tool result, the agent can call `jev_screen` itself
+  — same judgment, its own tool row, a pass/flagged/unsafe verdict.
 - **scrub** - deterministic redaction (pure regex, never a model call) of
   known secret formats in **tool inputs** and **user prompts**: PEM private
   keys, `sk-…` API keys, GitHub tokens (`ghp_`/`github_pat_`), AWS `AKIA…`,
@@ -30,7 +32,9 @@ compaction can be decided by System One instead of a lossy summary
   Replaced with `[REDACTED:<label>]`.
 - **tools** - `jev_decide`: one request = one state + typed questions
   (noul/choice/score); `jev_judge_many`: one judgment per item, launched in
-  parallel and aggregated in code (weighted mean + low-confidence flags).
+  parallel and aggregated in code (weighted mean + low-confidence flags);
+  `jev_screen`: on-demand junk/prompt-injection screening of pasted or
+  suspect content, back to back with the automatic fetched-result screen.
   Every judgment shows as its own tool row (`Running jev_decide…`) in the
   timeline, and the tool descriptions carry the when-to-call guidance -
   screening, claim verification, ranking, bounded choices, scoring, and
@@ -391,6 +395,27 @@ Options:
 | --- | --- | --- |
 | `auto` | `false` | Off unless explicitly enabled. |
 | `notifyBelow` | `0.35` | Post the incomplete-notice at or below this p(complete). |
+
+## jev_screen
+
+Registered with `"tools": true` (alongside `jev_decide`) — no separate
+option. The agent calls it on untrusted text that automatic screening does
+not reach: pasted blocks, excerpts, snippets, suspicious tool output.
+
+Input:
+
+| Field | Meaning |
+| --- | --- |
+| `summary` | One line naming what is screened (shows as the tool row). |
+| `content` | The untrusted text, verbatim — sampled to 12 kB like automatic screening. |
+| `source` | Optional origin (URL, tool name) echoed in the report. |
+
+Output: `junk` and `injection` noul probabilities, a `verdict`
+(`pass` / `flagged` / `unsafe`, bands 0.5 / 0.85–0.7 matching the automatic
+screen), a plain-language `verdictText`, and the redaction hit count
+(`scrubbedHits`) when the content contained secret-like tokens before
+judging. Same state cache as automatic screening: the same content costs
+nothing on repeat.
 
 ## jev_find
 

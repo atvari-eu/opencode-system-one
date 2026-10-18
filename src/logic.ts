@@ -884,11 +884,14 @@ export function parseScreenTools(raw: unknown): ScreenTools {
 // again adds cost for no signal.
 export const SELF_SCREENED_TOOLS: Record<string, true> = {
   jev_find: true,
+  "jev/screen": true,
   // Hosts prefix namespaced tools as either spelling; cover both.
   jev_decide: true,
   jev_judge_many: true,
+  jev_screen: true,
   "jev/decide": true,
   "jev/judge_many": true,
+  "jev/screen": true,
 }
 
 export function screenApplies(tool: string, tools: ScreenTools, self: Readonly<Record<string, true>> = SELF_SCREENED_TOOLS): boolean {
@@ -901,6 +904,15 @@ export function screenApplies(tool: string, tools: ScreenTools, self: Readonly<R
 // results are annotated only.
 export function screenRedacts(tool: string): boolean {
   return tool === "webfetch"
+}
+
+// Verdict bands for jev screening (auto screening, the /jev-screen command
+// and the jev_screen tool all share them): unsafe = do not rely on the
+// content at all, flagged = proceed with caution, pass = no concern.
+export function screenVerdict(junk: unknown, injection: unknown): "pass" | "flagged" | "unsafe" {
+  const high = (typeof injection === "number" && injection >= 0.7) || (typeof junk === "number" && junk >= 0.85)
+  const mid = (typeof injection === "number" && injection >= 0.5) || (typeof junk === "number" && junk >= 0.5)
+  return high ? "unsafe" : mid ? "flagged" : "pass"
 }
 
 // ---------------------------------------------------------------------------
