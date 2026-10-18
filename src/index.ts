@@ -745,9 +745,6 @@ export default Plugin.define({
     // slices prompt and why. Opt out with approvals.stats = false.
     const approvalsStats = approvalsObj.stats !== false
     const approvalsMinConfidence = parseMinConfidence(approvalsObj.minConfidence)
-    const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["shell", "edit"])
-      .filter((action: unknown) => typeof action === "string" && action.length > 0)
-      .map(String)
     // Rule-scoped plugin permission ruleset, reusing the OpenCode 2 permission interface:
     // `{ action, resource, effect }` with `action` optional (defaults to any
     // action) and `effect` one of `allow`, `ask`, `deny`. Matching follows the
@@ -1423,7 +1420,6 @@ export default Plugin.define({
               answer: (reply as any).answers?.approve,
               mode: approvalsMode,
               minConfidence: approvalsMinConfidence,
-              allowlisted: approvalsActions.includes(action),
             })
             if (outcome.effect === "allow") {
               event.effect = "allow"
@@ -2539,7 +2535,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? "auto" : approvalsDeny ? "deny" : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the

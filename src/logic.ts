@@ -1633,11 +1633,9 @@ export interface ApprovalInput {
   /** Feature mode: annotate never enacts, deny never approves, auto both. */
   mode: ApprovalMode
   /** Confidence required to enact an approve / deny verdict (mode
-   * auto/deny, allowlisted). Two bars so approvals can be set looser
-   * than refusals (or vice versa); the residual is the ask band. */
+   * auto/deny). Two bars so approvals can be set looser than refusals
+   * (or vice versa); the residual is the ask band. */
   minConfidence: { approve: number; deny: number }
-  /** Whether the action is in the allowlist for automatic decisions. */
-  allowlisted: boolean
 }
 
 export interface ApprovalOutcome {
@@ -1653,11 +1651,12 @@ const approvalSuggestLabel = (verdict: ApprovalVerdict): string =>
 /**
  * Maps a judge answer onto the enforcement outcome. Fail-closed: a missing,
  * malformed, or unknown answer is "verdict unavailable" and a human prompt -
- * never a decision. Decisive enactment needs three things together: the
- * mode allows acting on it (auto approves and denies; deny denies only;
- * annotate neither), the action is allowlisted, and the winner clears
- * minConfidence. Everything else - ask winners, below-bar confidence, gate
- * exclusions outside this resolver - stays an annotated human prompt.
+ * never a decision. Decisive enactment needs two things together: the mode
+ * allows acting on it (auto approves and denies; deny denies only; annotate
+ * neither) and the winner clears minConfidence. Everything else - ask
+ * winners, below-bar confidence, gate exclusions outside this resolver -
+ * stays an annotated human prompt. Slices that must always prompt are
+ * pinned by `ask` permission rules before the judgment is ever reached.
  */
 export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   const verdict = approvalVerdictOf(input.answer)
@@ -1668,18 +1667,17 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   const pct = fmtOf(confidence)
   const bar = verdict === "deny" ? input.minConfidence.deny : input.minConfidence.approve
   const decisive = confidence >= bar
-  if (decisive && input.allowlisted && verdict === "approve" && input.mode === "auto") {
+  if (decisive && verdict === "approve" && input.mode === "auto") {
     return { effect: "allow", note: `[jev] approved (${pct})` }
   }
-  if (decisive && input.allowlisted && verdict === "deny" && input.mode !== "annotate") {
+  if (decisive && verdict === "deny" && input.mode !== "annotate") {
     return { effect: "deny", note: `[jev] denied (${pct})` }
   }
   if (verdict === "ask") {
     return { effect: "ask", note: `[jev] uncertain (${pct}) - review` }
   }
   let suffix = "review"
-  if (!input.allowlisted) suffix = "action not allowlisted - review"
-  else if (input.mode === "auto" && !decisive) suffix = `below ${fmtOf(bar)} - review`
+  if (input.mode === "auto" && !decisive) suffix = `below ${fmtOf(bar)} - review`
   else if (input.mode === "deny" && !decisive) suffix = `below ${fmtOf(bar)} - review`
   else if (input.mode === "deny" && verdict === "approve") suffix = "never auto-approved - review"
   return { effect: "ask", note: `[jev] ${approvalSuggestLabel(verdict)} (${pct}) - ${suffix}` }

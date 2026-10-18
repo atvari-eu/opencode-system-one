@@ -466,16 +466,16 @@ modes:
   `[jev] suggests approve (0.94) - review`, `[jev] uncertain (0.58) - review`,
   `[jev] suggests deny (0.91) - review`. The decision stays entirely yours.
 - **Auto** (`"approvals": { "mode": "auto" }`): the same judgment, and
-  decisive verdicts are enacted programmatically for the allowlisted
-  `actions` (default `shell`, `edit`): each verdict type clears its own
+  decisive verdicts are enacted programmatically for every judged action:
+  each verdict type clears its own
   `minConfidence` bar - `approve` enacts approvals and `deny` enacts
   refusals (a single number sets both bars, default `0.85`), so an approve
   verdict above its bar is approved outright and a deny verdict above its
   bar is refused (`effect: "deny"`, the reason rides back to the
   model as tool feedback so it can pick a different approach). Only the
   genuinely uncertain band - `ask` verdicts, below-bar confidence, gate
-  hits, judge failures - still prompts you; `webfetch`, MCP calls, and
-  everything outside `actions` also stay prompts.
+  hits, judge failures - still prompts you; the same holds for slices
+  pinned by `ask` permission rules.
 - **Deny** (`"approvals": { "mode": "deny" }`): the same verdicts but never
   an automatic yes - otherwise identical to `auto` (decisive deny verdicts
   refuse, everything else prompts). Use it when you want the agent held
@@ -588,7 +588,6 @@ options:
         "approvals": {
           "mode": "auto",
           "minConfidence": { "approve": 0.60, "deny": 0.70 },
-          "actions": ["shell", "edit"],
           // PLUGIN: the policy. Same shape, plus "system-one" and "context".
           // Ordered; the LAST matching rule wins.
           "permissions": [
@@ -626,10 +625,9 @@ Options:
 | --- | --- | --- |
 | `stats` | `true` | Records one aggregate in plugin storage (`jev-approval-stats`): every approval event folds into a per `(action, command-prefix)` entry with outcome counts (allow / deny / ask / gate / fail), confidence bands and `asked-<verdict>` counters. `/jev-approval-stats` prints the top slices; hot ask slices become candidates for explicit `permissions` rules. Set `false` to skip recording. |
 | `readonlyGateBypass` | `true` | Read-only shell commands (`grep`, `cat`, `ls`, `tail`, `find`, `jq`, …) skip the destructive-regex gate: their arguments legitimately mention dangerous strings (a grep pattern containing `sudo`, a log line with an `/etc/` path) without performing anything, and one such mention would otherwise hold the entire request for review. Secrets and `[REDACTED:]` markers always gate regardless, and a chain with one mutating segment still gates. Set `false` to restore strict whole-string matching. |
-| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` enacts approve and deny verdicts for allowlisted actions above `minConfidence`; `"deny"` does the same minus the automatic approve. Omit or `false` keeps the feature off. |
+| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` enacts approve and deny verdicts above `minConfidence` for every judged action; `"deny"` does the same minus the automatic approve. Omit or `false` keeps the feature off. |
 | `minConfidence` | `{ approve, deny } = 0.85` | Confidence required to enact a verdict, per verdict type - a single number sets both bars, a partial object overrides only what it names (`{ "approve": 0.6 }` keeps the deny bar at the default), each bar clamped to 0.5-0.99. `approve` gates enactment in `auto`, `deny` in `auto` and `deny`; below-bar verdicts and `ask` winners form the prompted ask band. Lower a bar to enact more of that verdict, raise it to hand more to you. |
-| `actions` | `["shell", "edit"]` | Actions eligible for automatic decisions in `auto` and `deny`; annotations apply to every prompt-worthy request regardless. Entries must match the CLI's permission action name - `shell` on OpenCode v2, `bash` on older releases (the gate itself accepts both names). Widening the list (e.g. adding `"webfetch"`) is the main dial for cutting prompts further - MCP tools should stay out of it. |
-| `permissions` | `[]` | Plugin-level permission rules evaluated before jev looks at a request. Entries use the same shape as OpenCode 2 permission rules: `{ "action": "shell", "resource": "git push *", "effect": "deny" }` - `action` is optional and defaults to any action, `resource` is an OpenCode glob (`*` spans any characters incl. `/`, `?` is one character; a shell pattern ending in `" *"` also matches the bare command), and `effect` is `allow`, `ask`, `deny` or `system-one`. Rules apply in order with the last match winning; `allow` and `deny` are enacted directly, `ask` leaves the request exactly as configured (plain prompt, no jev verdict, no annotation), and `system-one` falls through to the regular jev judgment with the entry's optional `context` remark (max 400 chars) injected verbatim into the judged state - use it to steer the verdict for a specific slice, e.g. `{ "action": "edit", "resource": "*", "effect": "system-one", "context": "Workspace edits are routine; edits under secrets/ are operator territory, never judge those yourself - ask." }`. Entries may also carry a `hint`: a note posted once per session to the agent context when a matching request resolves - a plain string applies to every outcome, an object `{ "allow": …, "ask": …, "deny": … }` keys the note by the resolved outcome (the deterministic gate counts as `ask`), e.g. `{ "action": "external_directory", "resource": "*", "effect": "ask", "hint": "for more than occasional access, prefer /cd to that directory" }`. Host-configured deny rules and saved approvals still rank above these. |
+| `permissions` | `[]` | Plugin-level permission rules evaluated before jev looks at a request. Entries use the same shape as OpenCode 2 permission rules: `{ "action": "shell", "resource": "git push *", "effect": "deny" }` - `action` is optional and defaults to any action, `resource` is an OpenCode glob (`*` spans any characters incl. `/`, `?` is one character; a shell pattern ending in `" *"` also matches the bare command), and `effect` is `allow`, `ask`, `deny` or `system-one`. Rules apply in order with the last match winning; `allow` and `deny` are enacted directly, `ask` leaves the request exactly as configured (plain prompt, no jev verdict, no annotation), and `system-one` falls through to the regular jev judgment with the entry's optional `context` remark (max 400 chars) injected verbatim into the judged state - use it to steer the verdict for a specific slice, e.g. `{ "action": "edit", "resource": "*", "effect": "system-one", "context": "Workspace edits are routine; edits under secrets/ are operator territory, never judge those yourself - ask." }`. Entries may also carry a `hint`: a note posted once per session to the agent context when a matching request resolves - a plain string applies to every outcome, an object `{ "allow": …, "ask": …, "deny": … }` keys the note by the resolved outcome (the deterministic gate counts as `ask`), e.g. `{ "action": "external_directory", "resource": "*", "effect": "ask", "hint": "for more than occasional access, prefer /cd to that directory" }`. Host-configured deny rules and saved approvals still rank above these. Since enactment applies to every judged action, `ask` rules are the way to pin a slice that must always prompt (e.g. cross-workspace access, MCP tools you do not trust). |
 
 ## System One compaction
 

@@ -291,9 +291,14 @@ uncertain middle (its criterion explicitly says it is not for borderline
 convenience). A verdict names the action, so enforcement is a pure mapping
 (`resolveApproval` in logic.ts): `auto` enacts both decisive verdicts,
 `deny` enacts only the refusal, `annotate` never enacts; the winner must
-also clear `minConfidence` (default 0.85, on confidence-in-the-verdict,
-clamped 0.5-0.99) and the action must be allowlisted (default `shell`,
-`edit` - "shell" is the v2 permission action name, "bash" the older one).
+clear `minConfidence` (default 0.85, on confidence-in-the-verdict,
+clamped 0.5-0.99). Originally a per-action allowlist (`approvals.actions`,
+default `shell`+`edit`) gated enactment; it was removed because the
+`permissions` ruleset already covers its one legitimate use - pinning a
+slice that must always prompt with an `ask` rule - while the list itself
+grew into an awkward second dial next to the rules. With it gone, every
+judged action is enactable, so always-prompt slices must be pinned by
+`ask` rules.
 Fail-closed is unchanged: a missing, malformed, or unknown choice answer is
 never a decision.
 

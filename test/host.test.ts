@@ -102,7 +102,6 @@ const APPROVALS_OPTIONS: Record<string, any> = {
   approvals: {
     mode: "auto",
     minConfidence: { approve: 0.6, deny: 0.8 },
-    actions: ["shell", "edit"],
     stats: true,
     permissions: [
       { action: "shell", resource: "git status *", effect: "allow", hint: { allow: "clean tree makes reviews trivial" } },
