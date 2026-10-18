@@ -756,6 +756,10 @@ export default Plugin.define({
     // directly, `ask` stays exactly as configured (plain prompt, no verdict,
     // no annotation). Real configured denies outrank everything already.
     const approvalsRules = parsePermissions(approvalsObj.permissions)
+    // Read-only shell commands skip the destructive-regex gate (their
+    // arguments mention dangerous strings without performing them);
+    // false restores strict whole-string matching.
+    const approvalsReadonlyGateBypass = approvalsObj.readonlyGateBypass !== false
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1353,7 +1357,13 @@ export default Plugin.define({
             for (const resource of resources) {
               const parts = isShellAction(action) ? [resource, ...shellChainSegments(resource)] : [resource]
               for (const part of new Set(parts)) {
-                if (approvalGate(action, part, { isRedactedOrSecret, isProjectPath })) {
+                if (
+                  approvalGate(action, part, {
+                    isRedactedOrSecret,
+                    isProjectPath,
+                    readonlyGateBypass: approvalsReadonlyGateBypass,
+                  })
+                ) {
                   annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
                   console.log(`[jev] approval: gate held ${action} for manual review`)
                   await recordApprovalStat(action, resources, { outcome: "gate" })

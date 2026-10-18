@@ -102,6 +102,7 @@ const isProjectPath = (path: string) => !path.startsWith("/") || path === "/home
 const deps = {
   isRedactedOrSecret: (r: string) => r.includes("[REDACTED:") || r.includes("sk-ant-"),
   isProjectPath,
+  readonlyGateBypass: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +168,31 @@ describe("approvalGate", () => {
     expect(approvalGate("shell", "dd if=zero of=/dev/sda", deps)).toBe(true)
     expect(approvalGate("shell", "chmod 777 .", deps)).toBe(true)
     expect(approvalGate("shell", "reboot", deps)).toBe(true)
-    expect(approvalGate("shell", "cat /etc/passwd", deps)).toBe(true)
+    // cat is read-only: the /etc/ pattern no longer gates it - jev judges the
+    // read instead (sudo-prefixed variants still gate: not read-only)
+    expect(approvalGate("shell", "cat /etc/passwd", deps)).toBe(false)
+    expect(approvalGate("shell", "sudo cat /etc/passwd", deps)).toBe(true)
     expect(approvalGate("shell", "reboot; echo done", deps)).toBe(true)
+  })
+
+  test("read-only commands citing destructive strings do not gate, secrets still do", () => {
+    // the exact false positives from the 2026-10-18 session: strings only
+    // MENTIONED in read-only arguments must not hold the (now skippable)
+    // destructive gate, while secret material holds it regardless
+    expect(approvalGate("shell", "grep -rn 'sudo' /etc/nixos/home/ai.nix", deps)).toBe(false)
+    expect(approvalGate("shell", "grep -n 'APPROVAL_DESTRUCTIVE' src/logic.ts", deps)).toBe(false)
+    expect(approvalGate("shell", "readlink ~/.nix-profile/bin/cardano-cli", deps)).toBe(false)
+    expect(approvalGate("shell", "grep [REDACTED:api-key] src", deps)).toBe(true)
+    expect(approvalGate("shell", "grep token ~/.config/creds", { ...deps, isRedactedOrSecret: () => true })).toBe(true)
+    // one mutating segment holds the entire chain
+    expect(approvalGate("shell", "grep x log && rm -rf /tmp/cache", deps)).toBe(true)
+    expect(approvalGate("shell", "git status && sudo make install", deps)).toBe(true)
+  })
+
+  test("readonlyGateBypass: false restores strict whole-string matching", () => {
+    const strict = { ...deps, readonlyGateBypass: false }
+    expect(approvalGate("shell", "grep -rn 'sudo' /etc/nixos/home/ai.nix", strict)).toBe(true)
+    expect(approvalGate("shell", "ls -la src", strict)).toBe(false)
   })
 
   test("accepts the older bash action name as the shell tool", () => {

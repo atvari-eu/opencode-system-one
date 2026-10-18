@@ -1405,11 +1405,21 @@ export function matchesPatterns(text: string, patterns: Array<RegExp>): boolean 
   })
 }
 
+// Shell commands that can only read, never mutate. Their arguments may
+// legitimately mention dangerous strings (a grep pattern containing "sudo",
+// a log tail including /etc/... paths) without ANY destructive intent, so
+// they bypass the destructive-pattern gate - secrets still gate, and only
+// ALL-readonly chains qualify (one mutating segment holds the gate).
+export const READ_ONLY_SHELL =
+  /^\s*(?:grep|rg|ls|cat|tail|head|find|stat|file|diff|echo|wc|sort|awk|pwd|which|readlink|sha256sum|du|tree|jq|column|man|whoami|basename|dirname)\b/
+
 export interface ApprovalGateDeps {
   /** Secret-like tokens or [REDACTED:] markers in the resource string. */
   isRedactedOrSecret: (resource: string) => boolean
   /** True for paths inside the workspace (relative paths are project-local). */
   isProjectPath: (resource: string) => boolean
+  /** False disables the read-only destructive-regex bypass (op-level strictness). */
+  readonlyGateBypass: boolean
 }
 
 // Glob matching for plugin-level approval rules, mirroring OpenCode 2 permission
@@ -1551,12 +1561,16 @@ export function chainPermissionEffect(
 // whole, so one bad command holds the entire request.
 export function approvalGate(action: string, resource: string, deps: ApprovalGateDeps): boolean {
   if (deps.isRedactedOrSecret(resource)) return true
-  if (isShellAction(action) && matchesPatterns(resource, APPROVAL_DESTRUCTIVE)) return true
+  if (isShellAction(action) && matchesPatterns(resource, APPROVAL_DESTRUCTIVE)) {
+    if (!deps.readonlyGateBypass) return true
+    // A read-only command's arguments often mention destructive strings
+    // without performing them (grep patterns, quoted log lines) - only a
+    // chain with at least one mutating segment can destroy anything.
+    if (!shellChainSegments(resource).every((segment) => READ_ONLY_SHELL.test(segment))) return true
+  }
   if (action === "edit" && !deps.isProjectPath(resource)) return true
   return false
-}
-
-const approvalVerdictOf = (answer: any): ApprovalVerdict | undefined => {
+}const approvalVerdictOf = (answer: any): ApprovalVerdict | undefined => {
   const choice = typeof answer?.choice === "string" ? answer.choice.trim().toLowerCase() : ""
   if (choice === "approve" || choice === "ask" || choice === "deny") return choice
   return undefined
