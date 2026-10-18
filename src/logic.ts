@@ -1412,6 +1412,75 @@ export interface ApprovalGateDeps {
   isProjectPath: (resource: string) => boolean
 }
 
+// Glob matching for approval-bypass rules, mirroring OpenCode 2 permission
+// patterns: the pattern must match the whole value, `*` spans any characters
+// (including `/`), `?` is exactly one character, everything else is literal.
+// A shell pattern ending in " *" also matches the bare command without
+// arguments, as the host permission rules do.
+export function globMatches(text: string, glob: string): boolean {
+  if (!glob) return false
+  const hasTrailingStarSpace = glob.endsWith(" *")
+  const bare = hasTrailingStarSpace ? glob.slice(0, glob.length - 2) : null
+  let regex = ""
+  for (const char of Array.from(glob)) {
+    if (char === "*") regex += "[\\s\\S]*"
+    else if (char === "?") regex += "[\\s\\S]"
+    else regex += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  }
+  if (new RegExp(`^${regex}$`).test(text)) return true
+  if (bare !== null && text === bare) return true
+  return false
+}
+
+export const BYPASS_EFFECTS = ["allow", "ask", "deny"] as const
+export type BypassEffect = (typeof BYPASS_EFFECTS)[number]
+
+export interface BypassRule {
+  /** Permission action to match; omit or `*` matches every action. */
+  action?: string
+  /** Resource glob the request resources must match. */
+  resource: string
+  /**
+   * The effect this rule resolves to: `"allow"` or `"deny"` enact it without
+   * a judgment, `"ask"` leaves the request exactly as configured (plain
+   * prompt, no jev verdict, no annotation).
+   */
+  effect: BypassEffect
+}
+
+export function parseBypassRules(raw: [] | unknown): BypassRule[] {
+  if (!Array.isArray(raw)) return []
+  const rules: BypassRule[] = []
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue
+    const entry = item as Record<string, unknown>
+    const action = typeof entry.action === "string" && entry.action.length > 0 ? entry.action : "*"
+    const resource = typeof entry.resource === "string" ? entry.resource : ""
+    const effect = entry.effect
+    if (!resource || (effect !== "allow" && effect !== "ask" && effect !== "deny")) continue
+    rules.push({ action, resource, effect })
+  }
+  return rules
+}
+
+/**
+ * Same matching as OpenCode 2 permission rules: entries apply in order, and
+ * the LAST matching rule wins. Returns its user-configured effect, or null
+ * when no bypass rule matches (straight to the jev judgment).
+ */
+export function bypassLookup(
+  action: string,
+  resources: readonly string[],
+  rules: readonly BypassRule[],
+): BypassEffect | null {
+  let matched: BypassEffect | null = null
+  for (const rule of rules) {
+    if (rule.action !== "*" && rule.action !== action) continue
+    if (resources.some((resource) => globMatches(resource, rule.resource))) matched = rule.effect
+  }
+  return matched
+}
+
 // The shell permission action is named "shell" on OpenCode v2 and "bash" on
 // older releases; the gate accepts both so one install covers either.
 const isShellAction = (action: string): boolean => action === "shell" || action === "bash"

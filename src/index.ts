@@ -58,6 +58,8 @@ import {
   approvalQuestion,
   candidateKey,
   clampThreshold,
+  bypassLookup,
+  parseBypassRules,
   doneCheckStandDown,
   doneTranscript,
   doneVerdict,
@@ -739,6 +741,14 @@ export default Plugin.define({
     const approvalsActions = (Array.isArray(approvalsObj.actions) ? approvalsObj.actions : ["shell", "edit"])
       .filter((action: unknown) => typeof action === "string" && action.length > 0)
       .map(String)
+    // Rule-scoped bypass, reusing the OpenCode 2 permission interface:
+    // `{ action, resource, effect }` with `action` optional (defaults to any
+    // action) and `effect` one of `allow`, `ask`, `deny`. Matching follows the
+    // host semantics - ordered rules, glob resources, last match wins. A
+    // matched request never reaches jev: `allow` and `deny` are enacted
+    // directly, `ask` stays exactly as configured (plain prompt, no verdict,
+    // no annotation). Real configured denies outrank everything already.
+    const approvalsBypass = parseBypassRules(approvalsObj.bypass)
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1275,6 +1285,26 @@ export default Plugin.define({
               ? event.resources.map((item: unknown) => String(item ?? ""))
               : []
             if (resources.length === 0) return
+
+            // Bypassed requests resolve from their config rule without jev:
+            // allow/deny enact the rule's effect; ask keeps the configured
+            // prompt untouched.
+            const bypassed = bypassLookup(action, resources, approvalsBypass)
+            if (bypassed === "allow") {
+              event.effect = "allow"
+              console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
+              return
+            }
+            if (bypassed === "deny") {
+              event.effect = "deny"
+              event.message = `[jev] bypass: denied by approvals.bypass rule`
+              console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
+              return
+            }
+            if (bypassed === "ask") {
+              console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
+              return
+            }
 
             // Deterministic gates first: properties that make auto-approval
             // impossible regardless of any judgment. The scrub marker counts
