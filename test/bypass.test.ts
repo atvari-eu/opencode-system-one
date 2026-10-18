@@ -52,6 +52,30 @@ describe("parseBypassRules", () => {
     ])
   })
 
+  test("system-one keeps a trimmed, capped context; other effects drop it", () => {
+    expect(
+      parseBypassRules([
+        { resource: "src/*", effect: "system-one", context: "  routine edits - trust  " },
+        { resource: "docs/*", effect: "system-one", context: "x".repeat(500) },
+        { resource: "bin/*", effect: "allow", context: "ignored" },
+        { resource: "lib/*", effect: "deny", context: "ignored too" },
+        { resource: "vault/*", effect: "ask", context: "also ignored" },
+      ]),
+    ).toEqual([
+      { action: "*", resource: "src/*", effect: "system-one", context: "routine edits - trust" },
+      { action: "*", resource: "docs/*", effect: "system-one", context: "x".repeat(400) },
+      { action: "*", resource: "bin/*", effect: "allow" },
+      { action: "*", resource: "lib/*", effect: "deny" },
+      { action: "*", resource: "vault/*", effect: "ask" },
+    ])
+  })
+
+  test("system-one without context is valid", () => {
+    expect(parseBypassRules([{ resource: "src/*", effect: "system-one" }])).toEqual([
+      { action: "*", resource: "src/*", effect: "system-one" },
+    ])
+  })
+
   test("non-arrays yield no rules", () => {
     expect(parseBypassRules(undefined)).toEqual([])
     expect(parseBypassRules("git push *")).toEqual([])
@@ -60,7 +84,7 @@ describe("parseBypassRules", () => {
 
 describe("bypassLookup", () => {
   test("matching deny rule enacts deny only when configured", () => {
-    expect(bypassLookup("shell", ["git push origin main"], [...shellGit])).toBe("deny")
+    expect(bypassLookup("shell", ["git push origin main"], [...shellGit])?.effect).toBe("deny")
   })
 
   test("non-matching requests fall through to jev", () => {
@@ -74,13 +98,20 @@ describe("bypassLookup", () => {
       { action: "shell", resource: "git status *", effect: "ask" },
       { action: "shell", resource: "git diff *", effect: "ask" },
     ])
-    expect(bypassLookup("shell", ["git diff --stat"], rules)).toBe("ask")
-    expect(bypassLookup("shell", ["bun test"], rules)).toBe("ask")
+    expect(bypassLookup("shell", ["git diff --stat"], rules)?.effect).toBe("ask")
+    expect(bypassLookup("shell", ["bun test"], rules)?.effect).toBe("ask")
   })
 
   test("bare * action matches every action", () => {
     const rules = parseBypassRules([{ resource: "raises/are/welcome", effect: "allow" }])
-    expect(bypassLookup("shell", ["raises/are/welcome"], rules)).toBe("allow")
-    expect(bypassLookup("edit", ["raises/are/welcome"], rules)).toBe("allow")
+    expect(bypassLookup("shell", ["raises/are/welcome"], rules)?.effect).toBe("allow")
+    expect(bypassLookup("edit", ["raises/are/welcome"], rules)?.effect).toBe("allow")
+  })
+
+  test("system-one returns the whole rule so the context rides along", () => {
+    const rules = parseBypassRules([
+      { action: "edit", resource: "*", effect: "system-one", context: "local repo edits are fine unless touching secrets" },
+    ])
+    expect(bypassLookup("edit", ["src/logic.ts"], rules)).toEqual(rules[0])
   })
 })

@@ -1288,20 +1288,21 @@ export default Plugin.define({
 
             // Bypassed requests resolve from their config rule without jev:
             // allow/deny enact the rule's effect; ask keeps the configured
-            // prompt untouched.
+            // prompt untouched. system-one falls through to the judgment
+            // below, with the rule's context remark included.
             const bypassed = bypassLookup(action, resources, approvalsBypass)
-            if (bypassed === "allow") {
+            if (bypassed?.effect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
               return
             }
-            if (bypassed === "deny") {
+            if (bypassed?.effect === "deny") {
               event.effect = "deny"
               event.message = `[jev] bypass: denied by approvals.bypass rule`
               console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
               return
             }
-            if (bypassed === "ask") {
+            if (bypassed?.effect === "ask") {
               console.log(`[jev] approval: bypassed ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
               return
             }
@@ -1322,6 +1323,8 @@ export default Plugin.define({
             for (const resource of resources) detail.push(`- ${resource.slice(0, 2000)}`)
             if (event.metadata && typeof event.metadata === "object")
               detail.push(`details: ${JSON.stringify(event.metadata).slice(0, 2000)}`)
+            if (bypassed?.effect === "system-one" && bypassed.context)
+              detail.push(`operator context: ${bypassed.context}`)
             const state =
               "An OpenCode coding agent requests permission for the operation(s) below. Decide how it should be handled.\n\n" +
               redactText(detail.join("\n").slice(0, 6000)).text

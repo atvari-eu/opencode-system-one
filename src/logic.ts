@@ -1432,7 +1432,7 @@ export function globMatches(text: string, glob: string): boolean {
   return false
 }
 
-export const BYPASS_EFFECTS = ["allow", "ask", "deny"] as const
+export const BYPASS_EFFECTS = ["allow", "ask", "deny", "system-one"] as const
 export type BypassEffect = (typeof BYPASS_EFFECTS)[number]
 
 export interface BypassRule {
@@ -1443,10 +1443,15 @@ export interface BypassRule {
   /**
    * The effect this rule resolves to: `"allow"` or `"deny"` enact it without
    * a judgment, `"ask"` leaves the request exactly as configured (plain
-   * prompt, no jev verdict, no annotation).
+   * prompt, no jev verdict, no annotation), `"system-one"` routes the
+   * request through the jev judgment with the rule's `context` remark.
    */
   effect: BypassEffect
+  /** Remark passed to jev verbatim; only meaningful with `"system-one"`. */
+  context?: string
 }
+
+export const BYPASS_CONTEXT_MAX = 400
 
 export function parseBypassRules(raw: [] | unknown): BypassRule[] {
   if (!Array.isArray(raw)) return []
@@ -1457,29 +1462,50 @@ export function parseBypassRules(raw: [] | unknown): BypassRule[] {
     const action = typeof entry.action === "string" && entry.action.length > 0 ? entry.action : "*"
     const resource = typeof entry.resource === "string" ? entry.resource : ""
     const effect = entry.effect
-    if (!resource || (effect !== "allow" && effect !== "ask" && effect !== "deny")) continue
-    rules.push({ action, resource, effect })
+    if (!resource || (effect !== "allow" && effect !== "ask" && effect !== "deny" && effect !== "system-one"))
+      continue
+    const context =
+      effect === "system-one" && typeof entry.context === "string"
+        ? entry.context.trim().slice(0, BYPASS_CONTEXT_MAX)
+        : undefined
+    rules.push({ action, resource, effect, ...(context ? { context } : {}) })
   }
   return rules
 }
 
 /**
  * Same matching as OpenCode 2 permission rules: entries apply in order, and
- * the LAST matching rule wins. Returns its user-configured effect, or null
- * when no bypass rule matches (straight to the jev judgment).
+ * the LAST matching rule wins. Returns the matching rule, or null when no
+ * bypass rule matches (straight to the jev judgment).
  */
 export function bypassLookup(
   action: string,
   resources: readonly string[],
   rules: readonly BypassRule[],
-): BypassEffect | null {
-  let matched: BypassEffect | null = null
+): BypassRule | null {
+  let matched: BypassRule | null = null
   for (const rule of rules) {
     if (rule.action !== "*" && rule.action !== action) continue
-    if (resources.some((resource) => globMatches(resource, rule.resource))) matched = rule.effect
+    if (resources.some((resource) => globMatches(resource, rule.resource))) matched = rule
   }
   return matched
 }
+
+// Per-entry context passed to the judge: like a permission rule minus the
+// effect - matching requests get the remark verbatim into the state. Unlike
+// the decisive bypass effect these can overlap: every matching hint applies,
+// in config order, first occurrence wins over exact duplicates.
+export interface HintRule {
+  /** Permission action to match; omit or `*` matches every action. */
+  action?: string
+  /** Resource glob the request resources must match. */
+  resource: string
+  /** Remark passed to jev verbatim when a matching request is judged. */
+  text: string
+}
+
+export const HINT_TEXT_MAX = 400
+export const HINTS_MAX = 5
 
 // The shell permission action is named "shell" on OpenCode v2 and "bash" on
 // older releases; the gate accepts both so one install covers either.
