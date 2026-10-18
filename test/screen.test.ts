@@ -1,6 +1,8 @@
-// Screen gate tests: tool-name filtering, self-skip, and the redact scope rule.
+// Screen gate tests: tool-name filtering, self-skip, verdict bands, and the
+// canonical runScreen flow shared by the tool and the automatic hook.
 
 import { describe, expect, test } from "bun:test"
+import { runScreen } from "../src/screen"
 import {
   parseScreenTools,
   screenApplies,
@@ -71,6 +73,52 @@ describe("parseScreenMode", () => {
     expect(parseScreenMode("redact")).toBe("redact")
     expect(parseScreenMode("REDACT")).toBe("redact") // case must match exactly
     expect(parseScreenMode("annotate")).toBe("annotate")
+  })
+})
+
+// Fixture deps for runScreen: fake judge/scrub, no plugin host.
+const runScreenDeps = (answers: Record<string, number>) => ({
+  judge: async () => ({
+    answers: Object.fromEntries(Object.entries(answers).map(([k, v]) => [k, { noul: v }])),
+    cached: false,
+  }),
+  scrub: (text: string) => ({ text: text.replace(/sk-[a-z0-9]+/g, "REDACTED"), hits: 0 }),
+})
+
+describe("runScreen", () => {
+  test("bands junk/injection into the shared verdict", async () => {
+    const clean = await runScreen(runScreenDeps({ junk: 0.1, injection: 0.2 }), "fine")
+    expect(clean.verdict).toBe("pass")
+    expect(clean.verdictText).toBe("pass")
+    const flagged = await runScreen(runScreenDeps({ junk: 0.6, injection: 0.2 }), "mid")
+    expect(flagged.verdict).toBe("flagged")
+    expect(flagged.verdictText).toContain("proceed with caution")
+    const unsafe = await runScreen(runScreenDeps({ junk: 0.9, injection: 0.9 }), "bad")
+    expect(unsafe.verdict).toBe("unsafe")
+    expect(unsafe.verdictText).toContain("do not rely")
+  })
+
+  test("samples to SCREEN_SAMPLE_CHARS and reports scrub hits", async () => {
+    let judged = ""
+    const deps = {
+      ...runScreenDeps({ junk: 0, injection: 0 }),
+      scrub: (text: string) => {
+        judged = text
+        return { text, hits: text.length === 10 ? 2 : 0 }
+      },
+      maxChars: 10,
+    }
+    const outcome = await runScreen(deps, "0123456789EXTRA")
+    expect(judged).toBe("0123456789")
+    expect(outcome.scrubbedHits).toBe(2)
+  })
+
+  test("missing answers never fabricate a verdict", async () => {
+    const deps = { judge: async () => undefined, scrub: (t: string) => ({ text: t, hits: 0 }) }
+    const outcome = await runScreen(deps as any, "content")
+    expect(outcome.verdict).toBe("pass")
+    expect(outcome.junk).toBeUndefined()
+    expect(outcome.injection).toBeUndefined()
   })
 })
 

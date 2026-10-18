@@ -25,8 +25,10 @@ compaction can be decided by System One instead of a lossy summary
   text stays clean; the model learns of a verdict late). Set
   `"annotation": "inline"` to prefix the result instead, so the model sees
   the verdict where it reads the content (plus `⚠ do-not-rely` over
-  threshold). Screened state is regex-scrubbed, sampled
-  to 12 kB, and cached per (tool, url, content hash). The plugin's own
+  `"annotation": "inline"` to prefix the result instead, so the model sees
+  the verdict where it reads the content (plus `⚠ do-not-rely` over
+  threshold). Screened state is regex-scrubbed and sampled to 12 kB; both
+  paths share the judgment cache (same content costs nothing on repeat). The plugin's own
   judgment tools are never screened. For
   content that is not a tool result, the agent can call `jev_screen` itself
   — same judgment, its own tool row, a pass/flagged/unsafe verdict.
