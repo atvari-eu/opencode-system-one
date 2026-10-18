@@ -1668,6 +1668,11 @@ export default Plugin.define({
 
     // -- commands: one-shot judgments without loading any skill --
 
+    // /jev-compact needs the trigger the compaction feature wires below
+    // (commands register first in setup order); the closure reads it at
+    // execute time, not registration time.
+    let jevCompactTrigger: ((sessionID?: string) => Promise<void>) | undefined = undefined
+
     if (commandsEnabled) {
       await (ctx as any).command.transform((editor: any) => {
         editor.add({
@@ -1694,6 +1699,30 @@ export default Plugin.define({
                 sessionID,
                 text: `[jev-screen] failed: ${String(err?.message ?? err)}`,
               })
+            }
+          },
+        })
+
+        editor.add({
+          name: "jev-compact",
+          description:
+            "Compact this session now with System One jev decisions only - unlike a plain /compact, it never falls back to the built-in summarizer",
+          execute: async (input: any) => {
+            const sessionID: string | undefined = input?.sessionID
+            try {
+              if (!jevCompactTrigger) {
+                throw new Error(
+                  'System One compaction is disabled - enable "compaction": { "enabled": true } in the jev plugin options',
+                )
+              }
+              await jevCompactTrigger(sessionID)
+            } catch (err: any) {
+              try {
+                await (ctx as any).session.synthetic({
+                  sessionID,
+                  text: `[jev-compact] ${String(err?.message ?? err)}`,
+                })
+              } catch {}
             }
           },
         })
@@ -2035,6 +2064,12 @@ export default Plugin.define({
       const IDLE_POSTED = new Map<string, number>()
       const IDLE_POSTED_MAX_MS = 300_000
 
+      // /jev-compact marks the same way (the hook cannot see the trigger
+      // reason) and gets pure jev-only semantics: unlike a plain /compact the
+      // pass never hands off to the built-in summarizer.
+      const MANUAL_POSTED = new Map<string, number>()
+      const MANUAL_POSTED_MAX_MS = 300_000
+
       await (ctx as any).session.hook("compaction", async (event: any) => {
         const sid = String(event?.sessionID ?? "")
         const idlePostedAt = IDLE_POSTED.get(sid)
@@ -2043,6 +2078,25 @@ export default Plugin.define({
           console.log("[jev] compaction: ignoring a stale idle-trigger flag")
         }
         const idleOrigin = idlePostedAt !== undefined && Date.now() - idlePostedAt <= IDLE_POSTED_MAX_MS
+        const manualPostedAt = MANUAL_POSTED.get(sid)
+        MANUAL_POSTED.delete(sid)
+        if (manualPostedAt !== undefined && Date.now() - manualPostedAt > MANUAL_POSTED_MAX_MS) {
+          console.log("[jev] compaction: ignoring a stale /jev-compact flag")
+        }
+        const manualOrigin = manualPostedAt !== undefined && Date.now() - manualPostedAt <= MANUAL_POSTED_MAX_MS
+        // One visible outcome row per /jev-compact call; manualNotice marks
+        // its fact so the shared failure catch never double-reports.
+        let manualNoticed = false
+        let originalCount = 0
+        const manualNotice = async (text: string): Promise<void> => {
+          manualNoticed = true
+          try {
+            await (ctx as any).session.synthetic({
+              sessionID: sid,
+              text: `[jev-compact] ${text}`,
+            })
+          } catch {}
+        }
         try {
           // Every compaction trigger (core auto, manual, idle) funnels
           // through this hook before the summarizer's model call - the one
@@ -2054,22 +2108,39 @@ export default Plugin.define({
           // fails (observed: the compaction hangs out to a timeout).
           // Best effort, same contract as the wake paths.
           await ensureOffEntry(sid, event?.messages ?? [])
+          if (manualOrigin) {
+            const original: any[] = Array.isArray(event?.messages) ? event.messages : []
+            originalCount = original.length
+            if (originalCount === 0) {
+              await manualNotice("nothing to compact - the transcript is empty")
+              throw new Error("jev compaction skipped: the transcript is empty")
+            }
+          }
           if (!Array.isArray(event?.messages) || event.messages.length === 0) return
-          if (event.result) return // another hook already supplied a summary
+          if (event.result) {
+            // another hook already supplied a summary
+            if (manualOrigin) await manualNotice("skipped: another hook already supplied the summary")
+            return
+          }
           const now = Date.now()
           if (lastCompactionAt?.sessionID === sid && now - lastCompactionAt.at < YIELD_WINDOW_MS) {
-            if (idleOrigin) {
+            if (manualOrigin) {
+              // An explicit ask inside the window: run the jev pass again
+              // (judged verdicts are cached, so this is cheap) instead of
+              // yielding to the built-in summarizer.
+            } else if (idleOrigin) {
               // A duplicate idle request queued just after a completed pass:
               // nothing to do - failing keeps idle-triggered compactions
               // jev-only (no built-in summarizer run).
               throw new Error(
                 "jev idle compaction skipped: a jev pass ran moments ago",
               )
+            } else {
+              console.log(
+                `[jev] compaction: a jev pass ran ${Math.round((now - lastCompactionAt.at) / 1000)}s ago in this session - yielding to the built-in summarizer`,
+              )
+              return
             }
-            console.log(
-              `[jev] compaction: a jev pass ran ${Math.round((now - lastCompactionAt.at) / 1000)}s ago in this session - yielding to the built-in summarizer`,
-            )
-            return
           }
           const window = await windowOf(event.model)
           const plan = await runCompaction(
@@ -2086,6 +2157,10 @@ export default Plugin.define({
               summary: plan.replaceSummary,
               ...(plan.tokens ? { tokens: plan.tokens } : {}),
             }
+            if (manualOrigin)
+              await manualNotice(
+                `jev decisions applied - the pruned transcript is the summary (~${plan.summaryTokens}tok est); no summarizer ran`,
+              )
             console.log(
               `[jev] compaction: supplied the pruned transcript as the summary (~${plan.summaryTokens}tok est, no summarizer call)`,
             )
@@ -2101,6 +2176,23 @@ export default Plugin.define({
                 ? "jev idle compaction skipped: summary guards failed"
                 : "jev idle compaction skipped: nothing stale enough to act on",
             )
+          }
+          if (manualOrigin) {
+            // The explicit ask means jev decisions or nothing: in clean mode
+            // the pruned-set route keeps the summarizer step the user's own
+            // config opted into; otherwise skip instead of rerouting.
+            if (!plan.keepMessages) {
+              await manualNotice("skipped: nothing stale enough to act on - no compaction ran")
+              throw new Error("jev compaction skipped: nothing stale enough to act on")
+            }
+            event.messages = plan.keepMessages
+            await manualNotice(
+              `jev pass kept ${plan.keepMessages.length} of ${originalCount} messages - the built-in summarizer continues on the cleaned transcript (compaction.mode clean)`,
+            )
+            console.log(
+              "[jev] compaction: decisions applied in place - built-in summarizer runs on the cleaned transcript",
+            )
+            return
           }
           if (plan.keepMessages) {
             event.messages = plan.keepMessages
@@ -2119,6 +2211,14 @@ export default Plugin.define({
             throw new Error(
               `jev idle compaction failed: ${String(err?.message ?? err)}`,
             )
+          }
+          if (manualOrigin) {
+            // /jev-compact is the explicit "no built-in summarizer" ask: a
+            // jev pass that cannot run aborts the compaction instead of
+            // silently rerouting it. The row already explains unless the
+            // failure happened before any notice.
+            if (!manualNoticed) await manualNotice(`failed: ${String(err?.message ?? err)}`)
+            throw new Error(`jev compaction failed: ${String(err?.message ?? err)}`)
           }
           console.error(
             `[jev] compaction: jev pass failed (${String(err?.message ?? err)}) - built-in compaction runs unmodified`,
@@ -2219,6 +2319,31 @@ export default Plugin.define({
             console.error(`[jev] idle-compaction: subscription failed (${String(err?.message ?? err)})`)
           }
           if (!registered) console.log("[jev] idle-compaction: unusable event subscription - skipped")
+        }
+      }
+
+      // The /jev-compact command: the same request the idle watcher posts,
+      // but marked under MANUAL_POSTED so the hook enforces jev-only
+      // semantics end to end - skips and failures surface as rows instead of
+      // rerouting to the built-in summarizer the way a plain /compact can.
+      const manualInflight = new Set<string>()
+      jevCompactTrigger = async (sessionID?: string): Promise<void> => {
+        const sid = String(sessionID ?? "")
+        if (manualInflight.has(sid)) throw new Error("another /jev-compact is already running")
+        manualInflight.add(sid)
+        try {
+          const messages: any[] = await (ctx as any).session.context({ sessionID: sid })
+          if (!Array.isArray(messages) || messages.length === 0) {
+            throw new Error("nothing to compact - the transcript is empty")
+          }
+          MANUAL_POSTED.set(sid, Date.now())
+          // The compaction step (hook and any last-mile summarizer) rides the
+          // session model: a resting session must step off the auto entry
+          // first, exactly like the idle watcher does.
+          await ensureOffEntry(sid, messages)
+          await (ctx as any).session.compact?.({ sessionID: sid })
+        } finally {
+          manualInflight.delete(sid)
         }
       }
     }

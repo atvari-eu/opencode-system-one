@@ -50,7 +50,9 @@ compaction can be decided by System One instead of a lossy summary
   state text.
 - **commands** - `/jev-screen <url>` gives a one-shot junk/injection verdict
   for any URL; `/jev-done-check` runs a completion self-check over the recent
-  session transcript. Both answer without loading a skill.
+  session transcript; `/jev-compact` compacts the session now with jev
+  decisions only, never falling back to the built-in summarizer. All three
+  answer without loading a skill.
 - **route** (opt-in) - before each turn, jev picks which model runs the turn
   and/or how much reasoning effort it gets, in one judgment, applied through
   the same switch mechanism as the UI's model/effort picker. Fail closed to
@@ -182,7 +184,7 @@ meanings never share one ambiguous key:
         "model": "jev-1.13", // optional; overrides JEV_MODEL and the default
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many
-        "commands": true,    // /jev-screen + /jev-done-check
+        "commands": true,    // /jev-screen + /jev-done-check + /jev-compact
         "cache": true,
         "auto": {            // the "Auto" entry + per-turn routing; see "Auto model routing"
           "candidates": ["openrouter/anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4"],
@@ -559,6 +561,17 @@ Being handed a block that is still too much? Run `/compact` again within
 one minute of a previous compaction: the second pass yields to OpenCode's
 built-in summarizer, which produces the default lossy summary instead. The
 jev summary ends with a note reminding you of this.
+
+Are those fallbacks too quiet for you? `/jev-compact` (requires
+`compaction.enabled`) is the explicit ask: it triggers the same compaction
+request, but marks it so the jev pass is the whole story - "replace" mode
+applies the pruned summary with no summarizer call at all; "clean" mode
+announces the kept message counts as a `[jev-compact]` row before the
+summarizer step your config chose; and "nothing stale", duplicate-pass and
+jev-failure cases abort visibly (`compaction failed` in the transcript plus
+an explaining row), never rerouting to the built-in summarizer the way a
+plain `/compact` can. Every trigger still funnels through the same jev hook;
+the command only changes what the fallbacks do.
 
 Fail-closed: a missing key, a jev failure, a malformed answer, or a history
 that cannot be fitted leaves compaction entirely to OpenCode's built-in
