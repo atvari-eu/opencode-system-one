@@ -5,7 +5,9 @@
 //
 // Also composes the screen-verdict panel (src/screen-panel.tsx, solid JSX -
 // the TUI loader compiles TSX with babel-preset-solid; the dynamic import
-// keeps the error-toast path working even if the panel fails to load).
+// keeps the error-toast path working even if the panel fails to load). The
+// "open the verdict panel" command lives HERE, not in the panel module, so
+// /jev-screen-history exists even when the TSX panel itself fails to load.
 //
 // Kept import-free: this module is loaded by the TUI plugin runtime, whose
 // own `@opencode/plugin/tui` re-exports pull solid-js in. A structural shape
@@ -53,13 +55,44 @@ export default {
     cleanups.push(unlisten)
 
     // -- screen verdict panel + flagged/unsafe toasts --
+    let panelLoaded = false
     try {
       const { default: panel } = await import("./screen-panel.tsx")
       const panelCleanup = await panel.setup(context)
       cleanups.push(panelCleanup)
+      panelLoaded = true
     } catch (err) {
       console.log(`[jev] tui: screen panel unavailable: ${String((err as Error)?.message ?? err)}`)
     }
+
+    // /jev-screen-history: open the recent screening-verdicts panel. Always
+    // registered, so the command exists even if the TSX panel failed to load
+    // (in that case it toasts why instead of silently disappearing).
+    const unlayer = context.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: "jev.screen-verdicts",
+          title: "Jev screening verdicts",
+          description: "Open the recent jev-screen verdict panel",
+          group: "jev",
+          palette: true,
+          slash: { name: "jev-screen-history" },
+          run: () => {
+            if (!panelLoaded) {
+              context.ui.toast.show({
+                title: "jev",
+                message: "screen panel unavailable - check the TUI log for the load error",
+                variant: "warning",
+                duration: 10_000,
+              })
+            }
+            context.ui.panel.open("jev-screen")
+          },
+        },
+      ],
+    }))
+    cleanups.push(unlayer)
 
     // -- prompt footer "(auto)" marker --
     try {

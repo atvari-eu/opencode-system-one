@@ -1,8 +1,8 @@
 // TUI verdict panel for the jev screening notices. The screen hook posts
 // "[jev-screen] …" synthetic rows; this half subscribes, keeps the last 50
 // verdicts in durable live-synced storage, toasts on flagged/unsafe (passes
-// stay silent), and renders the panel at session.panel when opened (palette
-// command / slash "jev-screen-history"). Solid scope is provided by the TUI
+// stay silent), and renders the panel at session.panel when opened (/jev-screen-history
+// registers in src/tui.ts so it exists even if this module fails to load). Solid scope is provided by the TUI
 // plugin runtime; no solid import is needed to read the reactive store.
 import type { JSX } from "@opentui/solid"
 import { parseScreenNotice, SCREEN_NOTICE_MARK, type ScreenVerdictItem } from "./logic"
@@ -78,26 +78,9 @@ export default {
         input?.name === "jev-screen" ? <Panel store={store} /> : <box>{""}</box>,
     })
 
-    const unlayer = context.keymap.layer(() => ({
-      commands: [
-        {
-          id: "jev.screen-verdicts",
-          title: "Jev screening verdicts",
-          description: "Open the recent jev-screen verdict panel",
-          group: "jev",
-          palette: true,
-          slash: { name: "jev-screen-history" },
-          run: () => {
-            context.ui.panel.open("jev-screen")
-          },
-        },
-      ],
-    }))
-
     return async () => {
       unlisten()
       unslot()
-      unlayer()
     }
   },
 }
