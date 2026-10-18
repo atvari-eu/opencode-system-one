@@ -45,7 +45,7 @@
 // Fail-closed absent configuration: a missing key or failed call never
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
 
-import { Plugin } from "@opencode/plugin"
+import { Model, Plugin, Provider } from "@opencode/plugin"
 import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS, messageChars, collectCalls } from "./compaction"
 import { runFind } from "./find"
 import {
@@ -65,11 +65,13 @@ import {
   parseIdleAuto,
   parseRouteSources,
   parseScreenTools,
+  pinMatches,
   rankSourcePopular,
   routeTurn,
   screenApplies,
   screenRedacts,
   shouldNotifyIncomplete,
+  toRef,
 } from "./logic"
 import { type Candidate } from "./logic"
 import { execFile } from "node:child_process"
@@ -581,6 +583,14 @@ const DONE_QUESTION: Question = {
 // revert lattice) lives in logic.ts; this file only performs the
 // OpenCode-specific I/O the outcome declares.
 
+// Auto pseudo-model entry: "auto" is not a runnable model - it is a resting
+// point the plugin routes away from at every prompt and restores at idle.
+const AUTO_PROVIDER = "jev-auto"
+const AUTO_MODEL = "auto"
+const autoEntryKeyOf = (e: { providerID: string; modelID: string }): string => `${e.providerID}/${e.modelID}`
+const isAutoEntry = (autoEntry: { providerID: string; modelID: string } | null | undefined, model: any): boolean =>
+  !!autoEntry && model?.providerID === autoEntry.providerID && model?.id === autoEntry.modelID
+
 // ---------------------------------------------------------------------------
 // Approvals: jev annotates permission prompts, optionally auto-approves them
 // ---------------------------------------------------------------------------
@@ -697,6 +707,28 @@ export default Plugin.define({
         '[jev] route: auto enabled without candidates - set "route": { "candidates": ["provider/model", ...] } or enable "sources": { "favorites": true } / { "opencode": true }; routing stays off',
       )
     }
+    // route.autoModel: register a "jev-auto/auto" pseudo-model the user can
+    // select in the TUI picker. The plugin is its only controller: at every
+    // prompt while the session rides auto, jev routes the turn to a real
+    // (model, level) pair, and at idle the session is pulled back to the
+    // auto entry so the picker keeps showing "auto". route.autoFallback
+    // ("provider/model") is switched to when an auto-mode turn cannot be
+    // routed (judge failure, no options) so the pseudo-model is never
+    // actually invoked - set it to a local default-capable model.
+    const autoEntry =
+      modelAuto && routeRaw?.autoModel === true ? { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL } : null
+    const autoFallbackRaw: unknown = routeRaw?.autoFallback
+    const autoFallbackList = Array.isArray(autoFallbackRaw)
+      ? autoFallbackRaw
+      : typeof autoFallbackRaw === "string"
+        ? [autoFallbackRaw]
+        : autoFallbackRaw
+    const autoFallback: Candidate | null = parseCandidates(autoFallbackList)[0] ?? null
+    if (autoEntry && !autoFallback) {
+      console.log(
+        '[jev] route: autoModel set without autoFallback - an unroutable turn stays on "auto" and fails visibly when it invokes the pseudo-model',
+      )
+    }
     const doneCheckAuto = o.doneCheck?.auto === true
     const notifyBelow = clampThreshold(o.doneCheck?.notifyBelow, 0.01, 0.85, NOTIFY_BELOW_DEFAULT)
     const findEnabled = o.find?.enabled === true
@@ -809,6 +841,33 @@ export default Plugin.define({
     // -- route: jev decides the thinking level and/or model per prompt (opt-in) --
 
     if (effortAuto || modelAuto) {
+      // Register the auto pseudo-model entry so it appears in the TUI picker.
+      // It lists no variants, its base URL points at a closed port so a
+      // direct invocation fails fast (fail-visible: the plugin routes away
+      // from auto before any turn), and activation is static "enabled".
+      if (autoEntry) {
+        try {
+          const entryProviderID = Provider.ID.make(AUTO_PROVIDER)
+          await (ctx as any).provider.transform((editor: any) => {
+            editor.add({
+              info: {
+                ...Provider.Info.empty(entryProviderID),
+                name: "Jev Auto",
+                activation: "enabled",
+                package: "@opencode-ai/providers/openai-compatible",
+                settings: { baseURL: "http://127.0.0.1:1/v1" },
+              },
+              models: [
+                { ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: "Jev Auto" },
+              ],
+            })
+          })
+          console.log("[jev] route: registered auto entry jev-auto/auto")
+        } catch (err: any) {
+          console.error(`[jev] route: auto entry registration failed (${String(err?.message ?? err)})`)
+        }
+      }
+
       // Reasoning variants (and availability) per model, memoized per process.
       // Routed switches that do not resolve would fail the whole turn at
       // model-resolve time, so candidates are validated here before they are
@@ -932,18 +991,6 @@ export default Plugin.define({
         return sourceInflight
       }
 
-      // Newest model-switched message in the transcript ({ model, previous }),
-      // or undefined. The TUI's effort/model picker commits through
-      // session.switchModel before the prompt is submitted, so a manual pick
-      // is the newest message by the time this hook runs.
-      const latestSwitch = (rows: ReadonlyArray<any>): { to: any; from: any } | undefined => {
-        for (let i = rows.length - 1; i >= 0; i--) {
-          const message: any = rows[i]?.info ?? rows[i]
-          if (message?.type === "model-switched") return { to: message.model, from: message.previous }
-        }
-        return undefined
-      }
-
       // Stood-down picks logged so far, to avoid repeating the notice on
       // every prompt while a manual pick is in effect.
       const foreignSwitch = new Map<string, string>()
@@ -983,6 +1030,8 @@ export default Plugin.define({
               if (extra.length > 0) combined = [...modelCandidates, ...extra]
             }
             for (const candidate of combined) {
+            // The auto entry routes FROM it only - it is never a destination.
+            if (autoEntry && candidateKey(candidate) === `${AUTO_PROVIDER}/${AUTO_MODEL}`) continue
               const info = await modelInfo(candidate.providerID, candidate.modelID)
               // Absent from the session's domain entirely (provider not
               // connected, workspace-disabled there) ...
@@ -1008,12 +1057,15 @@ export default Plugin.define({
           // The base model this session routes from, recorded on first sight.
           // Judge failures revert to it and a manual pick re-arms when the
           // active model returns to it; the plugin never switches it itself.
+          // A session riding the auto entry always bases on the entry - this
+          // also re-bases sessions that previously recorded a real model.
           let base: any = currentRef
           if (modelAuto) {
+            let stored: any = null
             try {
-              const stored: any = await (ctx as any).storage.get(`route-base/${String(event.sessionID)}`)
-              if (stored?.providerID && stored?.id) base = stored
+              stored = await (ctx as any).storage.get(`route-base/${String(event.sessionID)}`)
             } catch {}
+            if (!isAutoEntry(autoEntry, model) && stored?.providerID && stored?.modelID) base = stored
             try {
               await (ctx as any).storage.set(`route-base/${String(event.sessionID)}`, base)
             } catch {}
@@ -1048,6 +1100,7 @@ export default Plugin.define({
               lastSwitch: last ?? null,
               pin: pin ?? null,
               base,
+              autoEntry: autoEntry ?? null,
               // Transcript tail so the judge weighs the turn's actual work
               // (files touched, prior failures), not the often-brief prompt.
               digest: doneTranscript(rows, {
@@ -1065,6 +1118,27 @@ export default Plugin.define({
                 (await cachedJudge(questions, state, signal)).reply,
             },
           )
+
+          // An auto-mode session whose turn produced no usable pick (judge
+          // failure, no options, no usable candidates) must not execute on
+          // the pseudo-model: route.autoFallback drops the session onto a
+          // real model instead - pinned, so the loop continues from there.
+          const atAutoEntry = isAutoEntry(autoEntry, model)
+          if (autoEntry && autoFallback && atAutoEntry && !outcome?.switchTo) {
+            const fallbackInfo = await modelInfo(autoFallback.providerID, autoFallback.modelID)
+            if (fallbackInfo && isAvailableModel(fallbackInfo)) {
+              outcome.logs.push(
+                `[jev] route: auto could not route this turn - switching to fallback ${autoEntryKeyOf(autoFallback)}`,
+              )
+              outcome.switchTo = { providerID: autoFallback.providerID, modelID: autoFallback.modelID, variant: "default" }
+              outcome.recordPin = {
+                to: toRef({ providerID: autoFallback.providerID, modelID: autoFallback.modelID, variant: "default" }),
+                from: toRef(currentRef),
+              }
+            } else {
+              console.log(`[jev] route: auto fallback unavailable - this turn stays on auto and will fail visibly`)
+            }
+          }
 
           for (const line of outcome?.errors ?? []) console.error(line)
           const mode: string = outcome?.mode ?? "off"
@@ -1556,6 +1630,137 @@ export default Plugin.define({
       })
     }
 
+    // Shared idle-event subscription. session.idle distinguishes nothing about
+    // which feature wants it, so one helper serves both done-check and the
+    // auto resting reset below. Returns false when no subscription is usable.
+    // Newest model-switched message in the transcript ({ model, previous }),
+    // or undefined - declared at setup scope because the idle resting reset
+    // needs it even when route.auto itself is off (plain auto effort).
+    const latestSwitch = (rows: ReadonlyArray<any>): { to: any; from: any } | undefined => {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const message: any = rows[i]?.info ?? rows[i]
+        if (message?.type === "model-switched") return { to: message.model, from: message.previous }
+      }
+      return undefined
+    }
+    const idleSessionID = (e: any): string | undefined => {
+      const type = String(e?.type ?? e?.name ?? "")
+      if (type !== "session.idle" && !type.endsWith("session.idle")) return undefined
+      const p = e?.properties ?? e?.payload ?? e
+      const sid = p?.sessionID ?? e?.sessionID
+      return typeof sid === "string" && sid ? sid : undefined
+    }
+    const subscribeIdle = async (handler: (sessionID: string) => Promise<void>, tag: string): Promise<boolean> => {
+      const events: any = (ctx as any).event
+      if (typeof events?.subscribe !== "function") {
+        console.log(`[jev] ${tag}: event subscription unavailable on this OpenCode version - skipped`)
+        return false
+      }
+      try {
+        const stream: any = await events.subscribe()
+        if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
+          ;(async () => {
+            try {
+              for await (const e of stream as any) {
+                const sessionID = idleSessionID(e)
+                if (sessionID) await handler(sessionID)
+              }
+            } catch (err: any) {
+              console.error(`[jev] ${tag}: subscription ended (${String(err?.message ?? err)})`)
+            }
+          })()
+          return true
+        }
+        if (typeof stream === "function") {
+          // Effect-style registration: subscribe(name, handler).
+          await stream("session.idle", (e: any) => {
+            const sessionID = idleSessionID(e)
+            if (sessionID) void handler(sessionID)
+          })
+          return true
+        }
+      } catch (err: any) {
+        console.error(`[jev] ${tag}: subscription failed (${String(err?.message ?? err)})`)
+      }
+      console.log(`[jev] ${tag}: unusable event subscription - skipped`)
+      return false
+    }
+
+    // -- resting reset: pull auto picks back to their resting point at idle --
+    //
+    // Auto routing leaves the session parked on the last judged pick. When the
+    // turn ends (idle), the plugin restores the resting point: the auto
+    // entry itself (route.autoModel), or - for plain auto effort - the model's
+    // default variant, so the picker shows the base the user actually chose.
+    // Only plugin-made switches (pinMatches) are touched: a manual pick sleeps
+    // through resets until the user returns to their resting point, which
+    // re-arms auto on the next prompt exactly as the stand-down lattice says.
+    // Best effort: without a usable idle subscription the session stays on the
+    // last pick until the next prompt re-routes it.
+    if (autoEntry || effortAuto) {
+      const resetResting = async (sessionID: string): Promise<void> => {
+        try {
+          // Only plugin-touched sessions reset: a stored pin must exist and
+          // match the newest switch in the transcript.
+          let pin: any
+          try {
+            pin = modelAuto
+              ? ((await (ctx as any).storage.get(`route-pin/${sessionID}`)) ??
+                (await (ctx as any).storage.get(`effort-pin/${sessionID}`)))
+              : (await (ctx as any).storage.get(`effort-pin/${sessionID}`))
+          } catch {}
+          if (!pin) return
+          const rows: any[] = await ((ctx as any).session.context({ sessionID }).catch(() => []))
+          const last = latestSwitch(rows)
+          if (!last || !pinMatches(last, pin)) return
+
+          const session: any = await (ctx as any).session.get({ sessionID })
+          const model = session?.model
+          if (!model?.providerID || !model?.id) return
+          const currentRef = {
+            providerID: model.providerID,
+            modelID: model.id,
+            variant: typeof model.variant === "string" && model.variant.trim() !== "" ? model.variant.trim() : "default",
+          }
+          // Resting point: the auto entry when this session is in the auto
+          // loop (its recorded base IS the entry), else the default variant.
+          if (isAutoEntry(autoEntry, model)) return // already resting on auto
+          let storedBase: any = null
+          try {
+            storedBase = await (ctx as any).storage.get(`route-base/${sessionID}`)
+          } catch {}
+          const autoLoopActive =
+            !!autoEntry &&
+            storedBase?.providerID === autoEntry.providerID &&
+            storedBase?.modelID === autoEntry.modelID
+          if (!autoLoopActive && currentRef.variant === "default") return
+          const resting = autoLoopActive
+            ? { providerID: autoEntry!.providerID, modelID: autoEntry!.modelID, variant: "default" }
+            : { providerID: currentRef.providerID, modelID: currentRef.modelID, variant: "default" }
+
+          await (ctx as any).session.switchModel({
+            sessionID,
+            model: { providerID: resting.providerID, id: resting.modelID },
+          })
+          try {
+            await (ctx as any).storage.set(pinKey2(sessionID), {
+              to: toRef(resting),
+              from: toRef(currentRef),
+            })
+          } catch {}
+          console.log(
+            `[jev] rest: ${autoLoopActive ? `back to auto (${autoEntryKeyOf(autoEntry!)})` : `back to ${resting.providerID}/${resting.modelID} @default`} - ${sessionID}`,
+          )
+        } catch (err: any) {
+          console.error(`[jev] rest: reset skipped (${String(err?.message ?? err)})`)
+        }
+      }
+      const pinKey2 = (sessionID: string): string => `${modelAuto ? "route-pin" : "effort-pin"}/${sessionID}`
+      if (await subscribeIdle((sid) => resetResting(sid), "route-rest")) {
+        console.log(`[jev] route-rest: idle reset active (${autoEntry ? "auto entry" : "default variant"} resting point)`)
+      }
+    }
+
     // -- done-check: auto completion probe when the session goes idle --
     //
     // Opt-in, because it is the one case where the plugin notices the user
@@ -1596,45 +1801,8 @@ export default Plugin.define({
           console.error(`[jev] done-check: skipped (${String(err?.message ?? err)})`)
         }
       }
-      const idleSessionID = (e: any): string | undefined => {
-        const type = String(e?.type ?? e?.name ?? "")
-        if (type !== "session.idle" && !type.endsWith("session.idle")) return undefined
-        const p = e?.properties ?? e?.payload ?? e
-        const sid = p?.sessionID ?? e?.sessionID
-        return typeof sid === "string" && sid ? sid : undefined
-      }
-      const events: any = (ctx as any).event
-      if (typeof events?.subscribe !== "function") {
-        console.log("[jev] done-check: event subscription unavailable on this OpenCode version - skipped")
-      } else {
-        let registered = false
-        try {
-          const stream: any = await events.subscribe()
-          if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
-            registered = true
-            ;(async () => {
-              try {
-                for await (const e of stream as any) {
-                  const sessionID = idleSessionID(e)
-                  if (sessionID) await handleIdle(sessionID)
-                }
-              } catch (err: any) {
-                console.error(`[jev] done-check: subscription ended (${String(err?.message ?? err)})`)
-              }
-            })()
-          } else if (typeof stream === "function") {
-            // Effect-style registration: subscribe(name, handler).
-            await stream("session.idle", (e: any) => {
-              const sessionID = idleSessionID(e)
-              if (sessionID) void handleIdle(sessionID)
-            })
-            registered = true
-          }
-        } catch (err: any) {
-          console.error(`[jev] done-check: subscription failed (${String(err?.message ?? err)})`)
-        }
-        if (!registered) console.log("[jev] done-check: unusable event subscription - skipped")
-        else console.log("[jev] done-check: auto enabled (idle subscription active)")
+      if (await subscribeIdle((sid) => handleIdle(sid), "done-check")) {
+        console.log("[jev] done-check: auto enabled (idle subscription active)")
       }
     }
 
@@ -1878,7 +2046,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} route=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `auto(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "auto(no candidates)") : "off"}${autoEntry ? "+auto-model" : ""}${autoFallback ? "+auto-fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? `auto(${approvalsActions.join("+")})` : approvalsDeny ? `deny(${approvalsActions.join("+")})` : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
     )
   },
 })

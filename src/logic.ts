@@ -317,6 +317,7 @@ export function buildPairOptions(
   currentLevels: string[],
   candidateSources: PairOptionSource[],
   tier?: (providerID: string, modelID: string) => string,
+  includeCurrent = true,
 ): { options: ModelOption[]; included: Candidate[] } {
   const withTier = (providerID: string, modelID: string, text: string): string => {
     const hint = tier ? tier(providerID, modelID) : ""
@@ -324,7 +325,10 @@ export function buildPairOptions(
   }
   const options: ModelOption[] = []
   const currentKey = candidateKey(current)
-  if (currentLevels.length > 0) {
+  if (!includeCurrent) {
+    // The auto pseudo-model entry is current - it is not runnable, so the
+    // options are the candidate pairs only.
+  } else if (currentLevels.length > 0) {
     for (const level of currentLevels)
       options.push({
         key: pairKey(current, level),
@@ -375,20 +379,21 @@ export function buildModelOptions(
   current: { providerID: string; modelID: string },
   candidates: Candidate[],
   tier?: (providerID: string, modelID: string) => string,
+  includeCurrent = true,
 ): ModelOption[] {
   const withTier = (providerID: string, modelID: string, text: string): string => {
     const hint = tier ? tier(providerID, modelID) : ""
     return hint ? `${text} (${hint})` : text
   }
-  const options: ModelOption[] = [
-    {
+  const options: ModelOption[] = []
+  if (includeCurrent)
+    options.push({
       key: candidateKey(current),
       providerID: current.providerID,
       modelID: current.modelID,
       criteria: withTier(current.providerID, current.modelID, "current model - continue with it"),
       current: true,
-    },
-  ]
+    })
   for (const c of candidates) {
     if (options.length >= MAX_OPTIONS) break
     options.push({
@@ -451,6 +456,12 @@ export interface RouteInput {
    * a tail digest is what lets the judge escalate on the work, not the ask.
    */
   digest?: string
+  /**
+   * The plugin's auto pseudo-model entry, when registered. When the session
+   * sits on it, options exclude a "stay" choice (auto is not runnable) and
+   * judge failures keep the last real pick instead of reverting to it.
+   */
+  autoEntry?: { providerID: string; modelID: string } | null
   /** Optional per-model price hint for the option criteria. */
   tier?: (providerID: string, modelID: string) => string
   /** Deterministic scrub applied to prompt + question state text. */
@@ -567,11 +578,17 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
       : { providerID: currentRef.providerID, modelID: currentRef.id, variant: currentRef.variant }
   const baseKey = candidateKey(base)
   const currentKey = modelKeyOfRef(currentRef)
+  // The auto loop is engaged only when this session's base IS the entry.
+  const autoMode = !!input.autoEntry && baseKey === candidateKey(input.autoEntry)
 
   const failToBase = (message: string): RouteOutcome => {
     const ours = last ? pinMatches(last, input.pin) : false
     if (!ours) return { mode: "model", logs, errors: [...errors, message], ...(rearmed ? { rearm: true } : {}) }
-    if (currentKey === baseKey)
+    // Keeping current also covers the auto entry: when the session rides the
+    // auto loop (base is jev-auto/auto), a revert would switch back to the
+    // pseudo-model mid-loop, which is not runnable - so the current selection
+    // stays and the adapter decides whether a fallback applies.
+    if (currentKey === baseKey || autoMode)
       return { mode: "model", logs, errors: [...errors, message], ...(rearmed ? { rearm: true } : {}) }
     return {
       mode: "model",
@@ -627,6 +644,7 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
       currentLevels,
       sources,
       input.tier,
+      !autoMode,
     )
     options = built.options
     if (options.length === 0) return failToBase("[jev] route: no options could be built")
@@ -634,11 +652,7 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
       "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn and how much reasoning effort it should use; the available model+level pairs are listed in the question."
     question = { id: "route", type: "choice", instructions: ROUTE_PAIR_INSTRUCTIONS, criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])) }
   } else {
-    options = buildModelOptions(
-      { providerID: currentRef.providerID, modelID: currentRef.id },
-      config.candidates,
-      input.tier,
-    )
+    options = buildModelOptions({ providerID: currentRef.providerID, modelID: currentRef.id }, config.candidates, input.tier, !autoMode)
     lead =
       "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn for it; the available models are listed in the question."
     question = { id: "route", type: "choice", instructions: ROUTE_MODEL_INSTRUCTIONS, criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])) }

@@ -444,6 +444,89 @@ describe("offline routing fixtures", () => {
 // Dynamic routing sources (route.sources): parsing + usage ranking.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Auto pseudo-model entry (route.autoModel): pure-logic wiring fixtures.
+// ---------------------------------------------------------------------------
+
+describe("auto pseudo-model entry", () => {
+  const AUTO = { providerID: "jev-auto", modelID: "auto" }
+  const AUTO_CURRENT = { providerID: "jev-auto", modelID: "auto", variant: "default" }
+
+  test("auto entry: options are candidate pairs only (no stay-on-auto choice)", async () => {
+    const criteriaKeys: string[] = []
+    await turn(PAIR_CONFIG, {
+      current: AUTO_CURRENT,
+      autoEntry: AUTO,
+      levelsFor: async (p, m) => (p === "jev-auto" ? [] : (LEVELS[`${p}/${m}`] ?? [])),
+      judge: async (questions: any) => {
+        criteriaKeys.push(...Object.keys(questions[0].criteria))
+        return { answers: { route: { choice: "acme/fast#low", confidence: 0.9 } } }
+      },
+    })
+    expect(criteriaKeys).toEqual([
+      "acme/fast#none",
+      "acme/fast#low",
+      "acme/fast#medium",
+      "acme/fast#high",
+      "zeta/flagship#medium",
+      "zeta/flagship#high",
+      "zeta/flagship#xhigh",
+    ])
+  })
+
+  test("auto entry: pick switches to the pair, pin from the entry", async () => {
+    const outcome = await turn(PAIR_CONFIG, {
+      current: AUTO_CURRENT,
+      autoEntry: AUTO,
+      base: AUTO,
+      levelsFor: async (p, m) => (p === "jev-auto" ? [] : (LEVELS[`${p}/${m}`] ?? [])),
+      judge: async () => ({ answers: { route: { choice: "zeta/flagship#high", confidence: 0.9 } } }),
+    })
+    expect(outcome.switchTo).toEqual({ providerID: "zeta", modelID: "flagship", variant: "high" })
+    expect(outcome.recordPin).toEqual({
+      to: { providerID: "zeta", id: "flagship", variant: "high" },
+      from: { providerID: "jev-auto", id: "auto", variant: "default" },
+    })
+  })
+
+  test("mid-loop judge failure keeps the pick (never reverts back to auto)", async () => {
+    const last = {
+      to: { providerID: "zeta", id: "flagship", variant: "high" },
+      from: { providerID: "jev-auto", id: "auto" },
+    }
+    const outcome = await turn(PAIR_CONFIG, {
+      current: { providerID: "zeta", modelID: "flagship", variant: "high" },
+      autoEntry: AUTO,
+      base: AUTO,
+      lastSwitch: last,
+      pin: last,
+      judge: async () => {
+        throw new Error("boom")
+      },
+    })
+    expect(outcome.mode).toBe("model")
+    expect(outcome.switchTo).toBeUndefined()
+    expect(outcome.errors.some((e: string) => e.includes("boom"))).toBe(true)
+  })
+
+  test("at the entry, judge failure keeps auto (adapter decides about fallback)", async () => {
+    const outcome = await turn(PAIR_CONFIG, {
+      current: AUTO_CURRENT,
+      autoEntry: AUTO,
+      base: AUTO,
+      judge: async () => {
+        throw new Error("boom")
+      },
+    })
+    expect(outcome.mode).toBe("model")
+    expect(outcome.switchTo).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseRouteSources: dynamic candidate sources (favorites + opencode usage).
+// ---------------------------------------------------------------------------
+
 describe("parseRouteSources", () => {
   test("everything is off by default and for malformed shapes", () => {
     for (const raw of [undefined, null, true, "x", 7, [], {}]) {

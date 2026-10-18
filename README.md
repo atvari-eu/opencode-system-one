@@ -176,7 +176,9 @@ meanings never share one ambiguous key:
         "route": {           // auto model (+ effort) routing; see "Auto model routing"
           "auto": true,
           "candidates": ["openrouter/anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4"],
-          "minConfidence": 0.6
+          "minConfidence": 0.6,
+          "autoModel": true, // register the "auto" pseudo-model entry (optional)
+          "autoFallback": "openrouter/anthropic/claude-3.5-haiku"
         },
         "effort": { "auto": true }, // per-prompt thinking level (pairs with route)
         "doneCheck": { "auto": true }, // see "Auto done-check"
@@ -248,6 +250,37 @@ cannot be resolved at turn time (bad catalog name, provider outage), the
 session is switched back to its base model before the turn fails, and the
 candidate is not offered again for that prompt.
 
+**Resting point.** Auto routing parks the session on the last judged pick.
+At session idle the plugin pulls it back to the resting point - the auto
+entry itself when `route.autoModel` is on, otherwise the current model's
+`default` variant for auto effort. Only plugin-made switches are reset: a
+manual pick stays selected until you return to your resting point yourself
+(which re-arms auto on the next prompt). Resets are best effort - without a
+usable idle event subscription the session simply stays parked until the
+next prompt re-routes it.
+
+### The auto entry (`route.autoModel`)
+
+`"route": { "auto": true, "autoModel": true, "autoFallback": "provider/model" }`
+registers a pseudo-model `jev-auto/auto` that appears in the model picker
+as a normal entry. Pick it once and the plugin takes over: it is never
+actually invoked - each prompt while the session sits on it is routed to a
+real `(model, level)` pair by the normal routing path, and at idle the
+session returns to the auto entry, so the picker keeps showing `auto`.
+
+- Mid-loop (session on a judged pick whose base is the entry) the normal
+  lattice applies: jev may keep or change the pick; judge failures keep the
+  current pick rather than reverting to the not-runnable entry.
+- `autoFallback` names a real model (`provider/model`) switched to when an
+  auto-mode turn cannot be routed (judge failure, no usable candidates) -
+  the switch is pinned, so the loop continues from there. Without it the
+  turn stays on the pseudo-entry and fails visibly when it runs; the
+  closed-port base URL makes that failure immediate rather than hanging.
+- Choosing auto requires `route.auto` (model routing) enabled; plain
+  `effort.auto` sessions rest on the model's default variant instead.
+- The entry is re-armed simply by selecting `auto` in the picker again,
+  which behaves exactly like returning to a session's base model.
+
 The judgment is cached per prompt - repeating the same prompt costs
 nothing. Each new prompt costs one jev round-trip (capped by the 8 s
 timeout); the payoff is that trivial prompts get a cheaper model and level
@@ -290,6 +323,8 @@ Options:
 | `route.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
 | `route.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage, "popular" default): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (min 1, max 40). |
 | `route.minConfidence` | `0.45` | Minimum jev answer confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability mass across many (model, level) options, so a pick needs a lower bar than you might expect. |
+| `route.autoModel` | `false` | Register the `jev-auto/auto` pseudo-model entry: pick it in the TUI and each turn is routed to a real (model, level) pair, returning to `auto` at idle. Requires `route.auto`. |
+| `route.autoFallback` | — | Real model (`provider/model`) switched to when an auto-entry turn cannot be routed; without it the turn fails visibly on the pseudo-model. |
 | `effort.auto` | `false` | Off unless explicitly enabled; pairs with `route.auto`. |
 | `effort.minConfidence` | `0.45` | Minimum jev answer confidence required to switch the reasoning variant. |
 

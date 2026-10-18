@@ -126,6 +126,30 @@ pin storage). Rationale worth remembering when extending it:
 - **`tierOf`**: a defensive read across catalog cost shapes (`cost.input`,
   `price.perMillion.input`, bare number) that feeds a per-Mtok hint into
   option criteria; missing data simply yields no hint.
+- **The auto entry** (`route.autoModel`): OpenCode has no "auto" model
+  concept, so the plugin registers `jev-auto/auto` itself via
+  `ctx.provider.transform` (Provider.Info.empty + Model.Info.default, a
+  closed-port base URL so a direct invocation fails fast instead of
+  hanging - fail-visible, never fail-silent). The entry is only ever a
+  *resting point* the plugin routes away from; semantically it just makes
+  the session base equal `jev-auto/auto`, so the existing stand-down
+  lattice applies unchanged (a manual pick stands down until the user
+  selects `auto` again, which is the base-return re-arm). Two
+  lattice adjustments were needed: at the entry the options exclude a
+  "stay" choice (auto is not runnable), and mid-loop judge failures keep
+  the current pick instead of reverting to the not-runnable base.
+  `route.autoFallback` exists because a failure *at* auto would otherwise
+  leave the turn running on a dead model - the adapter (not the logic)
+  switches to the fallback, keeping it pinned so the loop continues.
+  Idle reset (the resting point pull-back - auto entry or, for plain
+  auto effort, the model's default variant) lives in a shared idle
+  subscription and only touches plugin-made switches (`pinMatches`),
+  is best effort (no usable idle events = stays parked until the next
+  prompt re-routes), and writes its own pin so the chain stays
+  verifiable. `route-base/<sid>` had a latent `.id` vs `.modelID`
+  mismatch that made the stored base a no-op; fixed while wiring the
+  entry, and a session observed at the entry re-records its base as the
+  entry (covers switching `autoModel` on after a real-model era).
 
 ## Auto done-check: the unprompted-notice carve-out
 
