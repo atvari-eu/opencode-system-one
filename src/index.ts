@@ -79,6 +79,7 @@ import {
   classifyJevFailure,
   clampThreshold,
   deploymentFingerprint,
+  inlineScreenFailure,
   lookupPermission,
   normalizeWorkspacePath,
   parsePermissions,
@@ -1871,13 +1872,23 @@ export default Plugin.define({
           }
         } catch (err: any) {
           const message = String(err?.message ?? err)
-          await surfaceJev(message, event?.sessionID)
-          const fallback = readResultText(event.result)
-          setPrimaryText(
-            event.result,
-            `[jev-screen unavailable: ${message}]\n\n` + fallback.slice(0, 3000) +
-              (fallback.length > 3000 ? " …[truncated]" : ""),
-          )
+          await surfaceJev(`screen unavailable for ${url || tool}: ${message}`, event?.sessionID)
+          if (inlineScreenFailure(tool)) {
+            // Fetched web content stays fail-closed inline: a failed screen
+            // there means possibly-injected content is about to be read, so
+            // the error prefix stays attached to the bounded (not verbatim)
+            // payload.
+            const fallback = readResultText(event.result)
+            setPrimaryText(
+              event.result,
+              `[jev-screen unavailable: ${message}]\n\n` + fallback.slice(0, 3000) +
+                (fallback.length > 3000 ? " …[truncated]" : ""),
+            )
+          }
+          // Local tools (shell, read, grep, glob, edit, MCP, ...): the result
+          // text stays untouched and untruncated - the failure surfaces as
+          // its own "[jev-error]" row / error toast instead of noise inside
+          // the tool output the model treats as tool content.
         }
       })
     }

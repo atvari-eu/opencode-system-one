@@ -410,3 +410,10 @@ session-scoped dedupe was deliberate: cadence keyed to sessions/configs is
 what the operator reasoning about "is it still broken?" needs; time-based
 cooldowns hide and re-reveal the same fault unpredictably.
 
+Screen-failure presentation changed in the same commit family: a failed
+screen on a local tool (shell, reads, edits, MCP) no longer prefixes and
+truncates the tool's own output - the failure is its own surfaced row, and
+the tool result stays intact; the inline fail-closed annotation remains
+for fetched web content only (`inlineScreenFailure` in logic.ts), where a
+failed screen means possibly-injected content is about to enter context.
+

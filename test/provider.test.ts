@@ -9,6 +9,7 @@ import {
   credentialChain,
   deployFaultText,
   deploymentFingerprint,
+  inlineScreenFailure,
   jevUserError,
   parseProviderOption,
   sessionSurfaceKey,
@@ -210,6 +211,14 @@ describe("surfacing gates", () => {
     expect(sessionSurfaceKey("ses_1", "k", "fp2")).not.toBe(same)
     expect(sessionSurfaceKey("ses_2", "k", "fp1")).not.toBe(same)
     expect(sessionSurfaceKey("ses_1", "other", "fp1")).not.toBe(same)
+  })
+
+  test("inlineScreenFailure: fetched web tools only", () => {
+    expect(inlineScreenFailure("webfetch")).toBe(true)
+    expect(inlineScreenFailure("websearch")).toBe(true)
+    for (const tool of ["shell", "read", "grep", "glob", "edit", "write", "bash", "mcp__x__y"]) {
+      expect(inlineScreenFailure(tool)).toBe(false)
+    }
   })
 })
 

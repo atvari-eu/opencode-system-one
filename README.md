@@ -112,7 +112,9 @@ funds, 403 endpoint gate, wrong model at the deployment, free-tier restriction
 rendered by the bundled TUI half (`./tui` export) as top-corner error popups,
 exactly like OpenCode's own failures: at most one row per session per failure
 class per deployment config, so repeated tool failures never toast-spam and a
-new session (or config change) informs once again. Pure
+new session (or config change) informs once again. Screening failures on
+local tools surface the same way instead of inlining anything into the tool
+output; fetched web content keeps the fail-closed inline annotation. Pure
 transport noise (5xx, refused connections, opaque diagnostics) stays
 console-only.
 

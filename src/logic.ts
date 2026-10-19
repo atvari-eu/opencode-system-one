@@ -1282,6 +1282,16 @@ export function sessionSurfaceKey(
   return `${sessionID ?? "-"}|${kind}|${fingerprint}`
 }
 
+/* True when a failed screen may rewrite the tool's own result text with the
+ * error prefix. Deliberately narrow to fetched web tools: screening failure
+ * there means possibly-injected content is about to enter context, so the
+ * fail-closed annotation stays inline. Local tool output (shell, read,
+ * grep, glob, edit, MCP) surfaces the failure as its own surfaced row /
+ * error toast instead - the result text stays untouched, untruncated. */
+export function inlineScreenFailure(tool: string): boolean {
+  return tool === "webfetch" || tool === "websearch"
+}
+
 // Footer attribution: "(auto)" markers for the prompt footer. The TUI half
 // derives them from the transcript - the model-switched rows carry {model,
 // previous} - because the TUI storage API exposes no cross-half channel to
