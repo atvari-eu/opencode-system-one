@@ -2,7 +2,7 @@
 // Pure logic, no plugin host, no live jev, no subprocess.
 
 import { describe, expect, test } from "bun:test"
-import { jevAuthError, normaliseProvider, parseAuthExport } from "../src/logic"
+import { credentialRejected, jevAuthError, normaliseProvider, parseAuthExport } from "../src/logic"
 
 const MUNITO_ENTRY = {
   id: "cred_m",
@@ -152,6 +152,32 @@ describe("jevAuthError", () => {
     expect(jevAuthError(502, "Upstream request failed")).toBe(
       "jev: upstream 502 - Upstream request failed",
     )
+  })
+})
+
+describe("credentialRejected", () => {
+  test("401 is always a credential rejection", () => {
+    expect(credentialRejected(401, "")).toBe(true)
+    expect(credentialRejected(401, "This API key has expired.")).toBe(true)
+  })
+
+  test("the Console's expired-key diagnostic matches on any status", () => {
+    expect(credentialRejected(422, "This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.")).toBe(true)
+    expect(credentialRejected(422, "the API key has been revoked")).toBe(true)
+    expect(credentialRejected(200, "your session token is invalid")).toBe(true)
+    expect(credentialRejected(400, "question must have a type")).toBe(false)
+    expect(credentialRejected(400, "invalid model for this deployment")).toBe(false)
+  })
+
+  test("the 422 upstream-unavailable wrap matches (observed stale-key surface)", () => {
+    expect(credentialRejected(422, "Upstream request failed: Endpoint is unavailable.")).toBe(true)
+  })
+
+  test("funds, pairing gates, plain outages and successes do not", () => {
+    expect(credentialRejected(402, "insufficient funds on the Console inference account")).toBe(false)
+    expect(credentialRejected(403, "endpoint refused the request")).toBe(false)
+    expect(credentialRejected(500, "something crashed upstream")).toBe(false)
+    expect(credentialRejected(200, "")).toBe(false)
   })
 })
 

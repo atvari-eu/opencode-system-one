@@ -772,8 +772,10 @@ is never logged or persisted):
    picked by the key↔endpoint pairing, not a separate CLI integration),
    which the CLI keeps refreshed. Consulted only against the default
    Console endpoint (so key and endpoint stay one deployment), cached per
-   process, and re-read once if the endpoint rejects a cached session
-   with 401.
+   process, and re-read once when the endpoint rejects a cached key as
+   worn - a 401, or a diagnostic naming the key/credential as
+   expired/revoked/invalid (the Console's worn-key responses do not always
+   carry a 401; they have been observed as 422 wraps).
 3. Legacy opencode auth store (`~/.local/share/opencode/auth.json`) - the
    entry matching the provider (`."opencode".key` / `."opencode-go".key`);
    V1 installs and hand-planted keys; the V2 CLI no longer updates this

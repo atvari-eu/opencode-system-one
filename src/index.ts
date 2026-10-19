@@ -52,6 +52,7 @@ import {
   EFFORT_ORDER,
   JEVS_ERROR_MARK,
   NOTIFY_BELOW_DEFAULT,
+  credentialRejected,
   jevAuthError,
   jevUserError,
   approvalGate,
@@ -157,8 +158,10 @@ interface ToolContext {
 //      selected by the key/endpoint pairing): a console API key or the
 //      active Console OAuth session, which the CLI keeps refreshed. Only
 //      consulted against the default Console endpoint so key and endpoint
-//      stay one deployment. Cached, and invalidated on 401 so a refreshed
-//      session is re-read exactly once before failing.
+//      stay one deployment. Cached, and invalidated on credential-class
+//      rejections (401, or a worn-credential diagnostic - see
+//      logic.credentialRejected) so a refreshed key is re-read exactly once
+//      per call before failing.
 //   3. Legacy opencode auth store (auth.json, entry matching the provider -
 //      .opencode.key / .opencode-go.key) - V1 installs and hand-planted
 //      keys; the V2 CLI no longer updates it.
@@ -172,8 +175,10 @@ interface Credential {
 }
 
 // Credential cache, keyed by integration id; module-level so the
-// `opencode auth export` subprocess runs at most once per process (and
-// once more after a 401-triggered invalidation). Only the "opencode"
+// `opencode auth export` subprocess runs once per process while the stored
+// key keeps working. After an invalidation the next read re-runs the export
+// and refills the cache, so a persistently rejected key costs one export per
+// jev call (bounded, never concurrent, never logged). Only the "opencode"
 // integration is queried today.
 const CLI_CREDENTIALS: Record<string, Credential | undefined> = {}
 const CLI_CREDENTIALS_DEAD: Record<string, boolean> = {}
@@ -379,6 +384,18 @@ async function jevRequest(
   })
 }
 
+// Endpoint diagnostic text from a response body, for credential classing
+// and for the surfaced error. Non-JSON or opaque bodies yield "".
+function detailOf(text: string): string {
+  try {
+    const body = JSON.parse(text)
+    const m = body?.error?.message ?? body?.message
+    return typeof m === "string" ? m : ""
+  } catch {
+    return ""
+  }
+}
+
 async function jevJudgeInner(
   resolveCred: () => Promise<Credential | undefined>,
   questions: Question[],
@@ -393,30 +410,29 @@ async function jevJudgeInner(
   }
 
   let response = await jevRequest(cred, questions, state, signal)
-  // A cached CLI-store session can rotate between calls; on rejection,
-  // re-read the store once (picking up the session the CLI refreshed) and
-  // retry - never twice, never against a custom endpoint.
-  if (response.status === 401 && cred.source === "cli-store") {
+  let text = await response.text()
+  // A cached CLI-store key can expire or rotate between calls, and the
+  // Console's worn-credential responses do not always carry a 401 (observed
+  // as 422 wraps). On a credential-class rejection, re-read the store once
+  // (picking up the key the CLI refreshed) and retry with a different key -
+  // never twice per call, never against a custom endpoint.
+  if (
+    cred.source === "cli-store" &&
+    credentialRejected(response.status, detailOf(text))
+  ) {
     invalidateCliStoreCredential(cred.integration)
     const fresh = resolveCred()
     if (fresh && fresh.key !== cred.key) {
       response = await jevRequest(fresh, questions, state, signal)
+      text = await response.text()
     }
   }
 
   if (!response.ok) {
-    let detail = ""
-    try {
-      const body = (await response.json()) as any
-      const m = body?.error?.message ?? body?.message
-      detail = typeof m === "string" ? m : ""
-    } catch {
-      // opaque error body - fall back to the status-coded hint
-    }
-    throw new Error(jevAuthError(response.status, detail))
+    throw new Error(jevAuthError(response.status, detailOf(text)))
   }
 
-  const json = (await response.json()) as JevReply
+  const json = JSON.parse(text) as JevReply
   // Fail closed: a malformed or missing answer is an operational failure,
   // never a decision.
   if (!json.answers || typeof json.answers !== "object") {

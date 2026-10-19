@@ -1324,6 +1324,26 @@ export function parseAuthExport(json: unknown, integrationID = "opencode"): stri
 }
 
 /**
+ * True when a failed System One call indicates the *credential* (not the
+ * funds, the free-tier gate, or a plain outage) is worn. Two surfaces, both
+ * observed from the OpenCode Console deployment:
+ * - 401 - the conventional credential rejection.
+ * - a diagnostic naming the key/credential as expired, revoked or invalid
+ *   ("This API key has expired. Create a new API key in OpenCode Console…"),
+ *   whatever status it rides.
+ * The console's expired-key responses do not always use 401 (seen as
+ * status-422 wraps), so the wording is the reliable signal; a re-read attempt
+ * from the credential chain is cheap and bounded per call, so a loose match
+ * is acceptable - the endpoint's diagnostic still surfaces verbatim.
+ */
+export function credentialRejected(status: number, detail: string): boolean {
+  if (status === 401) return true
+  return /(?:\b(?:api\s*key|key|token|credential|session)\b[^.]{0,60}\b(?:expired|revoked|invalid(?:ated)?)|\bendpoint is unavailable\b)/i.test(
+    detail,
+  )
+}
+
+/**
  * Error text for a failed System One call, keyed by HTTP status. The
  * endpoint's own diagnostic always wins (expired key, insufficient funds,
  * free-tier gate); the well-known pairing hint ("key and endpoint must come
