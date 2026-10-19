@@ -411,11 +411,12 @@ async function jevJudgeInner(
 
   let response = await jevRequest(cred, questions, state, signal)
   let text = await response.text()
-  // A cached CLI-store key can expire or rotate between calls, and the
-  // Console's worn-credential responses do not always carry a 401 (observed
-  // as 422 wraps). On a credential-class rejection, re-read the store once
-  // (picking up the key the CLI refreshed) and retry with a different key -
-  // never twice per call, never against a custom endpoint.
+  // A cached CLI-store key can expire or rotate between calls. On a
+  // credential-class rejection (401, or a worn-credential diagnostic - see
+  // logic.credentialRejected), re-read the store once (picking up the key
+  // the CLI refreshed) and retry with a different key - never twice per
+  // call, never against a custom endpoint. Upstream-outage responses are
+  // not credential class and get no re-read.
   if (
     cred.source === "cli-store" &&
     credentialRejected(response.status, detailOf(text))
