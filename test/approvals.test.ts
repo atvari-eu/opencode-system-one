@@ -1,26 +1,31 @@
-// Approvals tests: pure gate + resolver logic over scripted judge answers
+// Approvals tests: pure gate + resolver logic over scripted judge scores
 // (no live jev, no plugin host). The hook in index.ts is a thin wrapper:
 // gates -> judge -> resolveApproval -> effect.
 
 import { describe, expect, test } from "bun:test"
 import {
   APPROVAL_DESTRUCTIVE,
-  approvalQuestion,
   approvalGate,
+  approvalQuestions,
   approvalStatsBand,
   approvalStatsBucket,
   chainPermissionEffect,
-  lookupPermission,
   globMatches,
+  harmfulQuestion,
+  lookupPermission,
   matchesPatterns,
   mergeApprovalStats,
   normalizeWorkspacePath,
-  parsePermissions,
+  parseApprovalsPolicy,
   parseMinConfidence,
-  resolveApproval,
   parseGates,
+  resolveApproval,
+  reversibleQuestion,
   secretPath,
   secretPathAction,
+  servesTaskQuestion,
+  shellChainSegments,
+  taskFromMessages,
 } from "../src/logic"
 
 describe("approval stats", () => {
@@ -37,26 +42,56 @@ describe("approval stats", () => {
     expect(approvalStatsBand(0.93)).toBe(">=0.9")
   })
 
-  test("merge folds outcomes and bands", () => {
+  test("merge folds outcomes, verdict bands, score bands and token totals", () => {
     let agg: unknown = undefined
     for (const ev of [
-      { outcome: "allow" as const, confidence: 0.72 },
-      { outcome: "allow" as const, confidence: 0.95 },
-      { outcome: "ask" as const, verdict: "deny" as const, confidence: 0.3 },
+      {
+        outcome: "allow" as const,
+        confidence: 0.93,
+        scores: { reversible: 0.95, serves_task: 0.96, harmful: 0.02 },
+        usage: { input_tokens: 120, output_tokens: 30 },
+      },
+      {
+        outcome: "ask" as const,
+        verdict: "refuse" as const,
+        confidence: 0.86,
+        scores: { harmful: 0.86 },
+        usage: { input_tokens: 100 },
+      },
       { outcome: "gate" as const },
       { outcome: "fail" as const },
     ]) {
       agg = mergeApprovalStats(agg, ev)
     }
     expect(agg).toMatchObject({
-      count: 5,
-      allow: 2,
+      count: 4,
+      allow: 1,
       deny: 0,
       ask: 1,
       gate: 1,
       fail: 1,
-      bands: { "allow/0.7-0.8": 1, "allow/>=0.9": 1, "ask/<0.5": 1, "asked-deny": 1 },
+      inputTokens: 220,
+      outputTokens: 30,
+      bands: {
+        "allow/>=0.9": 1,
+        "ask/0.8-0.9": 1,
+        "reversible/>=0.9": 1,
+        "serves_task/>=0.9": 1,
+        "harmful/<0.5": 1,
+        "harmful/0.8-0.9": 1,
+        "asked-refuse": 1,
+      },
     })
+  })
+
+  test("non-finite scores and usage are ignored; ask without a confidence bands as '-'", () => {
+    const agg = mergeApprovalStats(undefined, {
+      outcome: "ask",
+      scores: { reversible: Number.NaN, serves_task: "x" as any },
+      usage: { input_tokens: Number.NaN },
+    })
+    expect(agg).toMatchObject({ count: 1, ask: 1, inputTokens: 0, outputTokens: 0 })
+    expect((agg as Record<string, unknown>).bands).toMatchObject({ "ask/-": 1 })
   })
 })
 
@@ -107,21 +142,105 @@ describe("chain permission lookup", () => {
 })
 
 describe("parseMinConfidence", () => {
-  test("a single number sets both bars", () => {
-    expect(parseMinConfidence(0.7)).toEqual({ approve: 0.7, deny: 0.7 })
+  test("defaults follow the recipe's calibration", () => {
+    expect(parseMinConfidence(undefined)).toEqual({ approve: 0.9, refuse: 0.85 })
+    expect(parseMinConfidence({})).toEqual({ approve: 0.9, refuse: 0.85 })
+    expect(parseMinConfidence("0.6")).toEqual({ approve: 0.9, refuse: 0.85 })
+    expect(parseMinConfidence({ what: 1 })).toEqual({ approve: 0.9, refuse: 0.85 })
   })
 
-  test("per-verdict overrides win; missing keys fall back per verdict", () => {
-    expect(parseMinConfidence({ approve: 0.6 })).toEqual({ approve: 0.6, deny: 0.85 })
-    expect(parseMinConfidence({ deny: 0.9 })).toEqual({ approve: 0.85, deny: 0.9 })
-    expect(parseMinConfidence({})).toEqual({ approve: 0.85, deny: 0.85 })
+  test("a single number sets both verdict bars", () => {
+    expect(parseMinConfidence(0.7)).toEqual({ approve: 0.7, refuse: 0.7 })
   })
 
-  test("both shapes clamp and garbage keys are ignored", () => {
-    expect(parseMinConfidence({ approve: 99, deny: 0.1 })).toEqual({ approve: 0.99, deny: 0.5 })
-    expect(parseMinConfidence({ what: 1 })).toEqual({ approve: 0.85, deny: 0.85 })
-    expect(parseMinConfidence("0.6")).toEqual({ approve: 0.85, deny: 0.85 })
-    expect(parseMinConfidence(undefined)).toEqual({ approve: 0.85, deny: 0.85 })
+  test("approve/refuse keys; legacy deny = refuse", () => {
+    expect(parseMinConfidence({ approve: 0.6 })).toEqual({ approve: 0.6, refuse: 0.85 })
+    expect(parseMinConfidence({ refuse: 0.95 })).toEqual({ approve: 0.9, refuse: 0.95 })
+    expect(parseMinConfidence({ deny: 0.95 })).toEqual({ approve: 0.9, refuse: 0.95 })
+    expect(parseMinConfidence({ refuse: 0.8, deny: 0.95 })).toEqual({ approve: 0.9, refuse: 0.8 })
+  })
+
+  test("per-question overrides beat the verdict keys; the ceiling caps at 0.5", () => {
+    expect(parseMinConfidence({ reversible: 0.8 })).toEqual({ approve: 0.9, refuse: 0.85, reversible: 0.8 })
+    expect(parseMinConfidence({ serves_task: 0.75 })).toEqual({ approve: 0.9, refuse: 0.85, serves_task: 0.75 })
+    expect(parseMinConfidence({ harmful: 0.3 })).toEqual({ approve: 0.9, refuse: 0.85, harmful: 0.3 })
+    expect(parseMinConfidence({ harmful: 0.99 })).toEqual({ approve: 0.9, refuse: 0.85, harmful: 0.5 })
+  })
+
+  test("both shapes clamp; garbage keys are ignored", () => {
+    expect(parseMinConfidence({ approve: 99, refuse: 0.1 })).toEqual({ approve: 0.99, refuse: 0.5 })
+    expect(parseMinConfidence({ approve: 99, deny: 0.1 })).toEqual({ approve: 0.99, refuse: 0.5 })
+    expect(parseMinConfidence({ what: 1 }).approve).toBe(0.9)
+  })
+})
+
+describe("parseApprovalsPolicy", () => {
+  test("defaults enact both verdicts (bare true or {} is full delegation)", () => {
+    expect(parseApprovalsPolicy(true).policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
+    expect(parseApprovalsPolicy({}).policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
+    expect(parseApprovalsPolicy({}).legacyMode).toBe(null)
+    expect(parseApprovalsPolicy({}).invalid).toEqual([])
+  })
+
+  test("explicit keys pick per-verdict enactment and win over legacy mode", () => {
+    expect(parseApprovalsPolicy({ onApprove: "ask", onRefuse: "ask" }).policy).toEqual({
+      onApprove: "ask",
+      onRefuse: "ask",
+    })
+    // mode annotate maps both to ask; the explicit onApprove still wins
+    const mixed = parseApprovalsPolicy({ mode: "annotate", onApprove: "allow" })
+    expect(mixed.policy).toEqual({ onApprove: "allow", onRefuse: "ask" })
+    expect(mixed.legacyMode).toBe("annotate")
+    expect(mixed.invalid).toEqual([])
+  })
+
+  test("deprecated modes map onto the same knobs and come back for the notice", () => {
+    expect(parseApprovalsPolicy({ mode: "annotate" }).policy).toEqual({ onApprove: "ask", onRefuse: "ask" })
+    expect(parseApprovalsPolicy({ mode: "auto" }).policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
+    expect(parseApprovalsPolicy({ mode: "deny" }).policy).toEqual({ onApprove: "ask", onRefuse: "deny" })
+    expect(parseApprovalsPolicy({ mode: "auto" }).legacyMode).toBe("auto")
+  })
+
+  test("invalid on* values fall back and are reported for the log line", () => {
+    const bad = parseApprovalsPolicy({ onApprove: "maybe", onRefuse: "no", mode: "weird" })
+    expect(bad.policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
+    expect(bad.legacyMode).toBe(null)
+    expect(bad.invalid).toHaveLength(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The judged questions: noul probabilities, not a three-way choice
+// ---------------------------------------------------------------------------
+
+describe("approvalQuestions", () => {
+  test("three noul questions: reversible, serves_task, harmful", () => {
+    const qs = approvalQuestions("shell", true)
+    expect(qs.map((q) => [q.id, q.type])).toEqual([
+      ["reversible", "noul"],
+      ["serves_task", "noul"],
+      ["harmful", "noul"],
+    ])
+  })
+
+  test("serves_task is dropped when the state carries no task", () => {
+    expect(approvalQuestions("edit", false).map((q) => q.id)).toEqual(["reversible", "harmful"])
+  })
+
+  test("shell gets the recipe's reversibility wording; other actions the general one", () => {
+    const shell = reversibleQuestion("shell").instructions
+    const general = reversibleQuestion("edit").instructions
+    expect(shell).toContain("git")
+    expect(general).not.toBe(shell)
+    expect(shell.length).toBeGreaterThan(60)
+    expect(general.length).toBeGreaterThan(60)
+  })
+
+  test("serve and harm carry their decision criteria", () => {
+    expect(servesTaskQuestion().instructions).toContain("reasonable next step")
+    const harm = harmfulQuestion().instructions
+    expect(harm).toContain("push --force")
+    expect(harm).toContain("fetched content")
   })
 })
 
@@ -131,30 +250,6 @@ const deps = {
   isProjectPath,
   gates: { secrets: true, readonlyBypass: true },
 }
-// ---------------------------------------------------------------------------
-// The question: one three-way choice
-// ---------------------------------------------------------------------------
-
-describe("approvalQuestion", () => {
-  test("asks one choice question with full approve/ask/deny criteria", () => {
-    const q = approvalQuestion()
-    expect(q.id).toBe("approve")
-    expect(q.type).toBe("choice")
-    expect(Object.keys(q.criteria ?? {})).toEqual(["approve", "ask", "deny"])
-    for (const [key, text] of Object.entries(q.criteria ?? {})) {
-      expect(text.length).toBeGreaterThan(60)
-      expect(q.instructions.length).toBeGreaterThan(60)
-    }
-    expect(q.instructions.toLowerCase()).toContain("decisive")
-    expect(q.criteria?.["ask"].toLowerCase()).toContain("genuinely uncertain")
-  })
-
-  test("the ask option is framed as expensive, deny as decisive", () => {
-    const q = approvalQuestion()
-    expect(q.criteria?.["deny"].toLowerCase()).toContain("refuse")
-    expect(q.criteria?.["approve"].toLowerCase()).toContain("without a human")
-  })
-})
 
 // ---------------------------------------------------------------------------
 // Gates: deterministic, judgment-free, fail toward the human prompt
@@ -201,6 +296,20 @@ describe("approvalGate", () => {
     expect(approvalGate("shell", "reboot; echo done", deps)).toBe(true)
   })
 
+  test("holds deploy and cluster-mutation CLIs; planning verbs pass", () => {
+    expect(approvalGate("shell", "terraform apply", deps)).toBe(true)
+    expect(approvalGate("shell", "terraform apply -auto-approve", deps)).toBe(true)
+    expect(approvalGate("shell", "tofu destroy", deps)).toBe(true)
+    expect(approvalGate("shell", "kubectl delete pod cache-cleaner", deps)).toBe(true)
+    expect(approvalGate("shell", "kubectl apply -f stack.yaml", deps)).toBe(true)
+    expect(approvalGate("shell", "wrangler deploy", deps)).toBe(true)
+    expect(approvalGate("shell", "vercel deploy --prod", deps)).toBe(true)
+    expect(approvalGate("shell", "fly deploy", deps)).toBe(true)
+    expect(approvalGate("shell", "flyctl deploy", deps)).toBe(true)
+    expect(approvalGate("shell", "terraform plan", deps)).toBe(false)
+    expect(approvalGate("shell", "kubectl get pods", deps)).toBe(false)
+  })
+
   test("read-only commands citing destructive strings do not gate, secrets still do", () => {
     // the exact false positives from the 2026-10-18 session: strings only
     // MENTIONED in read-only arguments must not hold the (now skippable)
@@ -244,6 +353,14 @@ describe("approvalGate", () => {
       ]) {
         expect(secretPath(hit)).toBe(true)
       }
+    })
+
+    test("registry and machine credential files (.npmrc, .netrc) are secret paths", () => {
+      for (const hit of [".npmrc", "config/.npmrc", "~/.npmrc", ".netrc", "config/.netrc"]) {
+        expect(secretPath(hit)).toBe(true)
+      }
+      expect(secretPath(".npmrc.bak")).toBe(false)
+      expect(secretPath("src/tokenizer.npmrc.ts")).toBe(false)
     })
 
     test("keyword lookalikes and ordinary code do not match", () => {
@@ -309,12 +426,20 @@ describe("approvalGate", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Resolver: verdict + confidence + mode + allowlist -> outcome
-// ---------------------------------------------------------------------------
+describe("shellChainSegments", () => {
+  test("splits every weakest-link separator, including pipes", () => {
+    expect(shellChainSegments("git status && bun test")).toEqual(["git status", "bun test"])
+    expect(shellChainSegments("a || b; c | d & e\nf")).toEqual(["a", "b", "c", "d", "e", "f"])
+    // the split is quotes-blind on purpose: a quoted separator can only ADD
+    // a segment (annotate-only false positive), never hide a command
+    expect(shellChainSegments("grep 'sudo | rm -rf /' log")).toEqual(["grep 'sudo", "rm -rf /' log"])
+  })
 
-const answer = (choice: string, confidence: number) => ({ type: "choice", choice, confidence })
-const malformed = [undefined, null, {}, { choice: "maybe" }, { confidence: 0.9 }, { choice: 7 }]
+  test("a dangerous segment holds the whole chain, read-only pipe chains pass", () => {
+    expect(approvalGate("shell", "git status | tee out && rm -rf /tmp/cache", deps)).toBe(true)
+    expect(approvalGate("shell", "cat notes.md | grep todo | grep done", deps)).toBe(false)
+  })
+})
 
 describe("parseGates", () => {
   test("defaults on; explicit false turns each off; garbage falls back", () => {
@@ -329,62 +454,139 @@ describe("parseGates", () => {
   })
 })
 
-describe("resolveApproval", () => {  test("fail-closed: malformed answers are 'unavailable', never a decision", () => {
-    for (const a of malformed) {
-      const out = resolveApproval({ answer: a, mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } })
+describe("taskFromMessages", () => {
+  const row = (kind: string, text: string) => ({ info: { role: kind, content: [{ type: "text", text }] } })
+
+  test("the last real user row is the task", () => {
+    expect(
+      taskFromMessages([row("user", "add a parser"), row("assistant", "on it"), row("user", "make it fast")]),
+    ).toBe("make it fast")
+  })
+
+  test("own notices, blank rows and non-users never supply the task", () => {
+    expect(
+      taskFromMessages([
+        row("user", "add a parser"),
+        row("assistant", "on it"),
+        row("user", "[jev-approval] hint: use /cd"),
+        row("user", "   "),
+      ]),
+    ).toBe("add a parser")
+    expect(taskFromMessages([])).toBe("")
+  })
+
+  test("flat v2 rows and the task cap", () => {
+    expect(taskFromMessages([{ type: "user", text: "ship it" }])).toBe("ship it")
+    expect(taskFromMessages([row("user", "y".repeat(3000))])).toHaveLength(2000)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Resolver: noul scores + bars + policy -> outcome (fail-closed)
+// ---------------------------------------------------------------------------
+
+const BARS = { approve: 0.9, refuse: 0.85 }
+const ENACT: any = { onApprove: "allow", onRefuse: "deny" }
+const HOLD: any = { onApprove: "ask", onRefuse: "ask" }
+// the recipe's captured routine run: auto-runs at the default bars
+const ROUTINE = { reversible: 0.93, serves_task: 0.95, harmful: 0.02 }
+
+describe("resolveApproval", () => {
+  test("approves the recipe's routine run and reports the binding score", () => {
+    expect(resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: ENACT })).toEqual({
+      effect: "allow",
+      note: "[jev] approved (0.93)",
+      verdict: "approve",
+      confidence: 0.93,
+    })
+  })
+
+  test("boundary equalities approve: reversible == bar, harmful == ceiling", () => {
+    expect(
+      resolveApproval({
+        scores: { reversible: 0.9, serves_task: 0.9, harmful: 0.1 },
+        task: true,
+        bars: BARS,
+        policy: ENACT,
+      }),
+    ).toEqual({ effect: "allow", note: "[jev] approved (0.90)", verdict: "approve", confidence: 0.9 })
+  })
+
+  test("refusal wins over any reversible score; the bar itself refuses", () => {
+    expect(
+      resolveApproval({ scores: { reversible: 1, serves_task: 1, harmful: 0.85 }, task: true, bars: BARS, policy: ENACT }),
+    ).toEqual({
+      effect: "deny",
+      note: "[jev] refused (0.85) - the agent must pick another approach",
+      verdict: "refuse",
+      confidence: 0.85,
+    })
+  })
+
+  test("verdicts enact per policy; ask holds the verdict at the prompt", () => {
+    expect(resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: HOLD })).toEqual({
+      effect: "ask",
+      note: "[jev] approves (0.93) - held for you",
+      verdict: "approve",
+      confidence: 0.93,
+    })
+    expect(
+      resolveApproval({ scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.9 }, task: true, bars: BARS, policy: HOLD }),
+    ).toEqual({
+      effect: "ask",
+      note: "[jev] refuses (0.90) - held for you",
+      verdict: "refuse",
+      confidence: 0.9,
+    })
+    // onApprove alone tames only the approve side
+    const mixed = resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: { onApprove: "ask", onRefuse: "deny" } })
+    expect(mixed.effect).toBe("ask")
+  })
+
+  test("the unclear band names the first failing approve-side check", () => {
+    const note = (scores: any, task = false) => resolveApproval({ scores, task, bars: BARS, policy: ENACT }).note
+    expect(note({})).toBe("[jev] verdict unavailable")
+    expect(note({ harmful: 0.02 })).toBe("[jev] unclear (reversible unavailable)")
+    expect(note({ reversible: 0.74, harmful: 0.02 })).toBe("[jev] reversible 0.74 (below 0.90)")
+    expect(note({ reversible: 0.93, serves_task: 0.95 }, true)).toBe("[jev] unclear (harmful unavailable)")
+    expect(note({ reversible: 0.93, serves_task: 0.95, harmful: 0.4 })).toBe("[jev] unclear (harmful 0.40)")
+    // with a task, an unasked (or malformed) serve never approves
+    expect(note({ reversible: 0.93, harmful: 0.02 }, true)).toBe("[jev] unclear (serves_task unavailable)")
+    expect(note({ reversible: 0.93, serves_task: 0.09, harmful: 0.02 }, true)).toBe("[jev] off-task (serves_task 0.09)")
+  })
+
+  test("invalid score values count as unavailable, never as small probabilities", () => {
+    for (const bad of ["0.99", Number.NaN, Infinity, 1.5, -0.2, null, true]) {
+      const out = resolveApproval({
+        scores: { reversible: bad, serves_task: 0.95, harmful: 0.02 },
+        task: true,
+        bars: BARS,
+        policy: ENACT,
+      })
       expect(out.effect).toBe("ask")
-      expect(out.note).toContain("verdict unavailable")
     }
   })
 
-  test("annotate mode never enacts, only suggests", () => {
-    expect(resolveApproval({ answer: answer("approve", 0.99), mode: "annotate", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] suggests approve (0.99) - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "annotate", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] suggests deny (0.91) - review" })
-    expect(resolveApproval({ answer: answer("ask", 0.55), mode: "annotate", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] uncertain (0.55) - review" })
+  test("without a task an unasked serve score cannot block approval", () => {
+    expect(
+      resolveApproval({
+        scores: { reversible: 0.93, serves_task: 0.05, harmful: 0.02 },
+        task: false,
+        bars: BARS,
+        policy: ENACT,
+      }).effect,
+    ).toBe("allow")
   })
 
-  test("auto mode enacts decisive approve and deny verdicts", () => {
-    expect(resolveApproval({ answer: answer("approve", 0.91), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "allow", note: "[jev] approved (0.91)" })
-    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "deny", note: "[jev] denied (0.91)" })
-  })
-
-  test("auto mode keeps the uncertain band with the human", () => {
-    expect(resolveApproval({ answer: answer("approve", 0.78), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] suggests approve (0.78) - below 0.85 - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.4), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] suggests deny (0.40) - below 0.85 - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.12), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] suggests deny (0.12) - below 0.85 - review" })
-    expect(resolveApproval({ answer: answer("ask", 0.55), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] uncertain (0.55) - review" })
-    expect(resolveApproval({ answer: answer("approve", 0.84), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }).effect).toBe("ask")
-    expect(resolveApproval({ answer: answer("approve", 0.85), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }).effect).toBe("allow")
-  })
-
-  test("deny mode enacts deny verdicts and never approves", () => {
-    expect(resolveApproval({ answer: answer("deny", 0.91), mode: "deny", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "deny", note: "[jev] denied (0.91)" })
-    expect(resolveApproval({ answer: answer("approve", 0.99), mode: "deny", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] suggests approve (0.99) - never auto-approved - review" })
-    expect(resolveApproval({ answer: answer("deny", 0.6), mode: "deny", minConfidence: { approve: 0.85, deny: 0.85 } }))
-      .toEqual({ effect: "ask", note: "[jev] suggests deny (0.60) - below 0.85 - review" })
-  })
-
-  test("never-asked-out actions pin prompts via ask rules, not the resolver", () => {
-    // the allowlist is gone: every judged action is enactable, so a slice
-    // that must always prompt is pinned by an `ask` permission rule before
-    // the judgment - the resolver itself has no per-action gate left
-    expect(resolveApproval({ answer: answer("approve", 0.99), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }).effect).toBe("allow")
-    expect(resolveApproval({ answer: answer("deny", 0.99), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }).effect).toBe("deny")
-  })
-
-  test("verdict matching is case-insensitive and whitespace-tolerant", () => {
-    expect(resolveApproval({ answer: answer(" Approve ", 0.9), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }).effect).toBe("allow")
-    expect(resolveApproval({ answer: answer("DENY", 0.9), mode: "auto", minConfidence: { approve: 0.85, deny: 0.85 } }).effect).toBe("deny")
+  test("per-question bars beat the verdict bar; the ceiling is overridable", () => {
+    const bars = { approve: 0.9, refuse: 0.85, reversible: 0.7, serves_task: 0.5, harmful: 0.3 }
+    expect(
+      resolveApproval({ scores: { reversible: 0.74, serves_task: 0.55, harmful: 0.2 }, task: true, bars, policy: ENACT })
+        .effect,
+    ).toBe("allow")
+    expect(
+      resolveApproval({ scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.4 }, task: true, bars, policy: ENACT })
+        .note,
+    ).toBe("[jev] unclear (harmful 0.40)")
   })
 })

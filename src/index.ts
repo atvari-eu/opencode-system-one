@@ -73,7 +73,7 @@ import {
   jevUserError,
   approvalGate,
   approvalStatsBucket,
-  approvalQuestion,
+  approvalQuestions,
   candidateKey,
   chainPermissionEffect,
   classifyJevFailure,
@@ -83,7 +83,9 @@ import {
   lookupPermission,
   normalizeWorkspacePath,
   parsePermissions,
+  parseApprovalsPolicy,
   parseMinConfidence,
+  taskFromMessages,
   doneCheckStandDown,
   doneTranscript,
   doneVerdict,
@@ -843,8 +845,10 @@ const isAutoEntry = (autoEntry: { providerID: string; modelID: string } | null |
   !!autoEntry && model?.providerID === autoEntry.providerID && model?.id === autoEntry.modelID
 
 // ---------------------------------------------------------------------------
-// Approvals: jev vets permission prompts, and in the delegating modes enacts
-// the decisive verdicts (approve in auto; deny in auto and deny)
+// Approvals: jev vets permission prompts with three scored questions
+// (reversible / serves_task / harmful) and enacts decisive verdicts per
+// policy - approve -> allow, refuse -> deny; either can be held at the
+// human prompt with "ask".
 // ---------------------------------------------------------------------------
 
 // OpenCode permission flow: tools call assert() with {action, resources,
@@ -1018,29 +1022,26 @@ export default Plugin.define({
     const findEnabled = o.find?.enabled === true
     const approvalsRaw: any = o.approvals
     const approvalsObj: any = typeof approvalsRaw === "object" && approvalsRaw !== null ? approvalsRaw : {}
-    const approvalsMode: "annotate" | "auto" | "deny" | "off" = (() => {
-      if (approvalsRaw === undefined || approvalsRaw === null || approvalsRaw === false) return "off"
-      if (typeof approvalsRaw !== "object") {
+    // Enabled by `approvals: true` (full delegation) or an object config;
+    // disabled by omitting the key or `false`. Any object is parsed into a
+    // verdict→effect policy; the deprecated single `mode` key maps onto the
+    // same knobs and logs a one-time deprecation notice.
+    const approvalsEnabled =
+      approvalsRaw === true || (typeof approvalsRaw === "object" && approvalsRaw !== null)
+    const parsedPolicy = parseApprovalsPolicy(
+      approvalsEnabled && typeof approvalsRaw === "object" ? approvalsRaw : {},
+    )
+    const approvalsPolicy = parsedPolicy.policy
+    if (approvalsEnabled) {
+      for (const invalid of parsedPolicy.invalid) {
+        console.log(`[jev] approvals: ignoring unsupported ${invalid}`)
+      }
+      if (parsedPolicy.legacyMode) {
         console.log(
-          '[jev] approvals: unsupported value - use { "mode": "annotate" | "auto" | "deny" }, or omit for off',
+          `[jev] approvals: mode "${parsedPolicy.legacyMode}" is deprecated - use "onApprove": "allow" | "ask" and "onRefuse": "deny" | "ask"`,
         )
-        return "off"
       }
-      if (
-        approvalsRaw.mode === "annotate" ||
-        approvalsRaw.mode === "auto" ||
-        approvalsRaw.mode === "deny"
-      ) {
-        return approvalsRaw.mode
-      }
-      console.log(
-        `[jev] approvals: mode must be "annotate", "auto" or "deny" (got ${JSON.stringify(approvalsRaw.mode ?? null)}) - falling back to annotate`,
-      )
-      return "annotate"
-    })()
-    const approvalsEnabled = approvalsMode !== "off"
-    const approvalsAuto = approvalsMode === "auto"
-    const approvalsDeny = approvalsMode === "deny"
+    }
     // Approval-stats diagnostics (default on with approvals): every request
     // is folded into plugin storage so /jev-approval-stats can show which
     // slices prompt and why. Opt out with approvals.stats = false.
@@ -1760,26 +1761,50 @@ export default Plugin.define({
               }
             }
 
+            // The judged state carries named fields: workspace location,
+            // action, the operations (capped at 10 × 1500, redacted per
+            // field), rule context, and the current task (serves_task is
+            // asked only when a task actually exists).
+            let task = ""
+            if (event.sessionID) {
+              try {
+                const rows: unknown = await (ctx as any).session
+                  .context({ sessionID: event.sessionID })
+                  .catch(() => [])
+                task = taskFromMessages(Array.isArray(rows) ? rows : [])
+              } catch {}
+            }
             const detail: string[] = [`workspace: ${location || "(unknown)"}`, `action: ${action}`]
-            for (const resource of resources) detail.push(`- ${resource.slice(0, 2000)}`)
+            for (const op of resources.slice(0, 10)) detail.push(`- ${redactText(op.slice(0, 1500)).text}`)
             if (event.metadata && typeof event.metadata === "object")
-              detail.push(`details: ${JSON.stringify(event.metadata).slice(0, 2000)}`)
+              detail.push(`details: ${redactText(JSON.stringify(event.metadata).slice(0, 2000)).text}`)
             if (matched?.effect === "system-one" && matched.context)
               detail.push(`operator context: ${matched.context}`)
+            if (task) detail.push(`task: ${redactText(task).text}`)
             const state =
               "An OpenCode coding agent requests permission for the operation(s) below. Decide how it should be handled.\n\n" +
-              redactText(detail.join("\n").slice(0, 6000)).text
+              detail.join("\n")
 
-            // One three-way choice - approve (run it), deny (refuse it), ask
-            // (show a human): the verdict names the action, so decisive
-            // verdicts are enacted under the mode policy and only the
-            // genuinely uncertain band reaches the human. Fail-closed: any
-            // uninterpretable answer stays exactly the original prompt.
-            const { reply } = await cachedJudge([approvalQuestion()], state, AbortSignal.timeout(8_000))
+            // Three noul questions - reversible, serves_task (only with a
+            // task), harmful - resolved by threshold bars on the returned
+            // probabilities. Fail-closed: missing, malformed, or
+            // out-of-range scores stay exactly the original prompt.
+            const { reply } = await cachedJudge(
+              approvalQuestions(action, task !== ""),
+              state,
+              AbortSignal.timeout(8_000),
+            )
+            const answers = (reply as any).answers ?? {}
+            const scores = {
+              reversible: answers.reversible?.noul,
+              serves_task: answers.serves_task?.noul,
+              harmful: answers.harmful?.noul,
+            }
             const outcome = resolveApproval({
-              answer: (reply as any).answers?.approve,
-              mode: approvalsMode,
-              minConfidence: approvalsMinConfidence,
+              scores,
+              task: task !== "",
+              bars: approvalsMinConfidence,
+              policy: approvalsPolicy,
             })
             if (outcome.effect === "allow") {
               event.effect = "allow"
@@ -1788,20 +1813,24 @@ export default Plugin.define({
               )
               await recordApprovalStat(action, resources, {
                 outcome: "allow",
-                verdict: (reply as any).answers?.approve?.choice,
-                confidence: (reply as any).answers?.approve?.confidence,
+                verdict: outcome.verdict,
+                confidence: outcome.confidence,
+                scores,
+                usage: (reply as any).usage,
               })
               await postHint("allow")
               return
             }
             if (outcome.effect === "deny") {
               event.effect = "deny"
-              annotate(event, `${outcome.note} - the agent must pick another approach`)
+              annotate(event, outcome.note)
               console.log(`[jev] approval: denied ${action} ${resources.join(" && ").slice(0, 120)} - ${outcome.note}`)
               await recordApprovalStat(action, resources, {
                 outcome: "deny",
-                verdict: (reply as any).answers?.approve?.choice,
-                confidence: (reply as any).answers?.approve?.confidence,
+                verdict: outcome.verdict,
+                confidence: outcome.confidence,
+                scores,
+                usage: (reply as any).usage,
               })
               await postHint("deny")
               return
@@ -1809,8 +1838,10 @@ export default Plugin.define({
             annotate(event, outcome.note)
             await recordApprovalStat(action, resources, {
               outcome: "ask",
-              verdict: (reply as any).answers?.approve?.choice,
-              confidence: (reply as any).answers?.approve?.confidence,
+              verdict: outcome.verdict,
+              confidence: outcome.confidence,
+              scores,
+              usage: (reply as any).usage,
             })
             await postHint("ask")
           } catch (err: any) {
@@ -2269,6 +2300,9 @@ export default Plugin.define({
                     `ask=${r.ask ?? 0}`,
                     `gate=${r.gate ?? 0}`,
                     `fail=${r.fail ?? 0}`,
+                    r.inputTokens || r.outputTokens
+                      ? `tokens=${r.inputTokens ?? 0}in/${r.outputTokens ?? 0}out`
+                      : "",
                     r.last ? `last=${r.last}` : "",
                     r.bands && Object.keys(r.bands).length
                       ? `bands=${Object.entries(r.bands).map(([k, v]) => `${k}:${v}`).join(" ")}`
@@ -2930,7 +2964,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? "auto" : approvalsDeny ? "deny" : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the

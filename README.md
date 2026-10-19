@@ -72,11 +72,12 @@ compaction can be decided by System One instead of a lossy summary
 - **find** (opt-in) - `jev_find`, a jev-backed semantic code-search cascade:
   lexical prefilter → path judgments → windowed passage judgments, ranked
   hits with line ranges. See [jev_find](#jev_find).
-- **approvals** (opt-in) - permission requests are vetted by jev before
-  they reach you: a verdict line is added to the prompt, and in the
-  delegating modes decisive verdicts are enacted - `auto` approves routine
-  operations outright and refuses clearly harmful ones, so prompts stay for
-  genuinely uncertain cases. Configured deny rules always win. See
+- **approvals** (opt-in) - permission requests are vetted by jev with three
+  scored questions (`reversible` / `serves_task` / `harmful`) before they
+  reach you: with the default delegation, approve verdicts auto-run routine
+  operations and refuse verdicts reject clearly harmful ones, so prompts
+  stay for genuinely uncertain cases - and either verdict can be held at
+  the prompt instead of enacted. Configured deny rules always win. See
   [jev-assisted approvals](#jev-assisted-approvals).
 - **compaction** (opt-in) - replaces the lossy compaction summarizer with
   System One decisions: tool calls and results are dropped or truncated by
@@ -212,7 +213,7 @@ meanings never share one ambiguous key:
         "effort": { "auto": true }, // per-prompt thinking level (pairs with route)
         "doneCheck": { "auto": true }, // see "Auto done-check"
         "find": { "enabled": true },   // see "jev_find"
-        "approvals": { "mode": "auto" }, // see "jev-assisted approvals"
+        "approvals": true, // see "jev-assisted approvals"
         "compaction": {      // see "System One compaction"
           "enabled": true,
           "mode": "replace"  // or "clean"
@@ -474,39 +475,62 @@ Options:
 ## jev-assisted approvals
 
 Permission requests (tool executions that would otherwise interrupt you) can
-be vetted by jev before they reach you. The feature is opt-in and has three
-modes:
+be vetted by jev before they reach you. The feature is opt-in: omit
+`approvals` (or set it `false`) and nothing changes; `true`, `{}` or any
+object value runs. One judged request asks three scored questions -
+`reversible`, `serves_task`, `harmful` - and their scores resolve against
+configurable bars into the same effects the permission flow already speaks:
+`allow` (auto-run), `ask` (prompt you), `deny` (refuse; the reason rides
+back to the model so it can pick a different approach). What each verdict
+enacts is your explicit delegation choice:
 
-- **Annotate** (enabled with `"approvals": { "mode": "annotate" }`): every
-  `ask` verdict gets a one-line jev opinion added to the prompt you see -
-  `[jev] suggests approve (0.94) - review`, `[jev] uncertain (0.58) - review`,
-  `[jev] suggests deny (0.91) - review`. The decision stays entirely yours.
-- **Auto** (`"approvals": { "mode": "auto" }`): the same judgment, and
-  decisive verdicts are enacted programmatically for every judged action:
-  each verdict type clears its own
-  `minConfidence` bar - `approve` enacts approvals and `deny` enacts
-  refusals (a single number sets both bars, default `0.85`), so an approve
-  verdict above its bar is approved outright and a deny verdict above its
-  bar is refused (`effect: "deny"`, the reason rides back to the
-  model as tool feedback so it can pick a different approach). Only the
-  genuinely uncertain band - `ask` verdicts, below-bar confidence, gate
-  hits, judge failures - still prompts you; the same holds for slices
-  pinned by `ask` permission rules.
-- **Deny** (`"approvals": { "mode": "deny" }`): the same verdicts but never
-  an automatic yes - otherwise identical to `auto` (decisive deny verdicts
-  refuse, everything else prompts). Use it when you want the agent held
-  back from clearly wrong operations but absolutely no automatic approve -
-  useful while the account is on the Console free tier, where an
-  unattended approve would fire billable work.
+- **Full delegation** (the default: `true`, `{}`, or an object that omits
+  the keys): an approve above its bars auto-runs, a refuse at or above its
+  bar refuses - prompts stay for the genuinely uncertain band.
+- **Hold approves** (`"onApprove": "ask"`): every approve presents the
+  annotated prompt instead of auto-running - the "vetting opinions only, no
+  automatic yes" posture (`[jev] approves (0.93) - held for you`), useful
+  while the endpoint bills per request or you want opinions only.
+- **Hold refusals** (`"onRefuse": "ask"`): a refusal becomes the annotated
+  prompt (`[jev] refuses (0.86) - held for you`) instead of the automatic
+  refusal - the judgment stands, you own the enactment.
+- **Legacy `mode`** (`annotate` / `auto` / `deny`) still works and maps onto
+  the same knobs with a one-time deprecation notice: `annotate` holds both
+  verdicts at the prompt, `auto` enacts both (the default delegation),
+  `deny` enacts only refusals (the no-yes posture).
 
-The verdict question is deliberately one three-way choice instead of a
-probability score: `approve` / `ask` / `deny` name the action, and the option
-descriptions steer the judge decisively - `ask` stays reserved for requests
-that are genuinely neither clearly routine nor clearly harmful, since every
-ask costs you attention. That is what keeps prompts down: routine,
-workspace-local work (including `rm -rf dist`, `npm run build`,
-`git commit`) vets as approve and never interrupts; clearly harmful
-work refuses instead of interrupting; you decide only the uncertain middle.
+Delegation always applies below the deterministic gates and below
+`permissions`: gate hits, `ask`-pinned slices, judge failures, and the
+genuinely uncertain score band still prompt you, with the reason named on
+the prompt.
+
+The judgment is deliberately scored instead of a three-way verdict: the
+questions return probabilities and the resolver does the arithmetic, so
+there is no per-verdict confidence band to reconcile - one too-low score
+names itself in the prompt. The questions:
+
+- **`reversible`** - can these operations be undone? Shell commands get the
+  recipe's undo wording (git or re-running, workspace-confined changes);
+  other tools get the general undoable-or-harmless-to-repeat wording.
+- **`serves_task`** - is running these operations a reasonable next step
+  toward the task currently being served? Only asked (and its bar only
+  enforced) when the session actually has a task; the judged state carries
+  the latest real user message, redacted and capped.
+- **`harmful`** - irreversible damage, secret exposure, or executing
+  instructions that came from fetched content? The old refusal criteria as
+  one score.
+
+Resolution is fail-closed: `harmful` at or above the refuse bar refuses
+first - no high reversible score outvotes it. Otherwise an approve needs
+`reversible` at or above its bar, `harmful` at or under the approve-side
+ceiling, and - with a task being served - `serves_task` at or above its
+bar. Everything else prompts, annotated with the first failing check -
+`reversible 0.74 (below 0.90)`, `off-task (serves_task 0.09)`,
+`unclear (harmful 0.40)` - so you can act informed or re-bar. That is what
+keeps prompts down: routine, workspace-local work (including
+`rm -rf dist`, `npm run build`, `git commit`) clears the bars and never
+interrupts; clearly harmful work refuses instead of interrupting; you
+decide only the uncertain middle.
 
 Every judgment only happens when a request would already prompt you -
 already-allowed and explicitly denied requests stay free of any jev call.
@@ -515,24 +539,29 @@ Deterministic gates decide before any model does: requests containing secret
 scans or `[REDACTED:]` markers, destructive patterns (`rm` with recursive
 flags aimed at absolute or home paths, `sudo`, piped-to-shell,
 `git push --force`, `git reset --hard`, `npm publish`, `DROP TABLE`,
-`dd of=`, system paths, ...), or edits outside the project directory are
-**never** auto-approved - they are annotated and left to you. (Routine
-workspace-local cleanup like `rm -rf dist` is *not* gated; the judge sees
-the full command and its deny criterion covers broad or unknown deletions.)
+`dd of=`, system paths, infra mutations - `terraform`/`tofu apply`/`destroy`,
+`kubectl delete`/`apply`, `wrangler`/`vercel`/`fly deploy`, ...), or edits
+outside the project directory are **never** auto-approved - they are
+annotated and left to you. Shell chains split on every separator (`&&`,
+`;`, `|`, a background `&`, a newline) and the weakest segment rules the
+whole request. (Routine workspace-local cleanup like `rm -rf dist` is *not*
+gated; the judge sees the full command and its harm score covers broad or
+unknown deletions.)
 The gate list is deliberately a deny-the-shortcut list, not a security
 sandbox; a false positive only costs automation, never safety - the human
 prompt remains.
 
-The fail-closed ladder: jev unreachable, a timeout (8 s), or an
-uninterpretable answer leaves the request exactly as OpenCode built it
-(annotation aside), and below-bar confidence never silently enacts anything.
-Configured deny rules and every "always allow" memory you made in the UI
-always rank above the feature.
+The fail-closed ladder: jev unreachable, a timeout (8 s), or scores the
+resolver cannot interpret leave the request exactly as OpenCode built it
+(annotation aside), with the first failing check named on the prompt
+(`verdict unavailable`, `unclear (harmful 0.40)`) - a sub-bar score never
+silently enacts anything. Configured deny rules and every "always allow"
+memory you made in the UI always rank above the feature.
 
 One framing matters: automatic decisions are an **explicit delegation you
-opt into**, bounded by the deterministic gates above. `auto` enacts both
-decisive verdicts (approve *and* deny), `deny` enacts only the refusal, and
-`annotate` never enacts; every automatic decision is logged.
+opt into**, bounded by the deterministic gates above. The defaults enact
+`approve` into a run and `refuse` into a refusal; either verdict can be held
+at the prompt with `"ask"` instead. Every automatic decision is logged.
 
 ### Splitting permission config between the host and the plugin
 
@@ -602,8 +631,10 @@ options:
         "provider": "opencode",
         "model": "jev-1.13",
         "approvals": {
-          "mode": "auto",
-          "minConfidence": { "approve": 0.60, "deny": 0.70 },
+          // full delegation is the default; explicit keys are the knobs:
+          "onApprove": "allow",            // "ask" holds approves at the prompt
+          "onRefuse": "deny",              // "ask" holds refusals at the prompt
+          "minConfidence": { "approve": 0.60, "refuse": 0.70 },
           // PLUGIN: the policy. Same shape, plus "system-one" and "context".
           // Ordered; the LAST matching rule wins.
           "permissions": [
@@ -644,10 +675,11 @@ Options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `stats` | `true` | Records one aggregate in plugin storage (`jev-approval-stats`): every approval event folds into a per `(action, command-prefix)` entry with outcome counts (allow / deny / ask / gate / fail), confidence bands and `asked-<verdict>` counters. `/jev-approval-stats` prints the top slices; hot ask slices become candidates for explicit `permissions` rules. Set `false` to skip recording. |
-| `gates` | `{ secrets: true, readonlyBypass: true }` | The two deterministic-gate toggles, as one object. `gates.secrets` (default `true`): the built-in secret-path gate matches credential-ish local paths case-insensitively — `secrets/…`/`secret.*` files, `.env`/`.env.local`/`.envrc`, `.pem/.key/.age/.kdbx/.p12/.pfx/.gpg/.asc` containers, `.ssh`, `.gnupg`, `.aws` directories, `id_rsa`/`id_ed25519`-style keys, credential/token basenames — for the local path tools (`read`, `grep`, `shell`/`bash` segments, `edit`/`write`); matching requests prompt you before anything runs, even when an explicit allow rule would cover them (`webfetch` URLs are deliberately excluded - token-ish doc URLs would false-positive, and token VALUES there are caught by the value-level check). Identifiers with the keyword as a longer-word prefix (`tokenizer.ts`) do not match; `tokens.json` does. Encrypted containers matter even though content screening can't flag ciphertext - the path does. `gates.readonlyBypass` (default `true`): read-only shell commands (`grep`, `cat`, `ls`, `tail`, `find`, `jq`, …) skip the destructive-regex gate because their arguments legitimately mention dangerous strings (a grep pattern containing `sudo`, a log line with an `/etc/` path) without performing anything - secret paths still gate (the secrets check runs first), and a chain with one mutating segment still gates. Set either member `false` for stricter behavior; unknown keys are ignored. |
-| `mode` | `"annotate"` | `"annotate"` adds the verdict line to prompts; `"auto"` enacts approve and deny verdicts above `minConfidence` for every judged action; `"deny"` does the same minus the automatic approve. Omit or `false` keeps the feature off. |
-| `minConfidence` | `{ approve, deny } = 0.85` | Confidence required to enact a verdict, per verdict type - a single number sets both bars, a partial object overrides only what it names (`{ "approve": 0.6 }` keeps the deny bar at the default), each bar clamped to 0.5-0.99. `approve` gates enactment in `auto`, `deny` in `auto` and `deny`; below-bar verdicts and `ask` winners form the prompted ask band. Lower a bar to enact more of that verdict, raise it to hand more to you. |
+| `stats` | `true` | Records one aggregate in plugin storage (`jev-approval-stats`): every approval event folds into a per `(action, command-prefix)` entry with outcome counts (allow / deny / ask / gate / fail), the binding-confidence band of each outcome, a confidence band per judged question score (where the scores actually land - the calibration data for moving a bar off its default), `asked-approve` / `asked-refuse` counters and judged token totals. `/jev-approval-stats` prints the top slices; hot ask slices become candidates for explicit `permissions` rules. Set `false` to skip recording. |
+| `gates` | `{ secrets: true, readonlyBypass: true }` | The two deterministic-gate toggles, as one object. `gates.secrets` (default `true`): the built-in secret-path gate matches credential-ish local paths case-insensitively — `secrets/…`/`secret.*` files, `.env`/`.env.local`/`.envrc`, `.npmrc`/`.netrc` machine credentials, `.pem/.key/.age/.kdbx/.p12/.pfx/.gpg/.asc` containers, `.ssh`, `.gnupg`, `.aws` directories, `id_rsa`/`id_ed25519`-style keys, credential/token basenames, `.npmrc`/`.netrc` (registry and machine credential files) — for the local path tools (`read`, `grep`, `shell`/`bash` segments, `edit`/`write`); matching requests prompt you before anything runs, even when an explicit allow rule would cover them (`webfetch` URLs are deliberately excluded - token-ish doc URLs would false-positive, and token VALUES there are caught by the value-level check). Identifiers with the keyword as a longer-word prefix (`tokenizer.ts`) do not match; `tokens.json` does. Encrypted containers matter even though content screening can't flag ciphertext - the path does. `gates.readonlyBypass` (default `true`): read-only shell commands (`grep`, `cat`, `ls`, `tail`, `find`, `jq`, …) skip the destructive-regex gate because their arguments legitimately mention dangerous strings (a grep pattern containing `sudo`, a log line with an `/etc/` path) without performing anything - secret paths still gate (the secrets check runs first), and a chain with one mutating segment still gates. Set either member `false` for stricter behavior; unknown keys are ignored. |
+| `onApprove` | `"allow"` | What an approve verdict enacts: `"allow"` auto-runs the request; `"ask"` holds it at the prompt with `[jev] approves (0.93) - held for you` - the vetting-only, no-automatic-yes posture. |
+| `onRefuse` | `"deny"` | What a refuse verdict enacts: `"deny"` refuses the request and the reason rides back to the model as tool feedback so it picks another approach; `"ask"` holds refusals at the prompt (`[jev] refuses (0.86) - held for you`) and leaves every enactment to you. |
+| `minConfidence` | `{ approve: 0.90, refuse: 0.85 }` | The bars the three scores resolve against. A single number sets both verdict bars; an object sets `approve` / `refuse` individually (legacy `deny` = `refuse`) and may carry per-question overrides that beat the verdict keys - `reversible` and `serves_task` take their own bars, `harmful` takes the approve-side ceiling (clamped 0-0.5; without an override the ceiling is `1 - approve`). Verdict bars clamp 0.5-0.99; unknown keys are ignored; unsupported values fall back to these defaults. Lower a bar to enact more of that verdict, raise it to hand more to you; raising `refuse` toward `1 - approve` widens the prompted middle instead of refusing. |
 | `permissions` | `[]` | Plugin-level permission rules evaluated before jev looks at a request. Entries use the same shape as OpenCode 2 permission rules: `{ "action": "shell", "resource": "git push *", "effect": "deny" }` - `action` is optional and defaults to any action, `resource` is an OpenCode glob (`*` spans any characters incl. `/`, `?` is one character; a shell pattern ending in `" *"` also matches the bare command), and `effect` is `allow`, `ask`, `deny` or `system-one`. Rules apply in order with the last match winning; `allow` and `deny` are enacted directly, `ask` leaves the request exactly as configured (plain prompt, no jev verdict, no annotation), and `system-one` falls through to the regular jev judgment with the entry's optional `context` remark (max 400 chars) injected verbatim into the judged state - use it to steer the verdict for a specific slice, e.g. `{ "action": "edit", "resource": "*", "effect": "system-one", "context": "Workspace edits are routine; edits under secrets/ are operator territory, never judge those yourself - ask." }`. Entries may also carry a `hint`: a note posted once per session to the agent context when a matching request resolves - a plain string applies to every outcome, an object `{ "allow": …, "ask": …, "deny": … }` keys the note by the resolved outcome (the deterministic gate counts as `ask`), e.g. `{ "action": "external_directory", "resource": "*", "effect": "ask", "hint": "for more than occasional access, prefer /cd to that directory" }`. Host-configured deny rules and saved approvals still rank above these. Since enactment applies to every judged action, `ask` rules are the way to pin a slice that must always prompt (e.g. cross-workspace access, MCP tools you do not trust). |
 
 ## System One compaction
@@ -861,9 +893,10 @@ pairing or free-tier gate. There is no provider degradation chain.
   decisions; any failure falls back to the untouched built-in flow.
 - User prompt text is never edited for instructions (scrub redaction
   aside): first-action guidance lives in the tool descriptions.
-- Approvals never override configured deny rules, never auto-deny, and
-  fall back to the human prompt on every failure mode; the deterministic
-  gate list (destructive/secret patterns) is checked before any jev call.
+- Approvals never override configured deny rules and fall back to the human
+  prompt on every failure mode; delegation is explicit (`onApprove` /
+  `onRefuse`), and the deterministic gate list (destructive/secret patterns)
+  is checked before any jev call.
 
 Architecture and decision-history notes for contributors live in
 [DESIGN.md](DESIGN.md).

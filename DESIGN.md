@@ -295,7 +295,7 @@ Deliberate simplifications, in case the omp version evolves:
   (`.env`, `id_rsa`, key dirs) are skipped during the walk, in addition
   to the text scrub that runs on every judged window.
 
-## Approvals: verdicts, not probabilities
+## Approvals: scored questions under a resolver
 
 The approvals feature started as a single `noul` question - "probability
 that approval is safe" - thresholded at 0.85 for enacting an approval. In
@@ -336,6 +336,52 @@ unattended approval), and below-bar denies still reach the human. The rm
 gate narrowed to recursive deletions aimed at absolute or tilde paths;
 workspace-local cleanup is judged instead of pre-gated, because it was the
 single most common needless prompt.
+
+The second redesign (2026-10, following OpenRouter's jev approvals
+cookbook) returns to probabilities with judge-owned criteria: three `noul`
+questions per judged request - `reversible` (undone with `git` or by
+rerunning; general undoable-or-harmless-to-repeat wording for other tools),
+`serves_task` (a reasonable next step toward the task line, only asked and
+enforced when the judged state actually carries one), `harmful` (the old
+deny criteria as one score) - and a pure arithmetic resolver
+(`resolveApproval` in logic.ts): refuse first (`harmful` at or above the
+refuse bar - no reversible score outvotes it), then approve needs
+`reversible` at or above its bar, `harmful` at or under the complementary
+ceiling (default `1 - approve`, float-normalized so the boundary answers;
+an explicit `harmful` override is clamped 0-0.5), and - with a task -
+`serves_task` at or above its bar. Everything else prompts, and the first
+failing check names itself on the prompt (`reversible 0.74 (below 0.90)`,
+`off-task (serves_task 0.09)`, `unclear (harmful 0.40)`). Why invert back:
+the three-way verdict covered three criteria with one question and made
+the bar a property of a fuzzy verdict ("how confident are you it denies?");
+direct per-criterion scores calibrate, and a too-low score explains itself
+instead of hiding inside a confidence band. The decisiveness problem the
+first redesign solved moves from the judge to the resolver - scores are
+permission numbers; what they enact is config.
+
+Config and gates follow the inversion. `mode` becomes explicit
+per-verdict delegation - `onApprove`: `allow`/`ask`, `onRefuse`:
+`deny`/`ask` (annotate/auto/deny remain as a deprecated alias mapped onto
+the pair, logging one notice) - and `minConfidence` becomes bars:
+`approve`/`refuse` verdict bars (defaults 0.90/0.85, clamp 0.5-0.99,
+legacy `deny` = `refuse`; unparseable input falls back per-key so garbage
+cannot silently raise a bar, e.g. the refuse default for a bare number
+that sets both) plus per-question overrides `reversible`/`serves_task`
+(own bars) and `harmful` (own ceiling). The task line (`taskFromMessages`)
+is strict extraction: the newest real user message over the same text
+sources messageText reads, minus its JSON.stringify fallback - a row
+without text parts supplies no task - own `[jev-…` notice rows and
+synthetic kinds skipped, capped at 2000 chars, scrubbed in the hook.
+Gates gained the infra-mutation verbs (terraform/tofu `apply`/`destroy`,
+kubectl `delete`/`apply`, wrangler/vercel/fly `deploy`) and `.npmrc`/
+`.netrc` secret paths, and shell chains now split on `|` and background
+`&` like the other separators (quotes-rough by design: over-splitting
+only adds checks, the weakest segment holds the whole request). Verdict
+words stay transmit-only (`approve`/`refuse`; "ask" is never a judged
+answer), one judged request per permission ask, and the stats event grew
+per-question score bands, `asked-approve`/`asked-refuse` counters and
+judged token totals - so a bar moves off its default from calibration
+data, not taste.
 
 ## Credential self-heal: re-read on worn-key diagnostics
 
