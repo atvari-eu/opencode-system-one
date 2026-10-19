@@ -33,14 +33,28 @@
 //                                 user/assistant text stays verbatim
 //
 // Env contract identical to the `jev` CLI and skills:
-//   JEV_ENDPOINT (default: OpenCode Console System One endpoint)
-//   provider plugin option: "opencode" (Console, default) or "opencode-go" -
-//     selects the credential chain (env name, CLI-store integration, legacy
-//     auth store entry); both providers use the same System One endpoint
-//   opencode: TYPESAFE_API_KEY | OPENCODE_API_KEY | CLI login | legacy store
-//   opencode-go: OPENCODE_GO_API_KEY | CLI Go login | legacy store
+//   provider plugin option: "opencode" (Console, default), "opencode-go",
+//     any other id registered in the OpenCode provider config (resolved
+//     through the provider registry at init: settings.baseURL + the System
+//     One route), or an http(s) endpoint URL (explicit deployment; plain
+//     http only for loopback hosts)
+//   JEV_ENDPOINT - explicit endpoint override; skips registry resolution
+//   Credential chains (key source per resolved kind):
+//   opencode: TYPESAFE_API_KEY | OPENCODE_API_KEY | CLI Console login |
+//     legacy auth store
+//   opencode-go: OPENCODE_GO_API_KEY | CLI Console login | legacy store
+//   host-registered id: TYPESAFE_API_KEY | CLI store entry of the provider
+//     id (`opencode auth login <provider>`) | legacy auth store entry
+//   explicit URL: TYPESAFE_API_KEY only (no id to pair with)
 //   JEV_MODEL (default: jev-1.13-free)
 //   - `model` plugin option wins over JEV_MODEL; both win over the default
+//
+// At init the deployment resolves and the configured model is ping-checked
+// against the resolved endpoint once. A fault (unresolved provider, unknown
+// model, no credential, outage) fails all judged features closed, surfaces
+// one "[jev-config-error]" row per config change (TUI: toast) and lets
+// individual call sites surface "[jev-error]" rows at most once per session
+// per error kind.
 //
 // Fail-closed absent configuration: a missing key or failed call never
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
@@ -51,8 +65,10 @@ import { runFind } from "./find"
 import {
   EFFORT_ORDER,
   JEVS_ERROR_MARK,
+  JEV_CONFIG_ERROR_MARK,
   NOTIFY_BELOW_DEFAULT,
   credentialRejected,
+  deployFaultText,
   jevAuthError,
   jevUserError,
   approvalGate,
@@ -60,7 +76,9 @@ import {
   approvalQuestion,
   candidateKey,
   chainPermissionEffect,
+  classifyJevFailure,
   clampThreshold,
+  deploymentFingerprint,
   lookupPermission,
   normalizeWorkspacePath,
   parsePermissions,
@@ -74,18 +92,22 @@ import {
   isShellAction,
   matchesPatterns,
   mergeApprovalStats,
-  normaliseProvider,
   parseAuthExport,
   parseCandidates,
   parseGates,
   parseIdleAuto,
+  parseProviderOption,
   parseRouteSources,
   parseScreenAnnotation,
   parseScreenMode,
   parseScreenTools,
   pinMatches,
+  CONSOLE_SYSTEMONE,
+  credentialChain,
+  systemoneRoute,
   secretPath,
   secretPathAction,
+  sessionSurfaceKey,
   shellChainSegments,
   rankSourcePopular,
   refKey,
@@ -98,7 +120,7 @@ import {
   toRef,
   userRowCount,
 } from "./logic"
-import { type Candidate } from "./logic"
+import { type Candidate, type CredentialChain, type DeploymentFault, type ProviderOption } from "./logic"
 import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen } from "./screen"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -106,7 +128,7 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-const CONSOLE_ENDPOINT = "https://opencode.ai/inference/systemone/v1/systemone"
+const CONSOLE_ENDPOINT = CONSOLE_SYSTEMONE
 
 type QuestionType = "noul" | "choice" | "score"
 
@@ -149,37 +171,45 @@ interface ToolContext {
 // ---------------------------------------------------------------------------
 // Jev transport (env-resolved per call, key never logged or persisted)
 //
-// Credential priority:
-//   1. Provider env key - TYPESAFE_API_KEY / OPENCODE_API_KEY (opencode)
-//      or OPENCODE_GO_API_KEY (opencode-go) - explicit override
+// Credential priority (per resolved chain, see logic.ts credentialChain):
+//   1. Provider env keys - TYPESAFE_API_KEY / OPENCODE_API_KEY (opencode),
+//      OPENCODE_GO_API_KEY (opencode-go), TYPESAFE_API_KEY (host ids and
+//      explicit URLs) - explicit override. The TYPESAFE key is the
+//      deployment-agnostic override and must pair with the endpoint the
+//      operator points at.
 //   2. The OpenCode CLI's credential store (read once per process via
-//      `opencode auth export`, always integration "opencode" - the V2 CLI
-//      exposes only this one Console integration; the jev deployment is
-//      selected by the key/endpoint pairing): a console API key or the
-//      active Console OAuth session, which the CLI keeps refreshed. Only
-//      consulted against the default Console endpoint so key and endpoint
-//      stay one deployment. Cached, and invalidated on credential-class
-//      rejections (401, or a worn-credential diagnostic - see
-//      logic.credentialRejected) so a refreshed key is re-read exactly once
-//      per call before failing.
-//   3. Legacy opencode auth store (auth.json, entry matching the provider -
-//      .opencode.key / .opencode-go.key) - V1 installs and hand-planted
-//      keys; the V2 CLI no longer updates it.
+//      `opencode auth export`): a console API key or the active Console
+//      OAuth session for the single "opencode" Console integration, or -
+//      for host-registered providers - the provider's own logged-in
+//      integration entry. Skipped outright when JEV_ENDPOINT points
+//      elsewhere, so an exported key never pairs with a foreign endpoint.
+//      Cached, and invalidated on credential-class rejections (401, or a
+//      worn-credential diagnostic - see logic.credentialRejected) so a
+//      refreshed key is re-read exactly once per call before failing.
+//   3. Legacy opencode auth store (auth.json, entry matching the resolved
+//      provider id / integration) - V1 installs and hand-planted keys;
+//      the V2 CLI no longer updates it.
 // ---------------------------------------------------------------------------
 
 interface Credential {
   key: string
   source: "env" | "cli-store" | "auth-json"
-  /** The provider integration this credential belongs to ("opencode" or "opencode-go"). */
+  /** The provider integration this credential belongs to (the provider
+   * option id: "opencode", "opencode-go", or the host provider id). */
   integration: string
+  /** The integration queried in the CLI auth-export store when the source
+   * was there (console credentials come from "opencode" even for the
+   * opencode-go option); used for cache invalidation on worn credentials. */
+  cliIntegration?: string
 }
 
 // Credential cache, keyed by integration id; module-level so the
 // `opencode auth export` subprocess runs once per process while the stored
 // key keeps working. After an invalidation the next read re-runs the export
 // and refills the cache, so a persistently rejected key costs one export per
-// jev call (bounded, never concurrent, never logged). Only the "opencode"
-// integration is queried today.
+// jev call (bounded, never concurrent, never logged). The integration queried
+// is the resolved chain's (single "opencode" Console integration for the
+// Console providers; the provider's own id for host-registered providers).
 const CLI_CREDENTIALS: Record<string, Credential | undefined> = {}
 const CLI_CREDENTIALS_DEAD: Record<string, boolean> = {}
 
@@ -212,45 +242,83 @@ function invalidateCliStoreCredential(integration: string): void {
 }
 
 async function resolveKey(): Promise<Credential | undefined> {
-  const provider = OPTIONS_PROVIDER
-  const envKey =
-    provider === "opencode-go"
-      ? process.env.OPENCODE_GO_API_KEY
-      : process.env.TYPESAFE_API_KEY || process.env.OPENCODE_API_KEY
-  if (envKey) return { key: envKey, source: "env", integration: provider }
-  if (!process.env.JEV_ENDPOINT) {
-    // The V2 CLI only exposes a single "opencode" integration; the jev
-    // deployment is selected by the key/endpoint pairing, not by a separate
-    // CLI integration. Always query the opencode integration here.
-    const store = await loadCliStoreCredential("opencode")
-    if (store) return { ...store, integration: provider }
-  }
-  try {
-    const auth = JSON.parse(
-      readFileSync(`${homedir()}/.local/share/opencode/auth.json`, "utf8"),
-    )
-    // The legacy store keys match the integration ids ("opencode",
-    // "opencode-go").
-    const key = auth?.[provider]?.key
-    if (typeof key === "string" && key.length > 0) {
-      return { key, source: "auth-json", integration: provider }
+  // Prepared at init by resolveDeploymentEndpoint (registry-aware chain).
+  const chain = RESOLVED_CHAIN
+  for (const envName of chain.envKeys) {
+    const value = process.env[envName]
+    if (typeof value === "string" && value.trim() !== "") {
+      return { key: value, source: "env", integration: chain.legacyId ?? "custom" }
     }
-  } catch {
-    // no legacy store - fall through to "no credential"
+  }
+  // The CLI credential store holds the operator's own login (Console
+  // integrations carry integration "opencode" - the single Console
+  // integration the V2 CLI exposes - while host-registered providers carry
+  // their own integration entry, e.g. a provider key added with
+  // `opencode auth login`). Consulted only while JEV_ENDPOINT is unset, so
+  // the exported key and the endpoint stay one deployment; explicit URL
+  // deployments (chain.cliIntegration undefined) never see it, because a
+  // Console key must not silently pair with a foreign endpoint.
+  if (!process.env.JEV_ENDPOINT && chain.cliIntegration) {
+    const store = await loadCliStoreCredential(chain.cliIntegration)
+    if (store) {
+      return {
+        ...store,
+        integration: chain.legacyId ?? chain.cliIntegration,
+        cliIntegration: chain.cliIntegration,
+      }
+    }
+  }
+  const legacyId = chain.legacyId
+  if (legacyId) {
+    try {
+      const auth = JSON.parse(
+        readFileSync(`${homedir()}/.local/share/opencode/auth.json`, "utf8"),
+      )
+      // The legacy store keys match the integration ids ("opencode",
+      // "opencode-go", or the host provider id for hand-planted keys).
+      const key = auth?.[legacyId]?.key
+      if (typeof key === "string" && key.length > 0) {
+        return { key, source: "auth-json", integration: legacyId }
+      }
+    } catch {
+      // no legacy store - fall through to "no credential"
+    }
   }
   return undefined
 }
 
 function resolveEndpoint(): string {
-  return process.env.JEV_ENDPOINT || CONSOLE_ENDPOINT
+  if (process.env.JEV_ENDPOINT) return process.env.JEV_ENDPOINT
+  return RESOLVED_ENDPOINT ?? CONSOLE_ENDPOINT
 }
 
 // Options-set model wins over the env; both precede the baked default.
 let OPTIONS_MODEL: string | undefined = undefined
 
-// Selected jev deployment, set from the `provider` plugin option; the Console
-// deployment is the default.
-let OPTIONS_PROVIDER: "opencode" | "opencode-go" = "opencode"
+// Selected jev deployment, set once by the init resolution (see
+// resolveDeploymentEndpoint): a Console id keeps the OpenCode System One
+// product endpoint, a host-registered provider id resolves through the
+// OpenCode provider registry (settings.baseURL + System One route), and an
+// http(s) option value is the endpoint itself. Until resolution runs, the
+// chain and endpoint are the default Console deployment's.
+let OPTIONS_PROVIDER: ProviderOption | undefined = undefined
+let RESOLVED_ENDPOINT: string | undefined = CONSOLE_ENDPOINT
+let RESOLVED_CHAIN: CredentialChain = credentialChain(undefined)
+
+// Set once by the init deployment check: while a fault is present, every
+// judged call fails closed with this fault's per-call wording (no network).
+// Config is fixed per process, so the check re-runs at the next start or
+// plugin reload; nothing resets it mid-process.
+let DEPLOY_FAULT: DeploymentFault | undefined = undefined
+// Fingerprint of the resolved deployment (endpoint+model); scopes the once
+// per session error-row gate.
+let DEPLOY_FINGERPRINT = ""
+
+/** Human-readable rendering of the selected provider option for logs. */
+function providerOptionText(option: ProviderOption): string {
+  if (option.kind === "custom") return option.endpoint
+  return option.id
+}
 
 function resolveModel(): string {
   return OPTIONS_MODEL || process.env.JEV_MODEL || "jev-1.13-free"
@@ -362,7 +430,7 @@ function execText(bin: string, args: string[]): Promise<string> {
 }
 
 async function jevRequest(
-  cred: Credential,
+  cred: Credential | undefined,
   questions: Question[],
   state: unknown,
   signal?: AbortSignal,
@@ -371,7 +439,7 @@ async function jevRequest(
   return fetch(resolveEndpoint(), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${cred.key}`,
+      ...(cred ? { Authorization: `Bearer ${cred.key}` } : {}),
       "Content-Type": "application/json",
       ...(ua ? { "User-Agent": ua } : {}),
     },
@@ -385,12 +453,17 @@ async function jevRequest(
 }
 
 // Endpoint diagnostic text from a response body, for credential classing
-// and for the surfaced error. Non-JSON or opaque bodies yield "".
+// and for the surfaced error. Non-JSON or opaque bodies yield "". Reads the
+// Console's {error:{message}|message} shapes and the plain
+// problem-json {"detail"|"title"} shape other HTTP servers answer with.
 function detailOf(text: string): string {
   try {
     const body = JSON.parse(text)
-    const m = body?.error?.message ?? body?.message
-    return typeof m === "string" ? m : ""
+    if (typeof body?.error?.message === "string") return body.error.message
+    if (typeof body?.message === "string") return body.message
+    if (typeof body?.detail === "string") return body.detail
+    if (typeof body?.title === "string") return body.title
+    return ""
   } catch {
     return ""
   }
@@ -421,7 +494,9 @@ async function jevJudgeInner(
     cred.source === "cli-store" &&
     credentialRejected(response.status, detailOf(text))
   ) {
-    invalidateCliStoreCredential("opencode")
+    // Invalidate the integration the credential came from, so console and
+    // provider-key integrations re-read exactly their own store entry.
+    invalidateCliStoreCredential(cred.cliIntegration ?? "opencode")
     const fresh = await resolveCred()
     if (fresh && fresh.key !== cred.key) {
       response = await jevRequest(fresh, questions, state, signal)
@@ -448,6 +523,171 @@ async function jevJudge(
   signal?: AbortSignal,
 ): Promise<JevReply> {
   return jevJudgeInner(resolveKey, questions, state, signal)
+}
+
+// ---------------------------------------------------------------------------
+// Init deployment resolution + check: resolve the configured provider to a
+// concrete deployment (endpoint + credential chain) and ping-verify it once
+// per process.
+//
+// Host-registered provider ids resolve through the OpenCode provider
+// registry (ctx is a server client: provider.get/provider.list), feature
+// detected - a host without those reads (or a provider that is not
+// registered) resolves nothing and fails closed at the first judged call.
+// No System One deployment exposes a listing route (Console and
+// inference-style hosts are POST-only; a GET probes 405 outside auth), so
+// availability is verified with a minimal ping POST: one noul question, a
+// one-line state, bounded timeout - a healthy decider answers in a token,
+// an unknown model produces the endpoint's own 400 model diagnostic, a
+// missing credential answers 401 and reads as a no-credential fault.
+// ---------------------------------------------------------------------------
+
+const PING_STATE = "plugin init: confirm the configured judgment model answers at this deployment."
+const PING_QUESTIONS: Question[] = [
+  {
+    id: "deploy-check",
+    type: "noul",
+    instructions: "Availability ping - not a judgment. Reply yes.",
+  },
+]
+
+function deployHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host || endpoint
+  } catch {
+    return endpoint
+  }
+}
+
+/** settings.baseURL of a host-registered provider, via the OpenCode provider
+ * registry read routes (feature detected: provider.get, then provider.list).
+ * Non-network registry reads; any failure resolves undefined and the init
+ * check reports the consequence. */
+async function providerBaseURL(ctx: any, id: string): Promise<string | undefined> {
+  const provider: any = ctx?.provider
+  const read = async (value: any): Promise<string | undefined> => {
+    const info = value?.data ?? value
+    const url = info?.settings?.baseURL
+    return typeof url === "string" && url.trim() !== "" ? url : undefined
+  }
+  try {
+    if (typeof provider?.get === "function") return await read(await provider.get(id))
+  } catch {
+    // 404-shaped rejections fall through to the list probe below
+  }
+  try {
+    if (typeof provider?.list === "function") {
+      const result: any = await provider.list()
+      const list = result?.data ?? result
+      const hit = Array.isArray(list)
+        ? list.find((entry: any) => entry?.id === id)
+        : list?.[id]
+      if (hit) return await read(hit)
+      console.log(
+        `[jev] provider: ${JSON.stringify(id)} is not registered in the OpenCode provider registry`,
+      )
+    }
+  } catch (err) {
+    console.log(
+      `[jev] provider: registry lookup for ${JSON.stringify(id)} failed (${String((err as Error)?.message ?? err)})`,
+    )
+  }
+  return undefined
+}
+
+/** Resolves the selected provider option to endpoint + credential chain.
+ * Order: JEV_ENDPOINT env (endpoint override, registry not consulted) >
+ * Console profiles (baked OpenCode product route) > custom URL (as given) >
+ * host-registered id (registry). An unresolved host id leaves the endpoint
+ * undefined so the deployment check fails closed with the remedy. */
+async function resolveDeploymentEndpoint(ctx: any): Promise<void> {
+  RESOLVED_CHAIN = credentialChain(OPTIONS_PROVIDER)
+  if (process.env.JEV_ENDPOINT) {
+    RESOLVED_ENDPOINT = process.env.JEV_ENDPOINT
+    return
+  }
+  if (!OPTIONS_PROVIDER || OPTIONS_PROVIDER.kind === "console") {
+    RESOLVED_ENDPOINT = CONSOLE_SYSTEMONE
+    return
+  }
+  if (OPTIONS_PROVIDER.kind === "custom") {
+    RESOLVED_ENDPOINT = OPTIONS_PROVIDER.endpoint
+    return
+  }
+  const baseURL = await providerBaseURL(ctx, OPTIONS_PROVIDER.id)
+  if (baseURL) {
+    RESOLVED_ENDPOINT = systemoneRoute(baseURL)
+    console.log(
+      `[jev] provider: ${OPTIONS_PROVIDER.id} resolved from the provider registry - ${RESOLVED_ENDPOINT}`,
+    )
+    return
+  }
+  RESOLVED_ENDPOINT = undefined
+  console.log(
+    `[jev] provider: cannot resolve an endpoint for ${JSON.stringify(OPTIONS_PROVIDER.id)} - judged calls stay failed until the provider config exists or JEV_ENDPOINT is set`,
+  )
+}
+
+async function pingDeploy(cred: Credential | undefined, signal: AbortSignal): Promise<void> {
+  const response = await jevRequest(cred, PING_QUESTIONS, PING_STATE, signal)
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(jevAuthError(response.status, detailOf(text)))
+  }
+  const json = JSON.parse(text) as JevReply
+  // Fail closed: a malformed or missing answer is an operational failure,
+  // never a decision.
+  if (!json.answers || typeof json.answers !== "object") {
+    throw new Error("jev: malformed response (no answers)")
+  }
+}
+
+async function checkDeployState(): Promise<{ ok: true } | { ok: false; fault: DeploymentFault }> {
+  // An unresolved host id (no registry entry, no env override, no URL form)
+  // fails closed on its own remedy instead of pinging a mismatched endpoint.
+  if (!RESOLVED_ENDPOINT) {
+    const id = OPTIONS_PROVIDER?.kind === "host" ? OPTIONS_PROVIDER.id : ""
+    const model = resolveModel()
+    return {
+      ok: false,
+      fault: {
+        ...deployFaultText("no-endpoint", { host: id, model }),
+        fingerprint: deploymentFingerprint(`unresolved:${id}|${model}`, model),
+      },
+    }
+  }
+  const endpoint = resolveEndpoint()
+  const model = resolveModel()
+  const fingerprint = deploymentFingerprint(endpoint, model)
+  const fault = (kind: DeploymentFault["kind"], detail?: string) => ({
+    ...deployFaultText(kind, { host: deployHost(endpoint), model, detail }),
+    fingerprint,
+  })
+
+  let cred: Credential | undefined
+  try {
+    cred = await resolveKey()
+  } catch {
+    cred = undefined
+  }
+  try {
+    await pingDeploy(cred, AbortSignal.timeout(10_000))
+    return { ok: true }
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      // non-JSON body from a non-System One server
+      return { ok: false, fault: fault("unknown", "non-System One response") }
+    }
+    const message = (err as Error)?.message ?? String(err)
+    const { kind, detail } = classifyJevFailure(message)
+    // A deployment that answers 401/403 while no credential resolved is a
+    // "no credential" fault (with the chain's remedy), not a generic
+    // rejection; a keyless deployment answering 2xx is simply fine.
+    if (!cred && (kind === "credential" || kind === "gate")) {
+      return { ok: false, fault: fault("no-credential") }
+    }
+    return { ok: false, fault: fault(kind, detail || message) }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -658,14 +898,65 @@ export default Plugin.define({
       OPTIONS_MODEL = modelOption
       console.log(`[jev] model: ${modelOption} (from plugin options)`)
     }
-    const providerOption = normaliseProvider(o.provider)
+    const providerOption = parseProviderOption(o.provider)
     if (o.provider !== undefined && !providerOption) {
       console.log(
-        `[jev] provider: ${JSON.stringify(o.provider)} is not a known provider ("opencode", "opencode-go") - keeping the default`,
+        `[jev] provider: ${JSON.stringify(o.provider)} is not a provider id or an http(s) deployment URL - keeping the default`,
       )
-    } else if (providerOption === "opencode-go") {
+    } else if (providerOption) {
       OPTIONS_PROVIDER = providerOption
-      console.log(`[jev] provider: ${providerOption} (from plugin options)`)
+      console.log(
+        `[jev] provider: ${providerOptionText(providerOption)} (from plugin options)`,
+      )
+    }
+
+    // -- init: resolve + check the deployment once per process ---------------
+    // resolveDeploymentEndpoint fills the endpoint (JEV_ENDPOINT env, baked
+    // Console route, custom URL, or the OpenCode provider registry for host
+    // ids) together with the credential chain; then the configured model is
+    // ping-checked once against the resolved endpoint: one noul question,
+    // one-line state, bounded timeout (decider models answer in a token; no
+    // deployment exposes a listing route). While a fault is set, every
+    // judged call fails closed instantly with the fault's wording
+    // (cachedJudge gate). Surfacing cadence: one "[jev-config-error]" row
+    // per config change (persistent fingerprint in storage, the TUI renders
+    // it as a toast), and per-call faults surface "[jev-error]" rows at
+    // most once per session per error kind via the standard call-site
+    // catch paths.
+    await resolveDeploymentEndpoint(ctx)
+    DEPLOY_FINGERPRINT = deploymentFingerprint(resolveEndpoint(), resolveModel())
+    const deployCheck = await checkDeployState()
+    DEPLOY_FAULT = deployCheck.ok ? undefined : deployCheck.fault
+    try {
+      if (!deployCheck.ok) {
+        const fault = deployCheck.fault
+        console.log(`[jev] init: judged features fail closed - ${fault.message}`)
+        const faultKey = "jev-init-fault"
+        const prev = await (ctx as any).storage?.get?.(faultKey)
+        // Once per config change: re-toast only when the broken deployment
+        // differs from the last one reported (same fingerprint repeats stay
+        // silent across restarts; the per-session rows remain the regular
+        // cadence).
+        if ((prev as any)?.fingerprint !== fault.fingerprint) {
+          await (ctx as any).storage?.set?.(faultKey, {
+            fingerprint: fault.fingerprint,
+            kind: fault.kind,
+            at: new Date().toISOString(),
+          })
+          // Global synthetic row (no session): the TUI config-error layer
+          // picks it up and toasts it. Row marks, not logs, are the
+          // cross-half channel.
+          await (ctx as any).session?.synthetic?.({
+            text: `${JEV_CONFIG_ERROR_MARK}${fault.message}`,
+          })
+        }
+      }
+    } catch (err) {
+      // Surfacing must never take the plugin down; the fault stays console-only.
+      console.error(`[jev] init: config-fault surfacing skipped (${String((err as Error)?.message ?? err)})`)
+    }
+    if (deployCheck.ok) {
+      console.log(`[jev] init: deployment ok - ${resolveModel()} @ ${deployHost(resolveEndpoint())}`)
     }
     const screenEnabled = o.screen?.enabled !== false
     const screenMode = parseScreenMode(o.screen?.mode)
@@ -788,18 +1079,19 @@ export default Plugin.define({
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
-    // occurrence (deduped per message within a one-minute cooldown so a run of
-    // failing screens still toasts once); the bundled TUI plugin renders those
-    // rows as top-corner error toasts, exactly like host-made error popups.
-    const lastSurfaced = new Map<string, number>()
-    const SURFACE_COOLDOWN_MS = 60_000
+    // session per error kind per deployment config (sessionSurfaceKey): a new
+    // session or a changed deployment config resets the gate, so each session
+    // learns about a failing feature at most once per kind. The bundled TUI
+    // plugin renders those rows as top-corner error toasts, exactly like
+    // host-made error popups; non-user-relevant failures stay console-only.
+    const surfacedRows = new Set<string>()
     const surfaceJev = async (message: unknown, sessionID?: string): Promise<void> => {
       const error = jevUserError(message)
       if (!error) return
-      const key = error.title
-      const previous = lastSurfaced.get(key)
-      if (previous !== undefined && Date.now() - previous < SURFACE_COOLDOWN_MS) return
-      lastSurfaced.set(key, Date.now())
+      const key = sessionSurfaceKey(sessionID, error.title, DEPLOY_FINGERPRINT)
+      if (surfacedRows.has(key)) return
+      if (surfacedRows.size > 1000) surfacedRows.clear()
+      surfacedRows.add(key)
       try {
         await (ctx as any).session?.synthetic?.({
           ...(sessionID ? { sessionID } : {}),
@@ -816,6 +1108,10 @@ export default Plugin.define({
       state: unknown,
       signal?: AbortSignal,
     ): Promise<{ reply: JevReply; cached: boolean }> {
+      // Init deployment check faulted: fail closed with the fault's per-call
+      // wording, instantly, no network. Call sites lump this into their
+      // existing catch paths, surfacing the standard per-session rows.
+      if (DEPLOY_FAULT) throw new Error(DEPLOY_FAULT.surface)
       const model = resolveModel()
       const endpoint = resolveEndpoint()
       if (!cacheEnabled) return { reply: await jevJudge(questions, state, signal), cached: false }
@@ -2601,7 +2897,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? "auto" : approvalsDeny ? "deny" : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${OPTIONS_PROVIDER} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? (approvalsAuto ? "auto" : approvalsDeny ? "deny" : "annotate") : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the

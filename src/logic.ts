@@ -1128,6 +1128,12 @@ export function fmtFindReport(input: {
 /** Synthetic notice marker the TUI plugin converts into an error toast. */
 export const JEVS_ERROR_MARK = "[jev-error] "
 
+/** One row per persistent configuration problem (deployment/model), posted by
+ * the init deployment check when the fault fingerprint changes. The TUI half
+ * renders it as its own toast layer - once per config change, unlike the
+ * per-session `[jev-error]` rows the individual call sites surface. */
+export const JEV_CONFIG_ERROR_MARK = "[jev-config-error] "
+
 // Plain screening-notice rows, posted by the auto screen hook (and the
 // /jev-screen command). The TUI half parses them into the verdict panel and
 // flags/unsafe toasts; passes stay silent in the UI.
@@ -1255,10 +1261,25 @@ export function jevUserError(message: unknown): JevUserError | undefined {
   if (/jev: 422\b/i.test(text)) {
     return { title: "jev: endpoint rejected the request (422)" }
   }
+  if (/jev: model .+ not available at/i.test(text) || (/jev: (?:upstream )?400\b/i.test(text) && /model/i.test(text))) {
+    return { title: "jev: judgment model not available at this deployment" }
+  }
   if (/free tier/i.test(text)) {
     return { title: "jev: free tier unavailable - sign in to the OpenCode Console for the free tier" }
   }
   return undefined
+}
+
+/** Dedupe key for surfaced error rows: one toast per session per error kind
+ * per deployment config - a config change (new endpoint/model fingerprint)
+ * resets the gate so the next session (or a mid-session config flip) informs
+ * the operator again. */
+export function sessionSurfaceKey(
+  sessionID: string | undefined,
+  kind: string,
+  fingerprint: string,
+): string {
+  return `${sessionID ?? "-"}|${kind}|${fingerprint}`
 }
 
 // Footer attribution: "(auto)" markers for the prompt footer. The TUI half
@@ -1292,15 +1313,245 @@ export function footerAutoMarker(
 // text. Pure functions; src/index.ts owns resolution order, caching and HTTP.
 // ---------------------------------------------------------------------------
 
-/**
- * Maps a jev provider option value onto the deployment it names. Two exist
- * today: the Console default ("opencode") and the OpenCode Go subscription
- * ("opencode-go"). Anything else returns undefined so the caller can warn
- * and fall back to the default instead of failing.
- */
-export function normaliseProvider(value: unknown): "opencode" | "opencode-go" | undefined {
-  if (value === "opencode" || value === "opencode-go") return value
-  return undefined
+// ---------------------------------------------------------------------------
+// Provider selection: a console id, a host-registered provider id, or an
+// explicit http(s) endpoint URL
+//
+// Endpoints resolve from live sources, never a per-provider baked table:
+//   - host-registered ids (opencode.json providers) resolve through the
+//     OpenCode provider registry at init: settings.baseURL joined with the
+//     System One route ("/systemone" suffix, appended unless present).
+//   - the Console ids ("opencode", "opencode-go") keep the OpenCode System
+//     One product endpoint below: the console chat baseURL does not serve
+//     System One itself (checked live), so there is nothing in the registry
+//     to derive it from.
+//   - explicit URLs are the operator's endpoint as given (plain http only
+//     for loopback hosts - local dev deployments stay usable, a key must
+//     not travel unencrypted over the open network).
+//
+// Credential pairing follows the same sources: Console ids use the Console
+// credential chain; host ids pair with their own integration entry (the CLI
+// auth-export store lists any logged-in integration, e.g. a provider's API
+// key added with `opencode auth login`); explicit URLs carry no id, so only
+// the deployment-agnostic env key applies.
+// ---------------------------------------------------------------------------
+
+export const CONSOLE_SYSTEMONE = "https://opencode.ai/inference/systemone/v1/systemone"
+
+export type ProviderOption =
+  | { kind: "console"; id: "opencode" | "opencode-go" }
+  | { kind: "host"; id: string }
+  | { kind: "custom"; endpoint: string }
+
+/** Parses the `provider` plugin option: "opencode"/"opencode-go" (Console
+ * profiles), any other non-empty string (a host-registered provider id,
+ * resolved through the OpenCode provider registry at init), or an http(s)
+ * URL (explicit deployment endpoint). Unknown shapes (numbers, whitespace,
+ * unparseable URLs, non-loopback http) return undefined - the plugin keeps
+ * the default deployment and logs a hint, never guesses. */
+export function parseProviderOption(raw: unknown): ProviderOption | undefined {
+  if (typeof raw !== "string") return undefined
+  const value = raw.trim()
+  if (!value) return undefined
+  if (value === "opencode" || value === "opencode-go") return { kind: "console", id: value }
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value)
+      if (url.search) return undefined
+      const loopback =
+        url.hostname === "localhost" ||
+        url.hostname === "127.0.0.1" ||
+        url.hostname === "::1" ||
+        url.hostname === "[::1]"
+      if (url.protocol !== "https:" && !loopback) return undefined
+      return { kind: "custom", endpoint: url.toString().replace(/\/$/, "") }
+    } catch {
+      return undefined
+    }
+  }
+  return { kind: "host", id: value }
+}
+
+/** System One route of a deployment base: the "/systemone" suffix, appended
+ * unless the base already ends in the route segment ("…/v1/systemone" stays
+ * as given, so an explicit override wins). */
+export function systemoneRoute(baseURL: string): string {
+  const base = baseURL.trim().replace(/\/+$/, "")
+  if (!/^https?:\/\//i.test(base) && base !== "") return base
+  return /\/systemone$/.test(base) ? base : `${base}/systemone`
+}
+
+// -- credential chains ------------------------------------------------------
+
+export interface CredentialChain {
+  /** Env override names, in priority order. */
+  envKeys: string[]
+  /** Integration queried in `opencode auth export`; undefined means the
+   * chain stops before the CLI store. Console ids always query the single
+   * "opencode" integration; host ids query their own integration. */
+  cliIntegration: string | undefined
+  /** Legacy auth.json entry name; undefined means none. */
+  legacyId: string | undefined
+}
+
+const GENERIC_ENV_KEYS = ["TYPESAFE_API_KEY"]
+
+/** Chain for a resolved provider option (undefined = the default Console
+ * deployment). Console ids use the Console credential (integration
+ * "opencode", the single Console integration the V2 CLI exposes); host ids
+ * pair with their own integration of the same id; explicit URLs carry no
+ * id, so only the deployment-agnostic env key applies - a Console key must
+ * never silently pair with a foreign endpoint. */
+export function credentialChain(option: ProviderOption | undefined): CredentialChain {
+  if (!option || option.kind === "console") {
+    if (option?.id === "opencode-go") {
+      return {
+        envKeys: ["OPENCODE_GO_API_KEY"],
+        cliIntegration: "opencode",
+        legacyId: "opencode-go",
+      }
+    }
+    return {
+      envKeys: GENERIC_ENV_KEYS.concat("OPENCODE_API_KEY"),
+      cliIntegration: "opencode",
+      legacyId: "opencode",
+    }
+  }
+  if (option.kind === "host") {
+    return { envKeys: GENERIC_ENV_KEYS, cliIntegration: option.id, legacyId: option.id }
+  }
+  return { envKeys: GENERIC_ENV_KEYS, cliIntegration: undefined, legacyId: undefined }
+}
+
+/** Deployment fingerprint for config-change surfacing: endpoint + model
+ * define the judged deployment; provider id is spelling, not semantics. */
+export function deploymentFingerprint(endpoint: string, model: string): string {
+  return createHash("sha256").update(`${endpoint}|${model}`).digest("hex")
+}
+
+// ---------------------------------------------------------------------------
+// Deployment diagnostics: classify a jev failure text and compose the
+// init-check fault strings (config-error toast + per-call surfaces)
+// ---------------------------------------------------------------------------
+
+export interface JevFailureClass {
+  status: number | undefined
+  detail: string
+  kind: "model" | "credential" | "funds" | "gate" | "outage" | "unknown"
+}
+
+const MODEL_HINT = /model/i
+const MODEL_MISSING =
+  /unavailable|not found|unknown|invalid|unsupported|not served|not (?:a|one of|known)|no such model|wrong model/i
+const OUTAGE_HINT = /upstream request failed|bad gateway|service unavailable/i
+
+/** Classifies a jev endpoint failure text (jevAuthError form) so the init
+ * deployment check and the error rows read the same vocabulary. The model
+ * check is deliberately narrow: HTTP 400 with a model-relative diagnostic -
+ * endpoint shape, funds and refusal kinds get their own buckets. The
+ * Console's 422 "Upstream request failed" wrap is an outage, never a
+ * credential class (no store re-read, see DESIGN.md). */
+export function classifyJevFailure(message: unknown): JevFailureClass {
+  const text = typeof message === "string" ? message : String(message ?? "")
+  const m = text.match(/jev: (?:upstream )?(\d{3})/)
+  const status = m ? Number(m[1]) : undefined
+  const dash = text.indexOf(" - ")
+  const detail = dash >= 0 ? text.slice(dash + 3).trim() : ""
+  const kind: JevFailureClass["kind"] =
+    status === 400 && MODEL_HINT.test(text) && MODEL_MISSING.test(text)
+      ? "model"
+      : status === 401
+        ? "credential"
+        : status === 402
+          ? "funds"
+          : status === 403
+            ? "gate"
+            : status === undefined
+              ? "unknown"
+              : OUTAGE_HINT.test(text) || status >= 500
+                ? "outage"
+                : "unknown"
+  return { status, detail, kind }
+}
+
+export interface DeploymentFault {
+  kind: JevFailureClass["kind"] | "no-credential" | "no-endpoint"
+  /** Config-level wording for the "[jev-config-error]" toast (with host/model/remedy). */
+  message: string
+  /** Per-call wording, jevAuthError-shaped, so jevUserError classes it and
+   * judged call sites surface exactly the same failure as a live outage. */
+  surface: string
+}
+
+const hostOf = (endpoint: string): string => {
+  try {
+    return new URL(endpoint).host || endpoint
+  } catch {
+    return endpoint
+  }
+}
+
+/** Composes the single fault wording for an init check that failed. The
+ * config toast reads `message`; judged calls throw `surface` (which
+ * jevUserError then classes into per-session rows). Titles stay short; no
+ * key material ever enters these strings (the diagnostic text is the
+ * endpoint's own). */
+export function deployFaultText(
+  kind: DeploymentFault["kind"],
+  opts: { host: string; model: string; detail?: string },
+): DeploymentFault {
+  const { host, model, detail } = opts
+  const detailS = detail ? ` - ${detail}` : ""
+  switch (kind) {
+    case "no-credential":
+      return {
+        kind,
+        message: `no credential for ${host} - set the provider env key (see the provider's chain in README: TYPESAFE_API_KEY / OPENCODE_API_KEY / OPENCODE_GO_API_KEY) or run \`opencode auth login\``,
+        surface: "jev: no credential for this deployment - set the provider env key or run `opencode auth login`",
+      }
+    case "no-endpoint":
+      return {
+        kind,
+        message: `no endpoint resolved for provider "${host}" - register the provider in the opencode config or set JEV_ENDPOINT`,
+        surface: "jev: no endpoint resolved - register the provider or set JEV_ENDPOINT",
+      }
+    case "model":
+      return {
+        kind,
+        message: `model ${model} is not available at ${host}${detailS} - point the plugin options' model at a model the deployment serves`,
+        surface: `jev: model ${model} not available at ${host}${detailS}`,
+      }
+    case "credential":
+      return {
+        kind,
+        message: `credential rejected for ${host} - expired or wrong-deployment key (key and endpoint must pair)`,
+        surface: `jev: 401 - ${detail || "credential rejected (wrong deployment: key and endpoint must pair)"}`,
+      }
+    case "funds":
+      return {
+        kind,
+        message: `the deployment account at ${host} has no funds - top up and retry`,
+        surface: `jev: 402 - ${detail || "insufficient funds on the deployment account"}`,
+      }
+    case "gate":
+      return {
+        kind,
+        message: `the deployment at ${host} refused the request (gate) - check account/deployment pairing`,
+        surface: `jev: 403 - ${detail || "endpoint refused the request"}`,
+      }
+    case "outage":
+      return {
+        kind,
+        message: `the deployment at ${host} is currently unavailable${detailS} - judged features fail closed until it answers`,
+        surface: `jev: upstream unavailable - ${detail || "the deployment is not answering"}`,
+      }
+    default:
+      return {
+        kind: "unknown",
+        message: `the deployment check at ${host} failed unexpectedly${detailS}`,
+        surface: `jev: check failed - ${detail || "unexpected deployment response"}`,
+      }
+  }
 }
 
 /**

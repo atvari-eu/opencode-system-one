@@ -337,3 +337,76 @@ helper shared by the retry check and the final error throw. Fail-closed is
 unchanged: no re-read can make a failed call look successful; the retry
 fires only when the fresh key differs from the old one, still only against
 the default Console endpoint for the cli-store source.
+
+## Provider resolution: registry-derived deployments, not baked tables
+
+Early support for non-Console System One deployments sketched a plugin-side
+profile table (per-provider endpoint + env names). Two operator-facing
+facts rejected it: endpoints configured once in `opencode.json(c)` should
+not be retyped into plugin options, and a config change (renamed provider,
+moved baseURL) must propagate without touching the plugin again - the
+plugin's job is judgment, not a second config of record.
+
+The design now derives everything from live sources, in resolution order:
+`JEV_ENDPOINT` env (explicit override; skips the registry entirely), the
+Console profiles (`opencode`/`opencode-go`, which keep the OpenCode System
+One *product* route - verified live that the Console chat baseURL does not
+also serve `/systemone`, so there is nothing in the registry to read for
+them), custom metric-less http(s) URLs (operator-typed endpoint; plain
+http only for loopback hosts, so a key cannot travel unencrypted over the
+open network by accident), and - the default workhorse - any other id,
+resolved through the OpenCode provider registry read routes
+(`provider.get`/`provider.list` on the plugin's client context,
+feature-detected) onto `settings.baseURL`, then joined with the System One
+route suffix (`/systemone`, appended unless the base already ends in it).
+The suffix is a documented convention of the System One interface, backed
+by two verified server-side sources (a direct provider host and a
+Console-managed connection proxy both expose `baseURL + /systemone`); a
+deployment that does not follow it is not guessed around - the init ping
+reports its own diagnostic and the plugin fails closed with the fault
+instead.
+
+Credentials pair with the same sources: Console profiles keep the Console
+chain (env `TYPESAFE_API_KEY`/`OPENCODE_API_KEY`/`OPENCODE_GO_API_KEY` →
+the single `opencode` export integration → legacy `auth.json` entry);
+host-registered ids pair with their own integration (env
+`TYPESAFE_API_KEY` → their `opencode auth export` entry → their
+`auth.json` entry), because the CLI store lists every logged-in
+integration, not just the Console's; explicit URLs carry no id, so only
+the deployment-agnostic env key applies, and a Console key can never
+silently pair with a foreign endpoint. When `JEV_ENDPOINT` is set the CLI
+store is skipped for every chain (existing pairing rule).
+
+## Init deployment check: ping the model, fail closed, two toast layers
+
+No System One deployment exposes a model listing (Console and inference
+hosts both POST-only; a wrong-method GET probes 405 unauthenticated), so
+"the configured model exists here" is verified the only honest way: one
+minimal POST at plugin start - a single noul question, a one-line state, a
+10s timeout. A healthy decider answers in a token; an unknown model
+answers the endpoint's own 400 model diagnostic; a wrong credential
+answers its own 401; an unregistered host id fails before any call with a
+named remedy. Strictly no-config inference: when no credential resolves,
+the ping is still attempted unauthenticated - a deployment that needs
+none (verified by its own 2xx) stays usable, one that answers 401/403
+produces the no-credential fault with the chain's remedy rather than a
+generic rejection.
+
+Fault surfacing is layered to match how the operator experiences it. The
+**config layer** (`[jev-config-error]` rows) fires when the broken
+deployment's fingerprint (sha256 of endpoint|model) differs from the last
+one recorded in storage: once per config change, across restarts, because
+a persistent misconfiguration needs exactly one heads-up, not one per
+session. The **session layer** (`[jev-error]` rows, the established
+path) fires per judged failure whose class a user can act on, deduped per
+session per error kind per deployment fingerprint (`sessionSurfaceKey`) -
+a new session or a config change re-informs, an ongoing breakage does not
+toast-spam a run of failing screens. The per-call failure text itself is
+composed once (`deployFaultText`): the config row reads the message (host,
+model, remedy), every judged call throws the per-call surface so existing
+call-site catch paths surface the identical failure a live outage would.
+The migration from the old 60-second per-message cooldown to
+session-scoped dedupe was deliberate: cadence keyed to sessions/configs is
+what the operator reasoning about "is it still broken?" needs; time-based
+cooldowns hide and re-reveal the same fault unpredictably.
+

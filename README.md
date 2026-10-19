@@ -85,11 +85,13 @@ compaction can be decided by System One instead of a lossy summary
 ## Requirements
 
 - [OpenCode 2](https://opencode.ai/v2/docs)
-- Access to a Jev endpoint. With the default OpenCode Console endpoint,
-  credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY` env
-  → the CLI's own login (`opencode auth login` - an API key or your Console
-  OAuth session) → the legacy auth store. Key and endpoint must come from
-  the same deployment. Paid models bill the Console workspace - a call
+- Access to a System One deployment. With the default OpenCode Console
+  endpoint, credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY`
+  env → the CLI's own login (`opencode auth login` - an API key or your
+  Console OAuth session) → the legacy auth store. Other deployments are
+  resolved from your OpenCode provider config at startup (see
+  [Provider](#provider)); keys and endpoints must still come from the same
+  deployment. Paid models bill the responsible deployment's account - a call
   without funds comes back as 402 and is never silently retried elsewhere.
 
 Nothing here depends on a specific model provider; the plugin only adds tools
@@ -97,14 +99,21 @@ and guards around your existing setup.
 
 ### Error popups
 
-User-actionable jev failures - no credential, 401 key rejection, 402
-insufficient funds, 403 endpoint gate, free-tier restriction ("only from
-within OpenCode") - are surfaced twice: once as a `[jev-error] …` row in the
-timeline, and once as a top-corner error popup, matching how OpenCode shows
-its own errors. The bundled TUI half of the plugin (package export
-`./tui`) renders those rows as toasts; at most one row per failure class per
-minute, a stapled 4xx-only list by construction, so repeated tool failures
-never toast-spam. Local tool noise (5xx, transport errors) stays
+Judged deployments are verified at plugin start: the configured model is
+ping-checked against the resolved endpoint once, and any fault (unregistered
+provider, unknown model, missing/wrong credential, outage) fails every judged
+feature closed until the plugin restarts with a working config. A changed
+fault (new fingerprint) surfaces one `[jev-config-error]` toast once per
+config change; per-session learning stays with the regular rows below.
+
+User-actionable failures - no credential, 401 key rejection, 402 insufficient
+funds, 403 endpoint gate, wrong model at the deployment, free-tier restriction
+("only from within OpenCode") - surface as `[jev-error] …` timeline rows
+rendered by the bundled TUI half (`./tui` export) as top-corner error popups,
+exactly like OpenCode's own failures: at most one row per session per failure
+class per deployment config, so repeated tool failures never toast-spam and a
+new session (or config change) informs once again. Pure
+transport noise (5xx, refused connections, opaque diagnostics) stays
 console-only.
 
 ## Install
@@ -729,70 +738,107 @@ $ skills add atvari-eu/skills@auto-system-one -g
 
 ## Provider
 
-Two jev deployments exist, picked with the `provider` plugin option; the
-default stays `"opencode"`:
+The `provider` plugin option selects the System One deployment jev judges
+against. Three forms, all resolved once at plugin start:
 
-- **`"opencode"`** (default) - the OpenCode Console pay-as-you-go provider.
-  Models: `jev-1.13` (bills Console credits) and `jev-1.13-free`
-  (zero-cost, restricted by the Console to OpenCode clients).
-- **`"opencode-go"`** - the OpenCode Go subscription provider. Useful when
-  your Go key is entitled to the model you point at; the credential chain
-  switches to the `OPENCODE_GO_API_KEY` env and the legacy store's
-  `."opencode-go".key` entry (the CLI login level and the endpoint stay
-  the Console ones).
+- **`"opencode"`** (default) - the OpenCode Console pay-as-you-go System One
+  deployment. Models: `jev-1.13` (bills Console credits) and `jev-1.13-free`
+  (zero-cost, restricted by the Console to OpenCode clients). The endpoint
+  is OpenCode's System One product route; the Console chat baseURL does not
+  serve System One itself.
+- **`"opencode-go"`** - the OpenCode Go subscription deployment;endpoint
+  unchanged, credential chain switches to `OPENCODE_GO_API_KEY` env and the
+  legacy store's `."opencode-go".key` entry.
+- **Any other id** - a provider registered in your OpenCode config. At
+  startup the plugin reads the OpenCode provider registry
+  (`provider.get`/`provider.list`) and derives the deployment endpoint from
+  the provider's configured `settings.baseURL`, joined with the System One
+  route: `<baseURL>/systemone`, appended unless the base already ends in
+  `/systemone`. Change the provider config and the next plugin start
+  follows it - no plugin option to keep in sync. Credential chain:
+  `TYPESAFE_API_KEY` env → the CLI credential store entry for that
+  integration (`opencode auth login` picks the key the registry resolves
+  with) → a legacy `auth.json` entry of the same id.
+
+Example: point jev at a Munito System One deployment that already exists as
+your chat provider:
 
 ```jsonc
 {
+  "providers": {
+    "munito": {
+      "name": "Munito",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": { "baseURL": "https://api.eu.munito.ai/inference/v1" },
+      "models": { "perplexity-ai/pplx-decider-v1.2": { "name": "pplx-decider-v1.2" } }
+    }
+  },
   "plugins": [
     {
-      "options": { "provider": "opencode-go" },
-      "package": "github:atvari-eu/opencode-system-one"
+      "package": "github:atvari-eu/opencode-system-one",
+      "options": { "provider": "munito", "model": "perplexity-ai/pplx-decider-v1.2" }
     }
   ]
 }
 ```
 
-Unknown values log a warning and keep the default. The provider changes
-which env key and legacy store entry are used - the CLI login level, the
-endpoint, the request shape and the model catalog stay the Console's, and
-billing is up to the deployment: today a paid jev call bills Console
-credits, and an OpenCode Go subscription covers the chat model catalog,
-not jev.
+- Console-managed connection providers (the `console-*` entries OpenCode
+  adds when you connect an integration, e.g. `"console-munito-eu"`) work
+  the same way and need **no provider key of their own**: their proxied
+  System One route authenticates with your Console login, which the
+  default chain already resolves.
+- An explicit **URL form** (`"https://host/…"` or loopback
+  `"http://127.0.0.1/…"`) bypasses the registry and points the deployment
+  endpoint directly; keys pair via `TYPESAFE_API_KEY` env only.
+- `JEV_ENDPOINT` env still overrides everything endpoint-related (and then
+  skips the registry entirely).
+
+Anything else is a fault: unregistered provider, unreachable endpoint or an
+unverifiable model fail all judged features closed with the deployment's own
+diagnostic (and a toast once per config change) - never a silently guessed
+endpoint, never a fallback to another provider.
 
 ## Environment
 
-Identical to the `jev` CLI (resolved fresh on every call; the key
-is never logged or persisted):
+Resolved once per plugin start together with the deployment (the key
+is never logged or persisted; `JEV_ENDPOINT` skips the registry):
 
-1. `TYPESAFE_API_KEY` → `OPENCODE_API_KEY` env (opencode provider) or
-   `OPENCODE_GO_API_KEY` env (opencode-go provider) - explicit override
+1. `TYPESAFE_API_KEY` / `OPENCODE_API_KEY` env (Console deployments) or
+   `OPENCODE_GO_API_KEY` (opencode-go), `TYPESAFE_API_KEY` for
+   host-registered providers - explicit override. The `TYPESAFE` key is
+   the deployment-agnostic one: it must pair with whatever endpoint is
+   resolved.
 2. The OpenCode CLI's credential store, read from `opencode auth export`:
-   an API key or the active OAuth session (integration `opencode` - the V2
-   CLI exposes only this one Console integration; the jev deployment is
-   picked by the key↔endpoint pairing, not a separate CLI integration),
-   which the CLI keeps refreshed. Consulted only against the default
-   Console endpoint (so key and endpoint stay one deployment), cached per
-   process, and re-read once when the endpoint rejects a cached key as
-   worn - a 401, or a diagnostic naming the key/credential as
-   expired/revoked/invalid. (The Console's 422 "upstream unavailable"
-   responses are a deployment outage, not a credential signal.)
+   an API key or the active OAuth session, which the CLI keeps refreshed.
+   Console deployments read the integration `opencode` (the single Console
+   integration the V2 CLI exposes); host-registered providers read their
+   own integration entry (`opencode auth login <provider-id>` adds one).
+   Skipped while `JEV_ENDPOINT` is set, so an exported key never pairs
+   with a foreign endpoint. Cached per process and re-read once when the
+   endpoint rejects a cached key as worn - a 401, or a diagnostic naming
+   the key/credential as expired/revoked/invalid. (The Console's 422
+   "upstream unavailable" responses are a deployment outage, not a
+   credential signal.)
 3. Legacy opencode auth store (`~/.local/share/opencode/auth.json`) - the
-   entry matching the provider (`."opencode".key` / `."opencode-go".key`);
+   entry matching the resolved provider id (`."opencode".key`,
+   `."opencode-go".key`, or the provider's own id for hand-planted keys);
    V1 installs and hand-planted keys; the V2 CLI no longer updates this
    file.
 
-- `JEV_ENDPOINT` (default: OpenCode Console System One endpoint)
 - `JEV_MODEL` (default: `jev-1.13-free`; the plugin's `model` option wins
   over this env, which wins over the default)
 
 A missing key or failed call never produces a "successful" judgment: screen
 marks `unavailable`, tools throw. Failures surface the endpoint's own
 diagnostic: 401 reads as credential rejection (expired key or wrong
-deployment), 402 as lack of funds on the Console inference account, 403 as
-the pairing or free-tier gate. There is no provider degradation chain.
+deployment), 402 as lack of funds on the responsible account, 403 as the
+pairing or free-tier gate. There is no provider degradation chain.
 
 ## Guarantees
 
+- The deployment is **verified at init**: no judged feature ever consults
+  an endpoint or model that has not answered a minimal live ping this
+  process; faults fail closed and toast once per config change.
 - Secret scrubbing is **always deterministic regex** - never a Jev call -
   and applies to screening, tool inputs, prompts, and the compaction
   judgment state alike.

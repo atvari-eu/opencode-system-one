@@ -84,7 +84,19 @@ behavior change instead of duplicating them here.
 - The end-user CLI binary may be `opencode2` (localhost wrapper) rather than
   `opencode`; the credential loader tries `OPENCODE_BIN` → `opencode` →
   `opencode2` in that order. Keep that fallback list intact.
-- A `provider` plugin option exists but today both providers hit the same
-  Console System One endpoint; only the env key name and legacy store entry
-  differ per provider. Don't invent service-specific endpoints without a
-  server-side source (README "Provider" documents the current state).
+- The `provider` plugin option resolves deployments at init from live
+  sources: `JEV_ENDPOINT` env > Console profiles (`opencode`/
+  `opencode-go`, baked OpenCode System One product route) > http(s) URL
+  form (explicit endpoint, plain http loopback only) > any other id via
+  the OpenCode provider registry (`provider.get`/`provider.list` →
+  `settings.baseURL` + `/systemone` suffix; feature-detected, fails
+  closed unresolved). Credential chains likewise derive from the resolved
+  kind (CLI store integration "opencode" for Console, the provider's own
+  integration e.g. from `opencode auth login` for host ids; env-key only
+  for URLs; skipped wholesale while JEV_ENDPOINT is set). The init ping
+  (one noul question) verifies the model; faults fail every judged call
+  closed via the cachedJudge gate and surface `[jev-config-error]`
+  (once per config change) / `[jev-error]` (once per session per kind)
+  toast rows. Don't invent service-specific endpoints beyond the
+  documented `/systemone` convention (README "Provider", DESIGN.md
+  "Provider resolution").

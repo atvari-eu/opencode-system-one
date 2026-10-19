@@ -2,14 +2,14 @@
 // Pure logic, no plugin host, no live jev, no subprocess.
 
 import { describe, expect, test } from "bun:test"
-import { credentialRejected, jevAuthError, normaliseProvider, parseAuthExport } from "../src/logic"
+import { credentialRejected, jevAuthError, parseAuthExport } from "../src/logic"
 
-const MUNITO_ENTRY = {
-  id: "cred_m",
-  integrationID: "munito",
-  label: "Munito",
+const OTHER_ENTRY = {
+  id: "cred_o",
+  integrationID: "other",
+  label: "Other",
   active: true,
-  value: { type: "key", key: "munitoai_x" },
+  value: { type: "key", key: "sk_other_x" },
 }
 
 describe("parseAuthExport", () => {
@@ -53,13 +53,13 @@ describe("parseAuthExport", () => {
     ]
     expect(parseAuthExport(export_, "opencode-go")).toBe("go_x")
     expect(parseAuthExport(export_, "opencode")).toBe("sk_x")
-    expect(parseAuthExport(export_, "munitoai")).toBeUndefined()
+    expect(parseAuthExport(export_, "example")).toBeUndefined()
   })
 
   test("the active Console OAuth session is passed as its access token", () => {
     expect(
       parseAuthExport([
-        MUNITO_ENTRY,
+        OTHER_ENTRY,
         {
           id: "cred_o",
           integrationID: "opencode",
@@ -95,7 +95,7 @@ describe("parseAuthExport", () => {
   test("other integrations, inactive entries and unknown shapes are ignored", () => {
     expect(
       parseAuthExport([
-        MUNITO_ENTRY,
+        OTHER_ENTRY,
         {
           id: "cred_i",
           integrationID: "opencode",
@@ -182,17 +182,3 @@ describe("credentialRejected", () => {
   })
 })
 
-describe("normaliseProvider", () => {
-  test("known providers pass through", () => {
-    expect(normaliseProvider("opencode")).toBe("opencode")
-    expect(normaliseProvider("opencode-go")).toBe("opencode-go")
-  })
-
-  test("unknown, non-string and unset values fall back to undefined", () => {
-    expect(normaliseProvider(undefined)).toBeUndefined()
-    expect(normaliseProvider("go")).toBeUndefined()
-    expect(normaliseProvider("opencode-go/")).toBeUndefined()
-    expect(normaliseProvider(42 as any)).toBeUndefined()
-    expect(normaliseProvider({ provider: "opencode-go" } as any)).toBeUndefined()
-  })
-})

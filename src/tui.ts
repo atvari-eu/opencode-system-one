@@ -1,7 +1,9 @@
 // TUI half of the jev plugin: turns the server plugin's "[jev-error] …"
 // synthetic rows into the same top-corner error toasts OpenCode shows for
-// its own failures. The server posts at most one row per failure class per
-// minute (see src/index.ts surfaceJev), so toast spam stays bounded.
+// its own failures, and its "[jev-config-error] …" init-fault rows into a
+// once-per-config-change toast (same mark-rows channel, own layer). The
+// server posts at most one row per session per error kind (see src/index.ts
+// surfaceJev), so toast spam stays bounded.
 //
 // Also composes the screen-verdict panel (src/screen-panel.tsx, solid JSX -
 // the TUI loader compiles TSX with babel-preset-solid; the dynamic import
@@ -12,7 +14,7 @@
 // Kept import-free: this module is loaded by the TUI plugin runtime, whose
 // own `@opencode/plugin/tui` re-exports pull solid-js in. A structural shape
 // (id + setup, exactly what the runtime validates) avoids that dependency.
-import { JEVS_ERROR_MARK } from "./logic"
+import { JEVS_ERROR_MARK, JEV_CONFIG_ERROR_MARK } from "./logic"
 
 interface ToastOptions {
   readonly title?: string
@@ -40,9 +42,26 @@ export default {
   id: "atvari.jev.tui",
   async setup(context: TuiContext & Record<string, any>) {
     const cleanups: Array<() => void | Promise<void>> = []
-    // -- error toasts (existing jev-error path, bounded by surfaceJev) --
+    // -- error toasts --
+    // Two layers, both synthetic-row marks from the server half:
+    //   [jev-error]        one per session per error kind per deployment
+    //                      config (server-side surfaceJev gate) - the
+    //                      regular, session-scoped failure surface
+    //   [jev-config-error] posted by the init deployment check only when the
+    //                      broken deployment (endpoint+model fingerprint)
+    //                      changed since the last report - heads up once
+    //                      per config change, shown a little longer
     const unlisten = context.data.on("session.synthetic", (event) => {
       const text = typeof event?.text === "string" ? event.text : ""
+      if (text.startsWith(JEV_CONFIG_ERROR_MARK)) {
+        context.ui.toast.show({
+          title: "jev config",
+          message: text.slice(JEV_CONFIG_ERROR_MARK.length),
+          variant: "error",
+          duration: 20_000,
+        })
+        return
+      }
       if (!text.startsWith(JEVS_ERROR_MARK)) return
       context.ui.toast.show({
         title: "jev",

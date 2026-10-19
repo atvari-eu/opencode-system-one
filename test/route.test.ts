@@ -592,7 +592,7 @@ describe("rankSourcePopular", () => {
   const usageRows: Array<{ providerID?: unknown; modelID?: unknown; steps?: unknown }> = [
     { providerID: "opencode-go", modelID: "glm-5.3-flash", steps: 1 },
     { providerID: "opencode-go", modelID: "deepseek-v4.1-flash", steps: 775 },
-    { providerID: "munito", modelID: "zai-org/glm-5.3-flash", steps: 900_000 },
+    { providerID: "delta", modelID: "zai-org/glm-5.3-flash", steps: 900_000 },
     { providerID: "opencode-go", modelID: "beam-free", steps: 3 },
     { providerID: "other", modelID: "irrelevant", steps: 9 },
     { providerID: "opencode-go", modelID: "", steps: 5 },
@@ -692,9 +692,9 @@ describe("emergencyRealModel", () => {
     expect(
       emergencyRealModel([], PSEUDO, {
         to: { providerID: PSEUDO, id: "auto" },
-        from: { providerID: "munito", id: "zai-org/glm-5.3-flash", variant: "medium" },
+        from: { providerID: "delta", id: "zai-org/glm-5.3-flash", variant: "medium" },
       }),
-    ).toEqual({ providerID: "munito", modelID: "zai-org/glm-5.3-flash", variant: "medium" })
+    ).toEqual({ providerID: "delta", modelID: "zai-org/glm-5.3-flash", variant: "medium" })
   })
 
   test("skips a pin parked from the pseudo form itself, falls back to rows", () => {
