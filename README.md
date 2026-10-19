@@ -27,9 +27,9 @@ compaction can be decided by System One instead of a lossy summary
   `⚠ do-not-rely` over threshold). Screened state is regex-scrubbed and
   sampled to 12 kB; both paths share the judgment cache (same content
   costs nothing on repeat). The plugin's own judgment tools are never
-  screened. A third question scores residual credential material the redaction
-  may have missed (`"screen": { "secretThreshold": 0.6 }` - at/above the
-  threshold the verdict rises to flagged, advisory only: it never withholds
+  screened. A third question rates residual credential material against
+  ordered levels, normalized to the 0-1 band (`"screen": { "secretThreshold":
+  0.6 }` - at/above the threshold the verdict rises to flagged, advisory only: it never withholds
   or downgrades a higher band). For content that is not a tool result, the
   agent can call `jev_screen` itself — same judgment, its own tool row, a
   pass/flagged/unsafe verdict.
@@ -39,7 +39,8 @@ compaction can be decided by System One instead of a lossy summary
   Slack `xox…`, GitLab `glpat-…`, age keys, `npm_…`, bearer tokens, JWTs.
   Replaced with `[REDACTED:<label>]`.
 - **tools** - `jev_decide`: one request = one state + typed questions
-  (noul/choice/score); `jev_judge_many`: one judgment per item, launched in
+  (noul/choice/score — score questions carry their ordered levels as
+  `criteria`, a 2-10 item array); `jev_judge_many`: one judgment per item, launched in
   parallel and aggregated in code (weighted mean + low-confidence flags);
   `jev_screen`: on-demand junk/prompt-injection/secret-material screening of
   pasted or suspect content, back to back with the automatic fetched-result

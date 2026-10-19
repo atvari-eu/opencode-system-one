@@ -123,7 +123,7 @@ import {
   userRowCount,
 } from "./logic"
 import { type Candidate, type CredentialChain, type DeploymentFault, type ProviderOption } from "./logic"
-import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen } from "./screen"
+import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
@@ -143,7 +143,9 @@ interface Question {
   id: string
   type: QuestionType
   instructions: string
-  criteria?: Record<string, string>
+  /** Choice: option meanings (object). Score: ordered level descriptions
+   * (2-10 strings) - the deployment API requires and validates these. */
+  criteria?: Record<string, string> | string[]
 }
 
 interface JevReply {
@@ -1948,9 +1950,12 @@ export default Plugin.define({
                       description: "The judgment to make; complete meaning, no reference to ids.",
                     },
                     criteria: {
-                      type: "object",
-                      additionalProperties: { type: "string" },
-                      description: "For choice: full meaning per option. For score: ordered level descriptions.",
+                      oneOf: [
+                        { type: "object", additionalProperties: { type: "string" } },
+                        { type: "array", items: { type: "string" }, minItems: 2, maxItems: 10 },
+                      ],
+                      description:
+                        "For choice: full meaning per option (object). For score: ordered level descriptions (array, 2-10).",
                     },
                   },
                   required: ["id", "type", "instructions"],
@@ -2054,8 +2059,12 @@ export default Plugin.define({
                   type: { type: "string", enum: ["noul", "choice", "score"] },
                   instructions: { type: "string" },
                   criteria: {
-                    type: "object",
-                    additionalProperties: { type: "string" },
+                    oneOf: [
+                      { type: "object", additionalProperties: { type: "string" } },
+                      { type: "array", items: { type: "string" }, minItems: 2, maxItems: 10 },
+                    ],
+                    description:
+                      "For choice: full meaning per option (object). For score: ordered level descriptions (array, 2-10).",
                   },
                 },
                 required: ["type", "instructions"],
@@ -2204,7 +2213,7 @@ export default Plugin.define({
               const { reply } = await cachedJudge(SCREEN_QUESTIONS, scrubbed.text)
               const junk = reply.answers?.junk?.noul
               const injection = reply.answers?.injection?.noul
-              const secret = numericOf(reply.answers?.secret)
+              const secret = secretScoreNormalized(reply.answers?.secret)
               const secretFlag = typeof secret === "number" && secret >= screenSecretThreshold
               const verdictRaw = screenVerdict(junk, injection)
               const verdict = verdictRaw === "pass" && secretFlag ? "flagged" : verdictRaw

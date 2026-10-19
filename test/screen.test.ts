@@ -2,7 +2,7 @@
 // canonical runScreen flow shared by the tool and the automatic hook.
 
 import { describe, expect, test } from "bun:test"
-import { runScreen, SCREEN_QUESTIONS } from "../src/screen"
+import { runScreen, SCREEN_QUESTIONS, secretScoreNormalized } from "../src/screen"
 import {
   parseScreenTools,
   screenApplies,
@@ -78,15 +78,66 @@ describe("parseScreenMode", () => {
 })
 
 // Fixture deps for runScreen: fake judge/scrub, no plugin host. The secret
-// question is a score, junk/injection are noul - shaped accordingly.
-const runScreenDeps = (answers: Record<string, number>) => ({
-  judge: async () => ({
-    answers: Object.fromEntries(
-      Object.entries(answers).map(([k, v]) => [k, k === "secret" ? { score: v } : { noul: v }]),
-    ),
-    cached: false,
-  }),
-  scrub: (text: string) => ({ text: text.replace(/sk-[a-z0-9]+/g, "REDACTED"), hits: 0 }),
+// question is a score, junk/injection are noul - shaped accordingly. Scores
+// arrive API-shaped: a probability-weighted position across the ordered
+// secret levels plus a legend the normalizer reads levels from. `secret`
+// here is the NORMALIZED 0..1 band the tests think in; the fixture converts.
+const runScreenDeps = (answers: Record<string, number>) => {
+  const secretLevels = SCREEN_QUESTIONS.find((q) => q.id === "secret")?.criteria ?? []
+  const secretAnswer = (v: number) => ({
+    type: "score",
+    score: v * Math.max(1, secretLevels.length - 1),
+    legend: Object.fromEntries(secretLevels.map((level, i) => [String(i), level])),
+  })
+  return {
+    judge: async () => ({
+      answers: Object.fromEntries(
+        Object.entries(answers).map(([k, v]) =>
+          [k, k === "secret" ? secretAnswer(v) : { noul: v }] as const,
+        ),
+      ),
+      cached: false,
+    }),
+    scrub: (text: string) => ({ text: text.replace(/sk-[a-z0-9]+/g, "REDACTED"), hits: 0 }),
+  }
+}
+
+describe("score questions carry the API-required criteria", () => {
+  test("every score question has ordered level descriptions (2-10)", () => {
+    for (const q of SCREEN_QUESTIONS) {
+      if (q.type !== "score") continue
+      expect(Array.isArray(q.criteria)).toBe(true)
+      expect(q.criteria!.length).toBeGreaterThanOrEqual(2)
+      expect(q.criteria!.length).toBeLessThanOrEqual(10)
+      expect(q.criteria!.every((level) => typeof level === "string" && level.length > 3)).toBe(true)
+    }
+    // the secret question is a score
+    expect(SCREEN_QUESTIONS.find((q) => q.id === "secret")?.criteria?.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test("secretScoreNormalized: legend-aware leveling onto the 0..1 band", () => {
+    const three = { legend: { "0": "a", "1": "b", "2": "c" } }
+    expect(secretScoreNormalized({ ...three, score: 0 })).toBe(0)
+    expect(secretScoreNormalized({ ...three, score: 1.05 })).toBeCloseTo(0.525)
+    expect(secretScoreNormalized({ ...three, score: 2 })).toBe(1)
+    // no legend: falls back to the shared question's own level count (3)
+    expect(secretScoreNormalized({ score: 1.05 })).toBeCloseTo(0.525)
+    // dangling noul shape stays a plain band
+    expect(secretScoreNormalized({ noul: 0.7 })).toBe(0.7)
+    expect(secretScoreNormalized(undefined)).toBeUndefined()
+    expect(secretScoreNormalized({})).toBeUndefined()
+  })
+
+  test("runScreen bands on the NORMALIZED secret score", async () => {
+    // API answer landed on level 1.4 of 2 (normalized 0.7) → flagged
+    const flagged = await runScreen(runScreenDeps({ junk: 0, injection: 0, secret: 0.7 }), "creds")
+    expect(flagged.secret).toBeCloseTo(0.7)
+    expect(flagged.secretFlag).toBe(true)
+    // exactly 0.5 (level 1 of 2) stays under the 0.6 threshold
+    const clean = await runScreen(runScreenDeps({ junk: 0, injection: 0, secret: 0.5 }), "ok")
+    expect(clean.secretFlag).toBe(false)
+    expect(clean.verdict).toBe("pass")
+  })
 })
 
 describe("runScreen", () => {

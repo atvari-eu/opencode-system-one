@@ -252,6 +252,28 @@ Screening generalized from a webfetch-only hook to any tool result
 - **Generalized cache key**: `{ tool, url, sampled content hash }` instead
   of url-only, so two tools hitting the same URL are distinct entries.
 
+## Score criteria: the deployment shapes score questions
+
+Judged screening worked against the baked Console deployment for a long
+time, then the provider-derived Munito deployment answered every score
+question with `422 - Invalid fields: questions.<id>.score.criteria`. That
+wasn't an outage or a deployment quirk: a score question must carry
+`criteria` as an ordered array of level descriptions (2-10) — the plugin had
+been sending score questions bare, which the older Console endpoint accepted
+silently. The provider fix earlier discovered this only through probes, so
+the API reference (docs.typesafe.ai/api.md, score primitive) is the shape to
+code against, not what one endpoint tolerated.
+
+Screening's `secret` question now sends three ordered levels (redacted-clean
+/ inert remnants / clearly usable) and the visible secret band stays 0..1:
+the wire answer is a probability-weighted position across the levels (can
+land between them), so UI-facing values are normalized by the answer's own
+legend (falling back to the question's level count). `jev_decide` /
+`jev_judge_many` accept object criteria (choice) and array criteria (score)
+in their input schemas; compaction's Judge passthrough type follows. A bare
+score question now fails at the deployment with the endpoint's own 422 -
+fail-closed wording handles that surface like any other rejection.
+
 ## jev_find: the cascade and what was simplified
 
 `src/find.ts` ports oh-my-pi's `jfind` cascade

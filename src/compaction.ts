@@ -117,7 +117,7 @@ export type Judge = (
     id: string
     type: "noul" | "choice" | "score"
     instructions: string
-    criteria?: Record<string, string>
+    criteria?: Record<string, string> | string[]
   }>,
   state: unknown,
   signal?: AbortSignal,

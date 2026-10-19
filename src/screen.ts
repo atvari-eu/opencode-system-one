@@ -6,7 +6,14 @@
 // result / posts a timeline row, because hosts render tool rows only for
 // real agent-invoked calls.
 
-export type ScreenQuestion = { id: string; type: "noul" | "score"; instructions: string }
+export type ScreenQuestion = {
+  id: string
+  type: "noul" | "score"
+  instructions: string
+  /** Score questions carry ordered level descriptions (2-10); the deployment
+   * API requires them and rejects score questions without. */
+  criteria?: string[]
+}
 
 export const SCREEN_QUESTIONS: ScreenQuestion[] = [
   {
@@ -25,7 +32,12 @@ export const SCREEN_QUESTIONS: ScreenQuestion[] = [
     id: "secret",
     type: "score",
     instructions:
-      "Score 0-1: does this content still contain usable credential or authentication material that automated redaction may have missed? Known key formats are already replaced by [REDACTED:...] markers - score what remains: password-like assignments, private key blocks, session tokens in unusual formats, connection strings or URLs with embedded passwords, base64/hex credential blobs. 0 = no credential material, 1 = clearly usable credentials.",
+      "Rate the sampled text by what credential or authentication material remains. Known key formats are already replaced by [REDACTED:...] markers - judge what is left.",
+    criteria: [
+      "0 = no credential or authentication material remains - only redacted markers or nothing sensitive at all",
+      "1 = ambiguous or inert remnants only - key-shaped names, mentions of where credentials live, masked or clearly example/test values",
+      "2 = clearly usable credential material remains - password-like assignments, private key blocks, session tokens in unusual formats, connection strings or URLs with embedded passwords, base64/hex credential blobs",
+    ],
   },
 ]
 
@@ -65,6 +77,24 @@ export type ScreenOutcome = {
   cached: boolean
 }
 
+/** The wire answer to a score question is a probability-weighted position
+ * across the ordered levels (0..N-1, can land between levels); options and
+ * verdicts speak the 0..1 secret band. Normalize so the threshold keeps its
+ * meaning regardless of level count. Reads a score answer; tolerates a
+ * plain noul shape for defensive parity with the old flat band. */
+export function secretScoreNormalized(answer: unknown): number | undefined {
+  const raw = (answer as any)?.score
+  if (typeof raw === "number") {
+    const levels = (answer as any)?.legend && Object.keys((answer as any).legend).length
+      ? Object.keys((answer as any).legend).length
+      : (SCREEN_QUESTIONS.find((q) => q.id === "secret")?.criteria?.length ?? 0)
+    if (levels < 2) return undefined
+    return raw / (levels - 1)
+  }
+  const noul = (answer as any)?.noul
+  return typeof noul === "number" ? noul : undefined
+}
+
 export async function runScreen(
   deps: ScreenDeps,
   content: string,
@@ -75,15 +105,7 @@ export async function runScreen(
   const reply = await deps.judge(SCREEN_QUESTIONS, scrubbed.text, signal)
   const junk = reply?.answers?.junk?.noul
   const injection = reply?.answers?.injection?.noul
-  const secretAnswer = reply?.answers?.secret
-  const secret =
-    secretAnswer && typeof secretAnswer === "object"
-      ? typeof secretAnswer.score === "number"
-        ? secretAnswer.score
-        : typeof secretAnswer.noul === "number"
-          ? secretAnswer.noul
-          : undefined
-      : undefined
+  const secret = secretScoreNormalized(reply?.answers?.secret)
   const secretFlag = typeof secret === "number" && secret >= secretThreshold
   const unsafe =
     (typeof injection === "number" && injection >= 0.7) ||
