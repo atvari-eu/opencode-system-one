@@ -774,8 +774,8 @@ is never logged or persisted):
    Console endpoint (so key and endpoint stay one deployment), cached per
    process, and re-read once when the endpoint rejects a cached key as
    worn - a 401, or a diagnostic naming the key/credential as
-   expired/revoked/invalid (the Console's worn-key responses do not always
-   carry a 401; they have been observed as 422 wraps).
+   expired/revoked/invalid. (The Console's 422 "upstream unavailable"
+   responses are a deployment outage, not a credential signal.)
 3. Legacy opencode auth store (`~/.local/share/opencode/auth.json`) - the
    entry matching the provider (`."opencode".key` / `."opencode-go".key`);
    V1 installs and hand-planted keys; the V2 CLI no longer updates this

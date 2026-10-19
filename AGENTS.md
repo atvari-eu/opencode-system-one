@@ -41,9 +41,10 @@ behavior change instead of duplicating them here.
   key↔endpoint pairing, not a separate CLI integration), then the legacy
   `~/.local/share/opencode/auth.json` entry. The store level is re-read once
   per call on a credential-class rejection: 401, or a diagnostic naming the
-  key/credential as expired/revoked/invalid, or the Console's
-  "Endpoint is unavailable" 422 wrap (a worn key can surface without 401).
-  Never log, print, or persist a key.
+  key/credential as expired/revoked/invalid. The Console's 422
+  "Upstream request failed: Endpoint is unavailable" is a deployment
+  upstream outage, not a credential surface - do not re-read on it. Never
+  log, print, or persist a key.
 - Cached judgments store answers + usage only, never the judged state text.
 - Secret redaction is deterministic regex — never a model call — and runs on
   every outbound state (screening, tool inputs, prompts, compaction).

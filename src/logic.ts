@@ -1325,20 +1325,19 @@ export function parseAuthExport(json: unknown, integrationID = "opencode"): stri
 
 /**
  * True when a failed System One call indicates the *credential* (not the
- * funds, the free-tier gate, or a plain outage) is worn. Two surfaces, both
- * observed from the OpenCode Console deployment:
+ * funds, the free-tier gate, or an outage) is worn. Two surfaces:
  * - 401 - the conventional credential rejection.
  * - a diagnostic naming the key/credential as expired, revoked or invalid
  *   ("This API key has expired. Create a new API key in OpenCode Console…"),
  *   whatever status it rides.
- * The console's expired-key responses do not always use 401 (seen as
- * status-422 wraps), so the wording is the reliable signal; a re-read attempt
- * from the credential chain is cheap and bounded per call, so a loose match
- * is acceptable - the endpoint's diagnostic still surfaces verbatim.
+ * Deliberately NOT matched: the 422 "Upstream request failed: Endpoint is
+ * unavailable" wrap. Observed after a valid credential was already in place
+ * (the 401 era preceded it), so it is the deployment's genuine
+ * upstream-outage surface - no re-read can help there.
  */
 export function credentialRejected(status: number, detail: string): boolean {
   if (status === 401) return true
-  return /(?:\b(?:api\s*key|key|token|credential|session)\b[^.]{0,60}\b(?:expired|revoked|invalid(?:ated)?)|\bendpoint is unavailable\b)/i.test(
+  return /\b(?:api\s*key|key|token|credential|session)\b[^.]{0,60}\b(?:expired|revoked|invalid(?:ated)?)/i.test(
     detail,
   )
 }

@@ -169,8 +169,9 @@ describe("credentialRejected", () => {
     expect(credentialRejected(400, "invalid model for this deployment")).toBe(false)
   })
 
-  test("the 422 upstream-unavailable wrap matches (observed stale-key surface)", () => {
-    expect(credentialRejected(422, "Upstream request failed: Endpoint is unavailable.")).toBe(true)
+  test("the 422 upstream-unavailable wrap does NOT count as worn credential", () => {
+    // observed with a valid credential in place: deployment outage, not keys
+    expect(credentialRejected(422, "Upstream request failed: Endpoint is unavailable.")).toBe(false)
   })
 
   test("funds, pairing gates, plain outages and successes do not", () => {

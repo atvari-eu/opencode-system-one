@@ -317,23 +317,23 @@ single most common needless prompt.
 
 ## Credential self-heal: re-read on worn-key diagnostics
 
-Long sessions used to ride a stale CLI-store credential: the plugin (and the
+Long sessions can ride a stale CLI-store credential: the plugin (and the
 harness's jev-screen runtime) reads `opencode auth export` once per process,
-and the Console's worn-key responses do not reliably carry a 401 - they have
-tightened to status-422 wraps with "Upstream request failed: Endpoint is
-unavailable." wording. A mid-session key refresh therefore left every
-long-running process failing until the next restart, with the 401-keyed
-one-shot re-read never firing.
+so a key refresh mid-session leaves long-running processes on the old key
+until the next restart, with the 401-keyed one-shot re-read firing only on
+401. (The expired-key diagnostic the `jev` CLI surfaced came from the
+legacy `auth.json` entry; observed histories differ per store level.)
 
 The decision: the credential re-read triggers on a credential-class
-(`logic.credentialRejected`): status 401 always, plus any diagnostic whose
-text names the key/token/credential/session as expired, revoked or invalid,
-plus the observed 422 wrap (matching on "Endpoint is unavailable" is
-deliberately loose - the re-read is cheap, bounded once per call, never
-cross-provider, and the endpoint's diagnostic still surfaces verbatim, so a
-plain outage costs nothing but one extra export run). Fetched body detail
-parsing moved to a `detailOf` helper shared by the retry check and the
-final error throw. Fail-closed is unchanged: no re-read can make a failed
-call look successful; the retry fires only when the fresh key differs from
-the old one, still only against the default Console endpoint for the
-cli-store source.
+rejection (`logic.credentialRejected`): status 401 always, plus any
+diagnostic whose text names the key/token/credential/session as expired,
+revoked or invalid, whatever status it rides. Deliberately not matched: the
+Console's 422 "Upstream request failed: Endpoint is unavailable" wrap -
+verified empirically to be the deployment's genuine upstream-outage
+surface, not a worn-credential surface (it appears with a valid credential
+in place, after the 401 era), so a re-read cannot help and costs one
+needless export run. Fetched body detail parsing moved to a `detailOf`
+helper shared by the retry check and the final error throw. Fail-closed is
+unchanged: no re-read can make a failed call look successful; the retry
+fires only when the fresh key differs from the old one, still only against
+the default Console endpoint for the cli-store source.
