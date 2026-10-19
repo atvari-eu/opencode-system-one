@@ -420,8 +420,8 @@ async function jevJudgeInner(
     cred.source === "cli-store" &&
     credentialRejected(response.status, detailOf(text))
   ) {
-    invalidateCliStoreCredential(cred.integration)
-    const fresh = resolveCred()
+    invalidateCliStoreCredential("opencode")
+    const fresh = await resolveCred()
     if (fresh && fresh.key !== cred.key) {
       response = await jevRequest(fresh, questions, state, signal)
       text = await response.text()
