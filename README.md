@@ -762,30 +762,30 @@ against. Three forms, all resolved once at plugin start:
   integration (`opencode auth login` picks the key the registry resolves
   with) → a legacy `auth.json` entry of the same id.
 
-Example: point jev at a Munito System One deployment that already exists as
-your chat provider:
+Example: point jev at an inference provider you already registered for chat,
+so judged calls run on the same deployment:
 
 ```jsonc
 {
   "providers": {
-    "munito": {
-      "name": "Munito",
+    "acme": {
+      "name": "Acme",
       "package": "@opencode/ai/providers/openai-compatible",
-      "settings": { "baseURL": "https://api.eu.munito.ai/inference/v1" },
-      "models": { "perplexity-ai/pplx-decider-v1.2": { "name": "pplx-decider-v1.2" } }
+      "settings": { "baseURL": "https://api.acme.dev/inference/v1" },
+      "models": { "acme-ai/decider-v1.2": { "name": "decider-v1.2" } }
     }
   },
   "plugins": [
     {
       "package": "github:atvari-eu/opencode-system-one",
-      "options": { "provider": "munito", "model": "perplexity-ai/pplx-decider-v1.2" }
+      "options": { "provider": "acme", "model": "acme-ai/decider-v1.2" }
     }
   ]
 }
 ```
 
 - Console-managed connection providers (the `console-*` entries OpenCode
-  adds when you connect an integration, e.g. `"console-munito-eu"`) work
+  adds when you connect an integration, e.g. `"console-acme-eu"`) work
   the same way and need **no provider key of their own**: their proxied
   System One route authenticates with your Console login, which the
   default chain already resolves.

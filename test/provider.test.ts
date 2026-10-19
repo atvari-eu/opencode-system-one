@@ -24,10 +24,10 @@ describe("parseProviderOption", () => {
   })
 
   test("any other id is a host-registered provider, resolved through the registry", () => {
-    expect(parseProviderOption("munito")).toEqual({ kind: "host", id: "munito" })
-    expect(parseProviderOption("console-munito-eu")).toEqual({
+    expect(parseProviderOption("acme")).toEqual({ kind: "host", id: "acme" })
+    expect(parseProviderOption("console-acme-eu")).toEqual({
       kind: "host",
-      id: "console-munito-eu",
+      id: "console-acme-eu",
     })
   })
 
@@ -94,10 +94,10 @@ describe("credentialChain", () => {
   })
 
   test("host ids pair with their own integration (CLI store lists logged-in providers)", () => {
-    expect(credentialChain({ kind: "host", id: "munito" })).toEqual({
+    expect(credentialChain({ kind: "host", id: "acme" })).toEqual({
       envKeys: ["TYPESAFE_API_KEY"],
-      cliIntegration: "munito",
-      legacyId: "munito",
+      cliIntegration: "acme",
+      legacyId: "acme",
     })
   })
 
@@ -197,8 +197,8 @@ describe("deployFaultText", () => {
   })
 
   test("no-endpoint fault names the unresolved provider id", () => {
-    const Fault = deployFaultText("no-endpoint", { host: "munito", model: "m-1" })
-    expect(Fault.message).toContain("munito")
+    const Fault = deployFaultText("no-endpoint", { host: "acme", model: "m-1" })
+    expect(Fault.message).toContain("acme")
   })
 })
 
