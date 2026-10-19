@@ -366,6 +366,24 @@ deployment that does not follow it is not guessed around - the init ping
 reports its own diagnostic and the plugin fails closed with the fault
 instead.
 
+Both registry reads carry their own defenses, learned the hard way:
+`provider.get` takes `{ providerID }` on 2.0.x hosts but earlier builds took
+the raw string, so a rejection on one shape only means the shape is wrong -
+both are tried before falling through to `provider.list()` (an array, a map,
+or an outer `{ data }` wrapper; the shape-normalizing helpers stay pure in
+`logic.ts` so tests can pin them). And a lookup at plugin setup time can
+still miss a provider the host resolves fine seconds later: the config
+plugin (`opencode.config.provider`) registers locally configured
+`providers` entries during *its* setup pass, which runs after user plugin
+setup (observed on 2.0.32, verified with a boot-time probe: config providers
+were absent from `list()` at user-plugin setup, present at the first tool
+execute). An unresolved host id therefore re-checks the registry on judged
+calls - one `cachedJudge` retry, one shared inflight attempt, cheap local
+reads - and re-runs the deployment ping after a late resolve. Everything
+still fails closed when the id never appears: a judged feature inside that
+first window waits at most one extra ping (seconds), never switches
+endpoints, and a genuinely unregistered provider stays permanently failed.
+
 Credentials pair with the same sources: Console profiles keep the Console
 chain (env `TYPESAFE_API_KEY`/`OPENCODE_API_KEY`/`OPENCODE_GO_API_KEY` →
 the single `opencode` export integration → legacy `auth.json` entry);

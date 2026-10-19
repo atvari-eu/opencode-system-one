@@ -9,9 +9,12 @@ import {
   credentialChain,
   deployFaultText,
   deploymentFingerprint,
+  findRegistryProvider,
   inlineScreenFailure,
   jevUserError,
   parseProviderOption,
+  providerInfoBaseURL,
+  resolveProviderBaseURL,
   sessionSurfaceKey,
   systemoneRoute,
   type ProviderOption,
@@ -56,6 +59,125 @@ describe("parseProviderOption", () => {
     expect(parseProviderOption(42)).toBeUndefined()
     expect(parseProviderOption("https://a.example.com/x?query=1")).toBeUndefined()
     expect(parseProviderOption("https://")).toBeUndefined()
+  })
+})
+
+describe("provider registry reading", () => {
+  test("providerInfoBaseURL reads settings.baseURL, direct or {data}-wrapped", () => {
+    expect(
+      providerInfoBaseURL({ id: "munito", settings: { baseURL: "https://api.example.com/v1" } }),
+    ).toBe("https://api.example.com/v1")
+    expect(
+      providerInfoBaseURL({
+        data: { id: "munito", settings: { baseURL: "https://api.example.com/v1" } },
+      }),
+    ).toBe("https://api.example.com/v1")
+  })
+
+  test("providerInfoBaseURL rejects unknown shapes, empty or non-string urls", () => {
+    expect(providerInfoBaseURL(undefined)).toBeUndefined()
+    expect(providerInfoBaseURL("munito")).toBeUndefined()
+    expect(providerInfoBaseURL({ settings: {} })).toBeUndefined()
+    expect(providerInfoBaseURL({ settings: { baseURL: "   " } })).toBeUndefined()
+    expect(providerInfoBaseURL({ settings: { baseURL: 42 } })).toBeUndefined()
+  })
+
+  test("findRegistryProvider scans an array list by id", () => {
+    const list = [
+      { id: "opencode", settings: {} },
+      { id: "munito", settings: { baseURL: "https://api.example.com/v1" } },
+    ]
+    expect(findRegistryProvider(list, "munito")).toEqual(list[1])
+    expect(findRegistryProvider(list, "acme")).toBeUndefined()
+  })
+
+  test("findRegistryProvider accepts map/lists/{data}-wrapped shapes", () => {
+    const entry = { id: "munito", settings: { baseURL: "https://api.example.com/v1" } }
+    expect(findRegistryProvider({ munito: entry }, "munito")).toEqual(entry)
+    expect(findRegistryProvider({ data: [entry] }, "munito")).toEqual(entry)
+    expect(findRegistryProvider(null, "munito")).toBeUndefined()
+    expect(findRegistryProvider(42, "munito")).toBeUndefined()
+  })
+})
+
+describe("resolveProviderBaseURL (plugin ctx)", () => {
+  const entry = { id: "munito", settings: { baseURL: "https://api.example.com/v1" } }
+
+  test("object-shaped get({providerID}) resolves directly", async () => {
+    const calls: any[] = []
+    const ctx = {
+      provider: { get: async (arg: any) => (calls.push(arg), { data: entry }) },
+    }
+    expect(await resolveProviderBaseURL(ctx, "munito")).toBe("https://api.example.com/v1")
+    expect(calls).toEqual([{ providerID: "munito" }])
+  })
+
+  test("schema rejection on the object shape falls through to the legacy string shape", async () => {
+    const calls: any[] = []
+    const ctx = {
+      provider: {
+        get: async (arg: any) => {
+          calls.push(arg)
+          if (typeof arg !== "string") throw new Error("SchemaError(Expected object)")
+          return entry
+        },
+      },
+    }
+    expect(await resolveProviderBaseURL(ctx, "munito")).toBe("https://api.example.com/v1")
+    expect(calls).toEqual([{ providerID: "munito" }, "munito"])
+  })
+
+  test("both get shapes missing the id fall through to list() (array or {data}", async () => {
+    for (const listValue of [[entry], { data: [entry] }]) {
+      const calls: any[] = []
+      const ctx = {
+        provider: {
+          get: async (arg: any) => {
+            calls.push(arg)
+            throw new Error(`Provider not found: ${typeof arg === "string" ? arg : arg.providerID}`)
+          },
+          list: async () => listValue,
+        },
+      }
+      expect(await resolveProviderBaseURL(ctx, "munito")).toBe("https://api.example.com/v1")
+      expect(calls).toEqual([{ providerID: "munito" }, "munito"])
+    }
+  })
+
+  test("get not found twice + list without the id resolves undefined", async () => {
+    const ctx = {
+      provider: {
+        get: async () => {
+          throw new Error("Provider not found: munito")
+        },
+        list: async () => [{ id: "opencode", settings: {} }],
+      },
+    }
+    expect(await resolveProviderBaseURL(ctx, "munito")).toBeUndefined()
+  })
+
+  test("a non-shape get error is loud but still falls back to list", async () => {
+    const ctx = {
+      provider: {
+        get: async () => {
+          throw new Error("boom")
+        },
+        list: async () => ({ munito: entry }),
+      },
+    }
+    expect(await resolveProviderBaseURL(ctx, "munito")).toBe("https://api.example.com/v1")
+  })
+
+  test("registry entry without settings.baseURL resolves undefined", async () => {
+    const ctx = {
+      provider: { list: async () => [{ id: "munito" }] },
+    }
+    expect(await resolveProviderBaseURL(ctx, "munito")).toBeUndefined()
+  })
+
+  test("no provider namespace at all resolves undefined", async () => {
+    expect(await resolveProviderBaseURL({}, "munito")).toBeUndefined()
+    expect(await resolveProviderBaseURL(undefined, "munito")).toBeUndefined()
   })
 })
 

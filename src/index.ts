@@ -114,6 +114,7 @@ import {
   refKey,
   resolveApproval,
   routeTurn,
+  resolveProviderBaseURL,
   screenApplies,
   screenRedacts,
   screenVerdict,
@@ -305,11 +306,18 @@ let OPTIONS_MODEL: string | undefined = undefined
 let OPTIONS_PROVIDER: ProviderOption | undefined = undefined
 let RESOLVED_ENDPOINT: string | undefined = CONSOLE_ENDPOINT
 let RESOLVED_CHAIN: CredentialChain = credentialChain(undefined)
+// One-shot guard for post-boot re-resolution of a host id that missed plugin
+// setup (see lateResolveDeployment); concurrent callers share one inflight
+// attempt and its deployment ping.
+let LATE_RESOLVE_INFLIGHT: Promise<boolean> | undefined = undefined
 
 // Set once by the init deployment check: while a fault is present, every
 // judged call fails closed with this fault's per-call wording (no network).
 // Config is fixed per process, so the check re-runs at the next start or
-// plugin reload; nothing resets it mid-process.
+// plugin reload. One exception: an unresolved host id re-checks the registry
+// on judged calls (lateResolveDeployment) - the config plugin can register
+// locally configured providers after this plugin's own setup pass - and a
+// late resolve clears the fault (with a fresh ping); other faults persist.
 let DEPLOY_FAULT: DeploymentFault | undefined = undefined
 // Fingerprint of the resolved deployment (endpoint+model); scopes the once
 // per session error-row gate.
@@ -561,39 +569,10 @@ function deployHost(endpoint: string): string {
 }
 
 /** settings.baseURL of a host-registered provider, via the OpenCode provider
- * registry read routes (feature detected: provider.get, then provider.list).
- * Non-network registry reads; any failure resolves undefined and the init
- * check reports the consequence. */
-async function providerBaseURL(ctx: any, id: string): Promise<string | undefined> {
-  const provider: any = ctx?.provider
-  const read = async (value: any): Promise<string | undefined> => {
-    const info = value?.data ?? value
-    const url = info?.settings?.baseURL
-    return typeof url === "string" && url.trim() !== "" ? url : undefined
-  }
-  try {
-    if (typeof provider?.get === "function") return await read(await provider.get(id))
-  } catch {
-    // 404-shaped rejections fall through to the list probe below
-  }
-  try {
-    if (typeof provider?.list === "function") {
-      const result: any = await provider.list()
-      const list = result?.data ?? result
-      const hit = Array.isArray(list)
-        ? list.find((entry: any) => entry?.id === id)
-        : list?.[id]
-      if (hit) return await read(hit)
-      console.log(
-        `[jev] provider: ${JSON.stringify(id)} is not registered in the OpenCode provider registry`,
-      )
-    }
-  } catch (err) {
-    console.log(
-      `[jev] provider: registry lookup for ${JSON.stringify(id)} failed (${String((err as Error)?.message ?? err)})`,
-    )
-  }
-  return undefined
+ * registry read routes (see resolveProviderBaseURL in logic.ts). Thin host
+ * wrapper; any failure resolves undefined and the init check reports it. */
+function providerBaseURL(ctx: any, id: string): Promise<string | undefined> {
+  return resolveProviderBaseURL(ctx, id)
 }
 
 /** Resolves the selected provider option to endpoint + credential chain.
@@ -625,7 +604,7 @@ async function resolveDeploymentEndpoint(ctx: any): Promise<void> {
   }
   RESOLVED_ENDPOINT = undefined
   console.log(
-    `[jev] provider: cannot resolve an endpoint for ${JSON.stringify(OPTIONS_PROVIDER.id)} - judged calls stay failed until the provider config exists or JEV_ENDPOINT is set`,
+    `[jev] provider: cannot resolve an endpoint for ${JSON.stringify(OPTIONS_PROVIDER.id)} - judged calls fail closed and re-check after boot until it resolves or JEV_ENDPOINT is set`,
   )
 }
 
@@ -1104,6 +1083,36 @@ export default Plugin.define({
       }
     }
 
+    // A host id can register later than plugin setup: the config plugin
+    // (opencode.config.provider) writes locally configured providers during
+    // its own setup pass, which runs after user plugin setup - a registry
+    // lookup at init time can miss a provider the host resolves fine moments
+    // later (observed on 2.0.32: config providers were absent from list()
+    // at user-plugin setup, present at the first tool execute). Retry the
+    // local registry reads once per judged call until resolution lands,
+    // re-running the deployment ping after a late resolve; everything still
+    // fails closed when it never resolves.
+    async function lateResolveDeployment(): Promise<boolean> {
+      if (RESOLVED_ENDPOINT || OPTIONS_PROVIDER?.kind !== "host") return false
+      if (LATE_RESOLVE_INFLIGHT) return LATE_RESOLVE_INFLIGHT
+      LATE_RESOLVE_INFLIGHT = (async () => {
+        try {
+          const baseURL = await resolveProviderBaseURL(ctx, OPTIONS_PROVIDER.id)
+          if (!baseURL) return false
+          RESOLVED_ENDPOINT = systemoneRoute(baseURL)
+          console.log(
+            `[jev] provider: ${OPTIONS_PROVIDER.id} resolved after boot - ${RESOLVED_ENDPOINT}`,
+          )
+          const deployCheck = await checkDeployState()
+          DEPLOY_FAULT = deployCheck.ok ? undefined : deployCheck.fault
+          return deployCheck.ok
+        } finally {
+          LATE_RESOLVE_INFLIGHT = undefined
+        }
+      })()
+      return LATE_RESOLVE_INFLIGHT
+    }
+
     async function cachedJudge(
       questions: Question[],
       state: unknown,
@@ -1112,7 +1121,11 @@ export default Plugin.define({
       // Init deployment check faulted: fail closed with the fault's per-call
       // wording, instantly, no network. Call sites lump this into their
       // existing catch paths, surfacing the standard per-session rows.
-      if (DEPLOY_FAULT) throw new Error(DEPLOY_FAULT.surface)
+      // Unresolved host ids get one post-boot re-resolve attempt first - the
+      // registry may now contain the locally configured provider.
+      if (DEPLOY_FAULT) {
+        if (!(await lateResolveDeployment())) throw new Error(DEPLOY_FAULT.surface)
+      }
       const model = resolveModel()
       const endpoint = resolveEndpoint()
       if (!cacheEnabled) return { reply: await jevJudge(questions, state, signal), cached: false }

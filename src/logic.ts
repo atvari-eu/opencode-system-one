@@ -723,6 +723,75 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
 }
 
 // toRef: switches/pins store refs the way OpenCode emits them (id not modelID).
+/** settings.baseURL of a provider-registry entry, whatever wrapper the host
+ * puts in: SDK responses wrap payloads in { data }, settings live at
+ * .settings.baseURL. Unknown shapes resolve undefined - never a guess. */
+export function providerInfoBaseURL(value: unknown): string | undefined {
+  const info = (value as any)?.data ?? value
+  const url = info?.settings?.baseURL
+  return typeof url === "string" && url.trim() !== "" ? url : undefined
+}
+
+/** provider-registry entries for an id, across host shapes: 2.0.x list()
+ * returns an array of { id, settings… } entries (optionally { data:-wrapped}),
+ * hosts vary. Unknown shapes resolve undefined. */
+export function findRegistryProvider(list: unknown, id: string): unknown {
+  const entries = (list as any)?.data ?? list
+  if (Array.isArray(entries)) {
+    return entries.find((entry: any) => entry?.id === id)
+  }
+  if (entries && typeof entries === "object") {
+    return entries[id]
+  }
+  return undefined
+}
+
+/** settings.baseURL of a host-registered provider, via the OpenCode provider
+ * registry read routes. Feature-detected: provider.get first (2.0.x takes
+ * { providerID }, earlier builds took the raw string - a rejection on one
+ * shape only means the shape is wrong, so both are tried), then
+ * provider.list(). Local reads only; any failure resolves undefined and the
+ * deployment check reports the consequence. */
+export async function resolveProviderBaseURL(ctx: unknown, id: string): Promise<string | undefined> {
+  const provider = (ctx as any)?.provider
+  if (typeof provider?.get === "function") {
+    for (const arg of [{ providerID: id }, id]) {
+      try {
+        const hit = providerInfoBaseURL(await provider.get(arg))
+        if (hit !== undefined) return hit
+      } catch (err) {
+        const message = String((err as Error)?.message ?? err)
+        if (!/not found|schema|expected/i.test(message)) {
+          console.log(
+            `[jev] provider: registry get for ${JSON.stringify(id)} failed (${message})`,
+          )
+        }
+      }
+    }
+  }
+  try {
+    if (typeof provider?.list === "function") {
+      const hit = findRegistryProvider(await provider.list(), id)
+      if (hit) {
+        const baseURL = providerInfoBaseURL(hit)
+        if (baseURL !== undefined) return baseURL
+        console.log(
+          `[jev] provider: ${JSON.stringify(id)} registry entry has no settings.baseURL - check the provider config`,
+        )
+      } else {
+        console.log(
+          `[jev] provider: ${JSON.stringify(id)} is not registered in the OpenCode provider registry yet`,
+        )
+      }
+    }
+  } catch (err) {
+    console.log(
+      `[jev] provider: registry lookup for ${JSON.stringify(id)} failed (${String((err as Error)?.message ?? err)})`,
+    )
+  }
+  return undefined
+}
+
 export const toRef = (t: { providerID: string; modelID: string; variant?: string | undefined }): any => ({
   providerID: t.providerID,
   id: t.modelID,

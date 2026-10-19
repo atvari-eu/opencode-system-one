@@ -751,13 +751,16 @@ against. Three forms, all resolved once at plugin start:
 - **`"opencode-go"`** - the OpenCode Go subscription deployment;endpoint
   unchanged, credential chain switches to `OPENCODE_GO_API_KEY` env and the
   legacy store's `."opencode-go".key` entry.
-- **Any other id** - a provider registered in your OpenCode config. At
-  startup the plugin reads the OpenCode provider registry
-  (`provider.get`/`provider.list`) and derives the deployment endpoint from
-  the provider's configured `settings.baseURL`, joined with the System One
-  route: `<baseURL>/systemone`, appended unless the base already ends in
-  `/systemone`. Change the provider config and the next plugin start
-  follows it - no plugin option to keep in sync. Credential chain:
+- **Any other id** - a provider registered in your OpenCode config,
+  including local `providers.<id>` blocks in `opencode.json(c)`. At
+  startup the plugin reads the OpenCode provider registry and derives the
+  deployment endpoint from the provider's configured `settings.baseURL`,
+  joined with the System One route: `<baseURL>/systemone`, appended unless
+  the base already ends in `/systemone`. Change the provider config and the
+  next plugin start follows it - no plugin option to keep in sync. On some
+  2.0.x hosts locally configured providers register shortly after plugin
+  setup; if the id is missing then, judged calls re-check shortly after
+  boot before failing closed. Credential chain:
   `TYPESAFE_API_KEY` env → the CLI credential store entry for that
   integration (`opencode auth login` picks the key the registry resolves
   with) → a legacy `auth.json` entry of the same id.
@@ -798,7 +801,9 @@ so judged calls run on the same deployment:
 Anything else is a fault: unregistered provider, unreachable endpoint or an
 unverifiable model fail all judged features closed with the deployment's own
 diagnostic (and a toast once per config change) - never a silently guessed
-endpoint, never a fallback to another provider.
+endpoint, never a fallback to another provider. The one exception: an id
+left out of the registry at startup re-checks after boot (see DESIGN) before
+failing closed.
 
 ## Environment
 
