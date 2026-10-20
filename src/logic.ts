@@ -1772,8 +1772,9 @@ export function jevAuthError(status: number, detail: string): string {
 // an action. Two questions are adapted from the recipe (reversible,
 // serves_task); `harmful` is ours and is what auto-refusal is built on (the
 // recipe cannot enact refusals - it only ever leaves the prompt). Jev never
-// picks the permission effect: approve adds up to `allow`, refuse to `deny`,
-// and every unclear band is the human prompt. Enforcement stays with the
+// picks the permission effect: approve adds up to `allow`, refuse to
+// `deny`, and the unresolved band takes the effect `onNoVerdict` prices it
+// at (allow by default). Enforcement stays with the
 // caller: gates first, then the resolved outcome ("allow" | "deny" | "ask")
 // under the onApprove/onRefuse policy.
 // ---------------------------------------------------------------------------
@@ -2310,47 +2311,60 @@ export interface ApprovalBars {
 // approves and the mid-band harmful score refuses rather than prompts - the
 // higher recipe calibration (0.90/0.85) stays reachable via minConfidence.
 // Scores wobble ~0.05 run to run - tune from the recorded bands, not by feel.
+// The verdict bars. The approve bar sits at the noul midline (within an
+// approvals setup the operator already delegated, so weakly-certain
+// approvals enact); the refuse bar sits above it so a refusal needs a
+// clearly-harmful score - the band the two bars leave undecided is priced
+// by the onNoVerdict policy (allow by default).
 export const APPROVE_BAR_DEFAULT = 0.5
-export const REFUSE_BAR_DEFAULT = 0.5
+export const REFUSE_BAR_DEFAULT = 0.7
 
-/** What each verdict does. Both directions default to enacting (allow /
- * deny) - bare config is full delegation; "ask" holds that verdict at the
- * human prompt it caused (the note annotates that prompt). `onGate` does
- * the same for the deterministic approval gates: the default refuses a
- * held request outright (the reason rides back as tool feedback so the
- * model picks another approach), `onGate: "ask"` leaves it at the prompt
- * the gate hit. */
+/** What each enforcement point does. `onGate` enacts a deterministic-gate
+ * hold: the default refuses the request outright (the reason rides back as
+ * tool feedback so the model picks another approach), `onGate: "ask"`
+ * leaves it at the prompt the gate hit. Approves default to enacting
+ * ("allow"), refusals to refusing ("deny") - bare config is full
+ * delegation; "ask" holds that verdict at the human prompt it caused (the
+ * note annotates that prompt). `onNoVerdict` prices the unclear band -
+ * neither verdict resolved (a score unavailable, below its bar, or harmful
+ * over the ceiling): "allow" enacts the request anyway (the default),
+ * "ask" keeps the annotated prompt the request already carried, "deny"
+ * refuses with the reason as tool feedback. */
 export interface ApprovalPolicy {
+  onGate: "deny" | "ask"
   onApprove: "allow" | "ask"
   onRefuse: "deny" | "ask"
-  onGate: "deny" | "ask"
+  onNoVerdict: "allow" | "ask" | "deny"
   /** What a failed judgment costs (timeout, upstream fault): "ask" keeps
    * OpenCode's own prompt, "deny" refuses, "allow" enacts the request. */
   onFail: "allow" | "ask" | "deny"
 }
 
 export const APPROVAL_POLICY_DEFAULT: ApprovalPolicy = {
+  onGate: "deny",
   onApprove: "allow",
   onRefuse: "deny",
-  onGate: "deny",
+  onNoVerdict: "allow",
   onFail: "ask",
 }
 
 // The deprecated single `mode` key maps onto the same knobs: annotate held
-// everything at the prompt (so its gates ask), auto delegated the verdicts
-// (gates deny - no interrupt), deny delegated refusals only. Legacy modes
-// leave `onFail` alone - a judgment failure was always a prompt.
+// everything at the prompt (so its gates and unclear band ask), auto
+// delegated the verdicts (gates deny, unclear band asks - no interrupt),
+// deny delegated refusals only. Legacy modes leave `onFail` alone - a
+// judgment failure was always a prompt - and pin `onNoVerdict: "ask"` to
+// keep the unclear band on the prompt it always prompted with.
 const APPROVAL_MODE_LEGACY: Record<string, ApprovalPolicy> = {
-  annotate: { onApprove: "ask", onRefuse: "ask", onGate: "ask", onFail: "ask" },
-  auto: { onApprove: "allow", onRefuse: "deny", onGate: "deny", onFail: "ask" },
-  deny: { onApprove: "ask", onRefuse: "deny", onGate: "deny", onFail: "ask" },
+  annotate: { onGate: "ask", onApprove: "ask", onRefuse: "ask", onNoVerdict: "ask", onFail: "ask" },
+  auto: { onGate: "deny", onApprove: "allow", onRefuse: "deny", onNoVerdict: "ask", onFail: "ask" },
+  deny: { onGate: "deny", onApprove: "ask", onRefuse: "deny", onNoVerdict: "ask", onFail: "ask" },
 }
 
-/** approvals config object → the verdict→effect policy. Explicit
- * `onApprove` / `onRefuse` / `onGate` keys win over the deprecated `mode`;
- * unknown values fall back and are reported as invalid for the caller to
- * log. The deprecated mode name (or null) comes back for a one-time
- * deprecation notice. */
+/** approvals config object → the enforcement policy. Explicit
+ * `onGate` / `onApprove` / `onRefuse` / `onNoVerdict` keys win over the
+ * deprecated `mode`; unknown values fall back and are reported as invalid
+ * for the caller to log. The deprecated mode name (or null) comes back for
+ * a one-time deprecation notice. */
 export function parseApprovalsPolicy(
   raw: unknown,
 ): { policy: ApprovalPolicy; legacyMode: string | null; invalid: string[] } {
@@ -2360,18 +2374,23 @@ export function parseApprovalsPolicy(
   let legacyMode: string | null = null
   if (typeof entry.mode === "string" && APPROVAL_MODE_LEGACY[entry.mode]) {
     legacyMode = entry.mode
+    policy.onGate = APPROVAL_MODE_LEGACY[entry.mode].onGate
     policy.onApprove = APPROVAL_MODE_LEGACY[entry.mode].onApprove
     policy.onRefuse = APPROVAL_MODE_LEGACY[entry.mode].onRefuse
-    policy.onGate = APPROVAL_MODE_LEGACY[entry.mode].onGate
+    policy.onNoVerdict = APPROVAL_MODE_LEGACY[entry.mode].onNoVerdict
   } else if (entry.mode !== undefined) {
     invalid.push(`mode ${JSON.stringify(String(entry.mode))}`)
   }
+  if (entry.onGate === "deny" || entry.onGate === "ask") policy.onGate = entry.onGate
+  else if (entry.onGate !== undefined) invalid.push(`onGate ${JSON.stringify(String(entry.onGate))}`)
   if (entry.onApprove === "allow" || entry.onApprove === "ask") policy.onApprove = entry.onApprove
   else if (entry.onApprove !== undefined) invalid.push(`onApprove ${JSON.stringify(String(entry.onApprove))}`)
   if (entry.onRefuse === "deny" || entry.onRefuse === "ask") policy.onRefuse = entry.onRefuse
   else if (entry.onRefuse !== undefined) invalid.push(`onRefuse ${JSON.stringify(String(entry.onRefuse))}`)
-  if (entry.onGate === "deny" || entry.onGate === "ask") policy.onGate = entry.onGate
-  else if (entry.onGate !== undefined) invalid.push(`onGate ${JSON.stringify(String(entry.onGate))}`)
+  if (entry.onNoVerdict === "allow" || entry.onNoVerdict === "ask" || entry.onNoVerdict === "deny")
+    policy.onNoVerdict = entry.onNoVerdict
+  else if (entry.onNoVerdict !== undefined)
+    invalid.push(`onNoVerdict ${JSON.stringify(String(entry.onNoVerdict))}`)
   if (entry.onFail === "allow" || entry.onFail === "ask" || entry.onFail === "deny")
     policy.onFail = entry.onFail
   else if (entry.onFail !== undefined) invalid.push(`onFail ${JSON.stringify(String(entry.onFail))}`)
@@ -2482,17 +2501,36 @@ const harmfulCeiling = (bars: ApprovalBars): number =>
   // so a score exactly on the complementary ceiling stays inclusive.
   bars.harmful ?? Math.round((1 - bars.approve) * 1e9) / 1e9
 
+/** The unclear band: no verdict formed, so the outcome carries no verdict
+ * and no confidence - only the first failing check's note and reason.
+ * `onNoVerdict` prices the band; the parsed policy always carries it, and
+ * a partial one (tests built against the pre-knob resolver) falls back to
+ * the annotated prompt the band always resolved to. */
+const noVerdict = (
+  policy: { onNoVerdict?: "allow" | "ask" | "deny" },
+  note: string,
+  reason: ApprovalReason,
+): ApprovalOutcome => {
+  const effect = policy.onNoVerdict ?? "ask"
+  return {
+    effect,
+    note: effect === "ask" ? note : `${note} - ${effect === "allow" ? "allowed" : "denied"} by onNoVerdict`,
+    reason,
+  }
+}
+
 /**
  * Maps the judged noul scores onto the enforcement outcome. Fail-closed:
  * missing, malformed, or out-of-range scores never constitute a decision.
  * One refuse check (harmful >= bars.refuse) and one approve check
  * (reversible and, with a task, serves_task >= their bars while harmful
  * stays at or under the complementary ceiling). The first failing check
- * names the reason on the annotated human prompt. Verdicts enact exactly
- * their policy effect - approved / refused resolve to allow / deny, and an
- * "ask" policy holds that verdict for the human prompt. Jev itself never
- * resolves to "ask": every unclear band is the prompt the request already
- * carried, annotated with the reason it was not auto-resolved.
+ * names the reason on the annotated prompt. Verdicts enact exactly their
+ * policy effect - approved / refused resolve to allow / deny, and an "ask"
+ * policy holds that verdict for the human prompt. No score ever becomes a
+ * verdict on its own: the unclear band - neither refuse nor approve - takes
+ * the effect `onNoVerdict` prices it at (allow by default; "ask" keeps the
+ * prompt the request already carried, annotated with the reason).
  */
 export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   const { scores, bars, policy } = input
@@ -2543,29 +2581,25 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
     return { effect: "allow", note: `[jev] approved (${pct})`, verdict: "approve", confidence: shown }
   }
 
-  // The unclear band: annotated human prompt, naming the first failing
-  // approve-side check so the prompt answers "why didn't this auto-run?".
-  if (reversible === undefined && harmful === undefined && (!input.task || scores.serves_task === undefined)) {
-    return { effect: "ask", note: "[jev] verdict unavailable", reason: "verdict-unavailable" }
-  }
+  // The unclear band: no verdict formed. The note names the first failing
+  // approve-side check so the pricing answers "why didn't this auto-run?",
+  // and `onNoVerdict` prices the band - "allow" (the default) enacts the
+  // request, "ask" keeps the annotated prompt it already carried, "deny"
+  // refuses with the reason as tool feedback.
+  if (reversible === undefined && harmful === undefined && (!input.task || scores.serves_task === undefined))
+    return noVerdict(policy, "[jev] verdict unavailable", "verdict-unavailable")
   if (reversible === undefined)
-    return { effect: "ask", note: "[jev] unclear (reversible unavailable)", reason: "reversible-unavailable" }
-  if (reversible < reversibleBar(bars)) {
-    return {
-      effect: "ask",
-      note: `[jev] reversible ${fmtOf(reversible)} (below ${fmtOf(reversibleBar(bars))})`,
-      reason: "reversible-below-bar",
-    }
-  }
+    return noVerdict(policy, "[jev] unclear (reversible unavailable)", "reversible-unavailable")
+  if (reversible < reversibleBar(bars))
+    return noVerdict(policy, `[jev] reversible ${fmtOf(reversible)} (below ${fmtOf(reversibleBar(bars))})`, "reversible-below-bar")
   if (input.task) {
     if (serves === undefined)
-      return { effect: "ask", note: "[jev] unclear (serves_task unavailable)", reason: "serves-task-unavailable" }
+      return noVerdict(policy, "[jev] unclear (serves_task unavailable)", "serves-task-unavailable")
     if (serves < servesTaskBar(bars))
-      return { effect: "ask", note: `[jev] off-task (serves_task ${fmtOf(serves)})`, reason: "serves-task-below-bar" }
+      return noVerdict(policy, `[jev] off-task (serves_task ${fmtOf(serves)})`, "serves-task-below-bar")
   }
-  if (harmful === undefined)
-    return { effect: "ask", note: "[jev] unclear (harmful unavailable)", reason: "harmful-unavailable" }
-  return { effect: "ask", note: `[jev] unclear (harmful ${fmtOf(harmful)})`, reason: "harmful-over-ceiling" }
+  if (harmful === undefined) return noVerdict(policy, "[jev] unclear (harmful unavailable)", "harmful-unavailable")
+  return noVerdict(policy, `[jev] unclear (harmful ${fmtOf(harmful)})`, "harmful-over-ceiling")
 }
 
 /** Classify a judgment failure for the stats: aborts/timeouts come from the

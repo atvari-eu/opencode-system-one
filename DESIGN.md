@@ -381,21 +381,34 @@ first redesign solved moves from the judge to the resolver - scores are
 permission numbers; what they enact is config.
 
 Config and gates follow the inversion. `mode` becomes explicit
-per-verdict delegation - `onApprove`: `allow`/`ask`, `onRefuse`:
-`deny`/`ask`, plus `onGate`: `deny`/`ask` for what a deterministic-gate
+per-point delegation - `onGate`: `deny`/`ask` for what a deterministic-gate
 hold enacts - refusal by default (a gate false positive costs the model the
 request as tool feedback; `ask` keeps the pre-delegation prompt-holding
 posture, and the deprecated `annotate` mode maps its gate to `ask`,
-`auto`/`deny` to `deny`) (annotate/auto/deny remain as a deprecated alias
+`auto`/`deny` to `deny`), plus `onApprove`: `allow`/`ask`, `onRefuse`:
+`deny`/`ask`, and `onNoVerdict`: `allow`/`ask`/`deny` for the unclear band
+no verdict resolves (annotate/auto/deny remain as a deprecated alias
 mapped onto the knobs, logging one notice) - and `minConfidence` becomes bars:
-`approve`/`refuse` verdict bars (defaults 0.5/0.5 - the noul midline: within
-an `approvals` setup the operator already delegated, so anything weakly
-certain enacts and mid-band harmful refuses; clamp 0-0.99 - the 0
+`approve`/`refuse` verdict bars (defaults 0.5/0.7 - the approve bar at the
+noul midline: within an `approvals` setup the operator already delegated,
+so anything weakly certain enacts, while the refuse bar above it makes a
+refusal need a clearly-harmful score and hands the mid band to
+`onNoVerdict`; clamp 0-0.99 - the 0
 floor seats sub-0.5 bars, the explicit delegation on unsure scores),
 legacy `deny` = `refuse`; unparseable input falls back per-key so garbage
 cannot silently raise a bar, e.g. the refuse default for a bare number
 that sets both) plus per-question overrides `reversible`/`serves_task`
-(own bars, same clamp) and `harmful` (own ceiling). The task line (`taskFromMessages`)
+(own bars, same clamp) and `harmful` (own ceiling). 2026-10, third dial:
+the unresolved band gets its own pricing key - `onNoVerdict`
+(`allow`/`ask`/`deny`, default `allow`), distinct from
+`onApprove`/`onRefuse`, which only govern resolved verdicts; the
+enforcement points order as `onGate`, `onApprove`, `onRefuse`,
+`onNoVerdict`, `onFail`. The default enacts whatever the bars leave
+undecided - the bars only separate refuse from allow, and the outcome note
+still names the first failing check (`- allowed by onNoVerdict`) while the
+stats keep the reason bands. `ask` restores the annotated prompt the band
+always resolved to, and the legacy `mode` aliases pin
+`onNoVerdict: "ask"` to keep their old posture. The task line (`taskFromMessages`)
 is strict extraction: the newest real user message over the same text
 sources messageText reads, minus its JSON.stringify fallback - a row
 without text parts supplies no task - own `[jev-…` notice rows and

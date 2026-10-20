@@ -280,11 +280,11 @@ describe("chain permission lookup", () => {
 })
 
 describe("parseMinConfidence", () => {
-  test("defaults follow the recipe's calibration", () => {
-    expect(parseMinConfidence(undefined)).toEqual({ approve: 0.5, refuse: 0.5 })
-    expect(parseMinConfidence({})).toEqual({ approve: 0.5, refuse: 0.5 })
-    expect(parseMinConfidence("0.6")).toEqual({ approve: 0.5, refuse: 0.5 })
-    expect(parseMinConfidence({ what: 1 })).toEqual({ approve: 0.5, refuse: 0.5 })
+  test("defaults follow the recipe's calibration: approve at the midline, refuse above it", () => {
+    expect(parseMinConfidence(undefined)).toEqual({ approve: 0.5, refuse: 0.7 })
+    expect(parseMinConfidence({})).toEqual({ approve: 0.5, refuse: 0.7 })
+    expect(parseMinConfidence("0.6")).toEqual({ approve: 0.5, refuse: 0.7 })
+    expect(parseMinConfidence({ what: 1 })).toEqual({ approve: 0.5, refuse: 0.7 })
   })
 
   test("a single number sets both verdict bars", () => {
@@ -292,17 +292,17 @@ describe("parseMinConfidence", () => {
   })
 
   test("approve/refuse keys; legacy deny = refuse", () => {
-    expect(parseMinConfidence({ approve: 0.6 })).toEqual({ approve: 0.6, refuse: 0.5 })
+    expect(parseMinConfidence({ approve: 0.6 })).toEqual({ approve: 0.6, refuse: 0.7 })
     expect(parseMinConfidence({ refuse: 0.95 })).toEqual({ approve: 0.5, refuse: 0.95 })
     expect(parseMinConfidence({ deny: 0.95 })).toEqual({ approve: 0.5, refuse: 0.95 })
     expect(parseMinConfidence({ refuse: 0.8, deny: 0.95 })).toEqual({ approve: 0.5, refuse: 0.8 })
   })
 
   test("per-question overrides beat the verdict keys; the ceiling caps at 0.5", () => {
-    expect(parseMinConfidence({ reversible: 0.8 })).toEqual({ approve: 0.5, refuse: 0.5, reversible: 0.8 })
-    expect(parseMinConfidence({ serves_task: 0.75 })).toEqual({ approve: 0.5, refuse: 0.5, serves_task: 0.75 })
-    expect(parseMinConfidence({ harmful: 0.3 })).toEqual({ approve: 0.5, refuse: 0.5, harmful: 0.3 })
-    expect(parseMinConfidence({ harmful: 0.99 })).toEqual({ approve: 0.5, refuse: 0.5, harmful: 0.5 })
+    expect(parseMinConfidence({ reversible: 0.8 })).toEqual({ approve: 0.5, refuse: 0.7, reversible: 0.8 })
+    expect(parseMinConfidence({ serves_task: 0.75 })).toEqual({ approve: 0.5, refuse: 0.7, serves_task: 0.75 })
+    expect(parseMinConfidence({ harmful: 0.3 })).toEqual({ approve: 0.5, refuse: 0.7, harmful: 0.3 })
+    expect(parseMinConfidence({ harmful: 0.99 })).toEqual({ approve: 0.5, refuse: 0.7, harmful: 0.5 })
   })
 
   test("both shapes clamp; garbage keys are ignored", () => {
@@ -312,56 +312,67 @@ describe("parseMinConfidence", () => {
   })
 
   test("bars may sit below 0.5: an explicit delegation on unsure scores", () => {
-    expect(parseMinConfidence({ approve: 0.4 })).toEqual({ approve: 0.4, refuse: 0.5 })
+    expect(parseMinConfidence({ approve: 0.4 })).toEqual({ approve: 0.4, refuse: 0.7 })
     expect(parseMinConfidence({ approve: 0.4, refuse: 0.6 })).toEqual({ approve: 0.4, refuse: 0.6 })
     expect(parseMinConfidence(0.3)).toEqual({ approve: 0.3, refuse: 0.3 })
-    expect(parseMinConfidence({ reversible: 0.4 })).toEqual({ approve: 0.5, refuse: 0.5, reversible: 0.4 })
-    expect(parseMinConfidence({ serves_task: 0.35 })).toEqual({ approve: 0.5, refuse: 0.5, serves_task: 0.35 })
+    expect(parseMinConfidence({ reversible: 0.4 })).toEqual({ approve: 0.5, refuse: 0.7, reversible: 0.4 })
+    expect(parseMinConfidence({ serves_task: 0.35 })).toEqual({ approve: 0.5, refuse: 0.7, serves_task: 0.35 })
   })
 })
 
 describe("parseApprovalsPolicy", () => {
-  test("defaults enact both verdicts and deny gate holds (bare true or {} is full delegation)", () => {
-    const defaults = { onApprove: "allow", onRefuse: "deny", onGate: "deny", onFail: "ask" }
+  test("defaults enact both verdicts, allow the unclear band, deny gate holds (bare true or {} is full delegation)", () => {
+    const defaults = { onGate: "deny", onApprove: "allow", onRefuse: "deny", onNoVerdict: "allow", onFail: "ask" }
     expect(parseApprovalsPolicy(true).policy).toEqual(defaults)
     expect(parseApprovalsPolicy({}).policy).toEqual(defaults)
     expect(parseApprovalsPolicy({}).legacyMode).toBe(null)
     expect(parseApprovalsPolicy({}).invalid).toEqual([])
   })
 
-  test("explicit keys pick per-verdict enactment and win over legacy mode", () => {
+  test("explicit keys pick per-point enactment and win over legacy mode", () => {
     expect(
-      parseApprovalsPolicy({ onApprove: "ask", onRefuse: "ask", onGate: "ask", onFail: "deny" }).policy,
+      parseApprovalsPolicy({ onGate: "ask", onApprove: "ask", onRefuse: "ask", onNoVerdict: "deny", onFail: "deny" })
+        .policy,
     ).toEqual({
+      onGate: "ask",
       onApprove: "ask",
       onRefuse: "ask",
-      onGate: "ask",
+      onNoVerdict: "deny",
       onFail: "deny",
     })
-    // mode annotate maps both verdicts and the gate to ask; the explicit keys still win
+    // mode annotate maps both verdicts, the unclear band and the gate to ask; the explicit keys still win
     const mixed = parseApprovalsPolicy({ mode: "annotate", onApprove: "allow" })
-    expect(mixed.policy).toEqual({ onApprove: "allow", onRefuse: "ask", onGate: "ask", onFail: "ask" })
+    expect(mixed.policy).toEqual({
+      onGate: "ask",
+      onApprove: "allow",
+      onRefuse: "ask",
+      onNoVerdict: "ask",
+      onFail: "ask",
+    })
     expect(mixed.legacyMode).toBe("annotate")
     expect(mixed.invalid).toEqual([])
   })
 
   test("deprecated modes map onto the same knobs and come back for the notice", () => {
     expect(parseApprovalsPolicy({ mode: "annotate" }).policy).toEqual({
+      onGate: "ask",
       onApprove: "ask",
       onRefuse: "ask",
-      onGate: "ask",
+      onNoVerdict: "ask",
       onFail: "ask",
     })
     expect(parseApprovalsPolicy({ mode: "auto" }).policy).toEqual({
+      onGate: "deny",
       onApprove: "allow",
       onRefuse: "deny",
-      onGate: "deny",
+      onNoVerdict: "ask",
       onFail: "ask",
     })
     expect(parseApprovalsPolicy({ mode: "deny" }).policy).toEqual({
+      onGate: "deny",
       onApprove: "ask",
       onRefuse: "deny",
-      onGate: "deny",
+      onNoVerdict: "ask",
       onFail: "ask",
     })
     expect(parseApprovalsPolicy({ mode: "auto" }).legacyMode).toBe("auto")
@@ -369,15 +380,16 @@ describe("parseApprovalsPolicy", () => {
 
   test("invalid on* values fall back and are reported for the log line", () => {
     const bad = parseApprovalsPolicy({
+      onGate: "deny?",
       onApprove: "maybe",
       onRefuse: "no",
-      onGate: "deny?",
+      onNoVerdict: "maybe",
       onFail: "why",
       mode: "weird",
     })
-    expect(bad.policy).toEqual({ onApprove: "allow", onRefuse: "deny", onGate: "deny", onFail: "ask" })
+    expect(bad.policy).toEqual({ onGate: "deny", onApprove: "allow", onRefuse: "deny", onNoVerdict: "allow", onFail: "ask" })
     expect(bad.legacyMode).toBe(null)
-    expect(bad.invalid).toHaveLength(5)
+    expect(bad.invalid).toHaveLength(6)
   })
 })
 
@@ -834,7 +846,7 @@ describe("resolveApproval", () => {
       reason: "hold-refuse",
     })
     // onApprove alone tames only the approve side
-    const mixed = resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: { onApprove: "ask", onRefuse: "deny" } })
+    const mixed = resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: { ...ENACT, onApprove: "ask" } })
     expect(mixed.effect).toBe("ask")
   })
 
@@ -861,6 +873,32 @@ describe("resolveApproval", () => {
     expect(resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: HOLD }).reason).toBe("hold-approve")
     expect(resolveApproval({ scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.9 }, task: true, bars: BARS, policy: HOLD }).reason).toBe("hold-refuse")
     expect(resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: ENACT }).reason).toBeUndefined()
+  })
+
+  test("onNoVerdict prices the unclear band: allow (the parsed default), deny, and the partial-policy fallback", () => {
+    const unclear = (policy: any) =>
+      resolveApproval({ scores: { reversible: 0.74, harmful: 0.02 }, task: false, bars: BARS, policy })
+    // a policy built before the knob satisfies the resolver without it - the band stays the annotated prompt
+    expect(unclear(ENACT)).toEqual({
+      effect: "ask",
+      note: "[jev] reversible 0.74 (below 0.90)",
+      reason: "reversible-below-bar",
+    })
+    expect(unclear({ onApprove: "allow", onRefuse: "deny", onNoVerdict: "allow" })).toEqual({
+      effect: "allow",
+      note: "[jev] reversible 0.74 (below 0.90) - allowed by onNoVerdict",
+      reason: "reversible-below-bar",
+    })
+    expect(unclear({ onApprove: "allow", onRefuse: "deny", onNoVerdict: "deny" })).toEqual({
+      effect: "deny",
+      note: "[jev] reversible 0.74 (below 0.90) - denied by onNoVerdict",
+      reason: "reversible-below-bar",
+    })
+    // nothing was binding, so a no-verdict outcome never carries a verdict or confidence
+    const priced = unclear(parseApprovalsPolicy(true).policy)
+    expect(priced.effect).toBe("allow")
+    expect(priced.verdict).toBeUndefined()
+    expect(priced.confidence).toBeUndefined()
   })
 
   test("invalid score values count as unavailable, never as small probabilities", () => {

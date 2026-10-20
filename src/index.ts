@@ -1046,7 +1046,7 @@ export default Plugin.define({
       }
       if (parsedPolicy.legacyMode) {
         console.log(
-          `[jev] approvals: mode "${parsedPolicy.legacyMode}" is deprecated - use "onApprove": "allow" | "ask", "onRefuse": "deny" | "ask", "onGate": "deny" | "ask"`,
+          `[jev] approvals: mode "${parsedPolicy.legacyMode}" is deprecated - use "onGate": "deny" | "ask", "onApprove": "allow" | "ask", "onRefuse": "deny" | "ask", "onNoVerdict": "allow" | "ask" | "deny"`,
         )
       }
     }
@@ -1913,10 +1913,12 @@ export default Plugin.define({
 
             // Three noul questions - reversible, serves_task (only with a
             // task), harmful - resolved by threshold bars on the returned
-            // probabilities. Fail-closed: missing, malformed, or
-            // out-of-range scores stay exactly the original prompt.
-            // Judged with approvals.jevTimeout plus one transient retry; the
-            // judged span rides on statsBound so the catch can report it.
+            // probabilities. Missing, malformed, or out-of-range scores
+            // form no verdict: the unclear band is priced by
+            // approvals.onNoVerdict ("allow" by default, "ask" keeps the
+            // original prompt, "deny" refuses). Judged with
+            // approvals.jevTimeout plus one transient retry; the judged
+            // span rides on statsBound so the catch can report it.
             statsBound.judgeStarted = Date.now()
             const { reply, latencyMs } = await judgedApproval(
               approvalQuestions(action, task !== "", approvalsSandboxNote !== ""),
@@ -3163,7 +3165,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the
