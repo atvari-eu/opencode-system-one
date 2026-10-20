@@ -1837,6 +1837,19 @@ export function matchesPatterns(text: string, patterns: Array<RegExp>): boolean 
 export const READ_ONLY_SHELL =
   /^\s*(?:grep|rg|ls|cat|tail|head|find|stat|file|diff|echo|wc|sort|awk|pwd|which|readlink|sha256sum|du|tree|jq|column|man|whoami|basename|dirname)\b/
 
+/** True when every chain segment of a shell command matches READ_ONLY_SHELL:
+ * the whole command reads and lists, never mutates. Chain separators are
+ * already stripped by the split, so any remaining `>` (redirect target,
+ * `2>&1`) marks a write and fails the check - backgrounding (`&`) splits
+ * away harmlessly. The approval hook uses it for the optional read-only
+ * fast-path (approvals.readonlyAllow), which still runs after the
+ * deterministic gates so secret paths hold. */
+export function isReadOnlyShellCommand(resource: string): boolean {
+  return shellChainSegments(resource).every(
+    (segment) => !segment.includes(">") && READ_ONLY_SHELL.test(segment),
+  )
+}
+
 /** The two deterministic-gate toggles (approvals.gates): `secrets` gates
  * credential-ish paths (default on, outranks config allow rules at the hook
  * level so a broad `read *` allow cannot wave secret paths through);
@@ -2131,21 +2144,26 @@ export interface ApprovalPolicy {
   onApprove: "allow" | "ask"
   onRefuse: "deny" | "ask"
   onGate: "deny" | "ask"
+  /** What a failed judgment costs (timeout, upstream fault): "ask" keeps
+   * OpenCode's own prompt, "deny" refuses, "allow" enacts the request. */
+  onFail: "allow" | "ask" | "deny"
 }
 
 export const APPROVAL_POLICY_DEFAULT: ApprovalPolicy = {
   onApprove: "allow",
   onRefuse: "deny",
   onGate: "deny",
+  onFail: "ask",
 }
 
 // The deprecated single `mode` key maps onto the same knobs: annotate held
 // everything at the prompt (so its gates ask), auto delegated the verdicts
-// (gates deny - no interrupt), deny delegated refusals only.
+// (gates deny - no interrupt), deny delegated refusals only. Legacy modes
+// leave `onFail` alone - a judgment failure was always a prompt.
 const APPROVAL_MODE_LEGACY: Record<string, ApprovalPolicy> = {
-  annotate: { onApprove: "ask", onRefuse: "ask", onGate: "ask" },
-  auto: { onApprove: "allow", onRefuse: "deny", onGate: "deny" },
-  deny: { onApprove: "ask", onRefuse: "deny", onGate: "deny" },
+  annotate: { onApprove: "ask", onRefuse: "ask", onGate: "ask", onFail: "ask" },
+  auto: { onApprove: "allow", onRefuse: "deny", onGate: "deny", onFail: "ask" },
+  deny: { onApprove: "ask", onRefuse: "deny", onGate: "deny", onFail: "ask" },
 }
 
 /** approvals config object → the verdict→effect policy. Explicit
@@ -2174,6 +2192,9 @@ export function parseApprovalsPolicy(
   else if (entry.onRefuse !== undefined) invalid.push(`onRefuse ${JSON.stringify(String(entry.onRefuse))}`)
   if (entry.onGate === "deny" || entry.onGate === "ask") policy.onGate = entry.onGate
   else if (entry.onGate !== undefined) invalid.push(`onGate ${JSON.stringify(String(entry.onGate))}`)
+  if (entry.onFail === "allow" || entry.onFail === "ask" || entry.onFail === "deny")
+    policy.onFail = entry.onFail
+  else if (entry.onFail !== undefined) invalid.push(`onFail ${JSON.stringify(String(entry.onFail))}`)
   return { policy, legacyMode, invalid }
 }
 
@@ -2326,6 +2347,40 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   return { effect: "ask", note: `[jev] unclear (harmful ${fmtOf(harmful)})` }
 }
 
+/** Classify a judgment failure for the stats: aborts/timeouts come from the
+ * per-call signal budget, fetch/socket/upstream-API strings come from the
+ * transport, everything else is a judgment or configuration error. */
+export function approvalFailureCause(err: unknown): "timeout" | "http" | "error" {
+  const shaped = err as { name?: unknown; message?: unknown } | null
+  const text = `${shaped?.name ?? ""} ${shaped?.message ?? String(err ?? "")}`.toLowerCase()
+  if (/\b(?:timeouterror|aborterror|timeout|abort|timed out)\b/.test(text)) return "timeout"
+  if (/\b(?:http|fetch|socket|econn|eai|network|upstream)\b|\b[45]\d\d\b/.test(text)) return "http"
+  return "error"
+}
+
+/** Re-checkable semantic context for command prefixes that a scored review
+ * keeps misreading. Rides into the judged state as "default context:" when
+ * the matched permission rule carried no operator context of its own. */
+const APPROVAL_DEFAULT_CONTEXTS: Array<{ test: RegExp; text: string }> = [
+  {
+    test: /[;&|]\s*curl\b|^\s*curl\b/,
+    text:
+      "curl: GET requests are read-only data fetches; state-changing methods and -d request bodies are not.",
+  },
+  {
+    test: /\bfind\b/,
+    text: "find: lists and filters files; only -delete or state-changing -exec commands mutate anything.",
+  },
+  {
+    test: /\bsed\b/,
+    text: "sed without -i prints a transformed copy; it never edits files in place.",
+  },
+]
+
+export function approvalDefaultContext(resource: string): string {
+  return APPROVAL_DEFAULT_CONTEXTS.find(({ test }) => test.test(resource))?.text ?? ""
+}
+
 // Approval-stats diagnostics: which (action, resource) slices actually ask,
 // and why - so owners can promote hot slices into explicit permissions
 // rules with evidence instead of guesswork.
@@ -2348,6 +2403,12 @@ export interface ApprovalStatsEvent {
   scores?: ApprovalScores
   /** Token usage of the judged request, when the endpoint reported it. */
   usage?: { input_tokens?: number; output_tokens?: number }
+  /** Judge-failure class, when the outcome is "fail" (recorded post-retry). */
+  cause?: "timeout" | "http" | "error"
+  /** Judgment latency in ms, once a judgment reached the endpoint. */
+  latencyMs?: number
+  /** What approvals.onFail enacted for a "fail" outcome. */
+  enacted?: "allow" | "deny"
 }
 
 const STATS_BANDS: Array<{ hi: number; label: string }> = [
@@ -2362,6 +2423,49 @@ const STATS_BANDS: Array<{ hi: number; label: string }> = [
 export function approvalStatsBand(confidence: number | undefined): string {
   if (confidence === undefined || !Number.isFinite(confidence)) return "-"
   return STATS_BANDS.find((band) => confidence < band.hi)?.label ?? ">=0.9"
+}
+
+/** Suggest minConfidence bars from recorded stats: the 0.95-mass floors.
+ * For each verdict the bands record the binding score per slice; the walk
+ * starts at the top band and descends until 95% of that verdict's mass is
+ * covered, proposing the floor of the band it lands on. Fields stay
+ * undefined below 50 samples in either direction - the defaults are quiet
+ * enough that thin data must not move them. */
+export function suggestedApprovalStats(blob: unknown): { approve?: number; refuse?: number } {
+  const rows =
+    blob && typeof blob === "object" && !Array.isArray(blob)
+      ? Object.values(blob as Record<string, unknown>)
+      : []
+  const approvalHistogram = (outcome: string): number[] => {
+    const sums = STATS_BANDS.map(() => 0)
+    for (const row of rows) {
+      const bands = (row as { bands?: unknown })?.bands
+      if (!bands || typeof bands !== "object") continue
+      for (let i = 0; i < STATS_BANDS.length; i++) {
+        sums[i] += (bands as Record<string, unknown>)[`${outcome}/${STATS_BANDS[i].label}`] as number ?? 0
+      }
+    }
+    return sums
+  }
+  // Walk from the top band down; the proposal is the floor of the first
+  // band where the covered mass reaches 0.95.
+  const coverFloor = (sums: number[]): number | undefined => {
+    const samples = sums.reduce((acc, n) => acc + n, 0)
+    if (samples < 50) return undefined
+    let covered = 0
+    for (let i = sums.length - 1; i >= 1; i--) {
+      covered += sums[i]
+      if (covered / samples >= 0.95) {
+        // Band floors ascend with the index: 0.5-0.6 -> 0.5, >=0.9 -> 0.9.
+        return 0.5 + (i - 1) * 0.1
+      }
+    }
+    return 0.5
+  }
+  return {
+    approve: coverFloor(approvalHistogram("allow")),
+    refuse: coverFloor(approvalHistogram("deny")),
+  }
 }
 
 /** Fold one event into the running aggregate. Pure; unknown shapes rebuild. */
@@ -2394,6 +2498,7 @@ export function mergeApprovalStats(existing: unknown, event: ApprovalStatsEvent)
   }
   const usageSum = (value: unknown): number =>
     typeof value === "number" && Number.isFinite(value) ? value : 0
+  const latencySum = usageSum(event.latencyMs)
   return {
     count: num("count") + 1,
     allow: num("allow") + (event.outcome === "allow" ? 1 : 0),
@@ -2401,6 +2506,13 @@ export function mergeApprovalStats(existing: unknown, event: ApprovalStatsEvent)
     gate: num("gate") + (event.outcome === "gate" ? 1 : 0),
     fail: num("fail") + (event.outcome === "fail" ? 1 : 0),
     ask: num("ask") + (event.outcome === "ask" ? 1 : 0),
+    failTimeout: num("failTimeout") + (event.outcome === "fail" && event.cause === "timeout" ? 1 : 0),
+    failHttp: num("failHttp") + (event.outcome === "fail" && event.cause === "http" ? 1 : 0),
+    failError: num("failError") + (event.outcome === "fail" && event.cause === "error" ? 1 : 0),
+    failEnactedAllow: num("failEnactedAllow") + (event.outcome === "fail" && event.enacted === "allow" ? 1 : 0),
+    failEnactedDeny: num("failEnactedDeny") + (event.outcome === "fail" && event.enacted === "deny" ? 1 : 0),
+    latencyTotal: num("latencyTotal") + latencySum,
+    latencyCount: num("latencyCount") + (event.latencyMs ? 1 : 0),
     inputTokens: num("inputTokens") + usageSum(event.usage?.input_tokens),
     outputTokens: num("outputTokens") + usageSum(event.usage?.output_tokens),
     bands: nextBands,

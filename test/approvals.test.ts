@@ -5,6 +5,8 @@
 import { describe, expect, test } from "bun:test"
 import {
   APPROVAL_DESTRUCTIVE,
+  approvalDefaultContext,
+  approvalFailureCause,
   approvalGate,
   approvalQuestions,
   approvalStatsBand,
@@ -12,6 +14,7 @@ import {
   chainPermissionEffect,
   globMatches,
   harmfulQuestion,
+  isReadOnlyShellCommand,
   lookupPermission,
   matchesPatterns,
   mergeApprovalStats,
@@ -25,6 +28,7 @@ import {
   secretPathAction,
   servesTaskQuestion,
   shellChainSegments,
+  suggestedApprovalStats,
   taskFromMessages,
 } from "../src/logic"
 
@@ -92,6 +96,73 @@ describe("approval stats", () => {
     })
     expect(agg).toMatchObject({ count: 1, ask: 1, inputTokens: 0, outputTokens: 0 })
     expect((agg as Record<string, unknown>).bands).toMatchObject({ "ask/-": 1 })
+  })
+
+  test("fail events fold cause classes, judge latency sums and onFail enacts", () => {
+    let agg: unknown = undefined
+    agg = mergeApprovalStats(agg, { outcome: "fail", cause: "timeout", latencyMs: 8100 })
+    agg = mergeApprovalStats(agg, { outcome: "fail", cause: "http", latencyMs: 2050, enacted: "deny" })
+    agg = mergeApprovalStats(agg, { outcome: "allow", latencyMs: 950 })
+    expect(agg).toMatchObject({
+      fail: 2,
+      failTimeout: 1,
+      failHttp: 1,
+      failError: 0,
+      failEnactedDeny: 1,
+      failEnactedAllow: 0,
+      latencyTotal: 11100,
+      latencyCount: 3,
+    })
+  })
+})
+
+describe("isReadOnlyShellCommand", () => {
+  test("every chain segment must be read-only; redirects and mutations fail", () => {
+    expect(isReadOnlyShellCommand("grep -n foo src")).toBe(true)
+    expect(isReadOnlyShellCommand("grep foo | head -3")).toBe(true)
+    // Pipes are fine; redirect targets and stream rewrites are writes.
+    expect(isReadOnlyShellCommand("grep foo > out.txt")).toBe(false)
+    expect(isReadOnlyShellCommand("grep foo 2>&1 | wc -l")).toBe(false)
+    expect(isReadOnlyShellCommand("cat a && tail b && wc c")).toBe(true)
+    expect(isReadOnlyShellCommand("cat a && git status")).toBe(false)
+    expect(isReadOnlyShellCommand("rm -rf dist")).toBe(false)
+  })
+})
+
+describe("approvalFailureCause", () => {
+  test("classify timeouts, endpoint transports and everything else", () => {
+    const timeoutErr = Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })
+    expect(approvalFailureCause(timeoutErr)).toBe("timeout")
+    expect(approvalFailureCause(new Error("jev: upstream 422 - Invalid fields"))).toBe("http")
+    expect(approvalFailureCause(new Error("fetch failed: ECONNREFUSED"))).toBe("http")
+    expect(approvalFailureCause(new TypeError("undefined is not an object"))).toBe("error")
+  })
+})
+
+describe("approvalDefaultContext", () => {
+  test("known risky prefixes get one-line context; anything else stays empty", () => {
+    expect(approvalDefaultContext("curl -s https://api.example.dev/status")).toContain("GET requests are read-only")
+    expect(approvalDefaultContext("cd work && curl -X POST /api/reset")).toContain("GET requests are read-only")
+    expect(approvalDefaultContext("find . -name '*.ts'")).toContain("-delete or state-changing")
+    expect(approvalDefaultContext("sed -n '1,10p' CHANGELOG.md")).toContain("without -i")
+    expect(approvalDefaultContext("git status")).toBe("")
+  })
+})
+
+describe("suggestedApprovalStats", () => {
+  const row = (bands: Record<string, number>) => ({ count: 10, bands })
+  test("thin stats propose nothing; dense allows propose their band floor", () => {
+    expect(suggestedApprovalStats({ one: row({ "allow/>=0.9": 3 }) })).toEqual({
+      approve: undefined,
+      refuse: undefined,
+    })
+    const dense: Record<string, unknown> = {}
+    for (let i = 0; i < 12; i++) dense[`slice${i}`] = row({ "allow/0.8-0.9": 5, "allow/>=0.9": 45, "deny/>=0.9": 2 })
+    // 600 allow samples, only 90% at >=0.9 -> need the 0.8-0.9 band for 95%;
+    // 24 deny samples are too thin to propose a refuse floor.
+    const suggestion = suggestedApprovalStats(dense)
+    expect(suggestion.approve).toBe(0.8)
+    expect(suggestion.refuse).toBe(undefined)
   })
 })
 
@@ -176,7 +247,7 @@ describe("parseMinConfidence", () => {
 
 describe("parseApprovalsPolicy", () => {
   test("defaults enact both verdicts and deny gate holds (bare true or {} is full delegation)", () => {
-    const defaults = { onApprove: "allow", onRefuse: "deny", onGate: "deny" }
+    const defaults = { onApprove: "allow", onRefuse: "deny", onGate: "deny", onFail: "ask" }
     expect(parseApprovalsPolicy(true).policy).toEqual(defaults)
     expect(parseApprovalsPolicy({}).policy).toEqual(defaults)
     expect(parseApprovalsPolicy({}).legacyMode).toBe(null)
@@ -184,14 +255,17 @@ describe("parseApprovalsPolicy", () => {
   })
 
   test("explicit keys pick per-verdict enactment and win over legacy mode", () => {
-    expect(parseApprovalsPolicy({ onApprove: "ask", onRefuse: "ask", onGate: "ask" }).policy).toEqual({
+    expect(
+      parseApprovalsPolicy({ onApprove: "ask", onRefuse: "ask", onGate: "ask", onFail: "deny" }).policy,
+    ).toEqual({
       onApprove: "ask",
       onRefuse: "ask",
       onGate: "ask",
+      onFail: "deny",
     })
     // mode annotate maps both verdicts and the gate to ask; the explicit keys still win
     const mixed = parseApprovalsPolicy({ mode: "annotate", onApprove: "allow" })
-    expect(mixed.policy).toEqual({ onApprove: "allow", onRefuse: "ask", onGate: "ask" })
+    expect(mixed.policy).toEqual({ onApprove: "allow", onRefuse: "ask", onGate: "ask", onFail: "ask" })
     expect(mixed.legacyMode).toBe("annotate")
     expect(mixed.invalid).toEqual([])
   })
@@ -201,25 +275,34 @@ describe("parseApprovalsPolicy", () => {
       onApprove: "ask",
       onRefuse: "ask",
       onGate: "ask",
+      onFail: "ask",
     })
     expect(parseApprovalsPolicy({ mode: "auto" }).policy).toEqual({
       onApprove: "allow",
       onRefuse: "deny",
       onGate: "deny",
+      onFail: "ask",
     })
     expect(parseApprovalsPolicy({ mode: "deny" }).policy).toEqual({
       onApprove: "ask",
       onRefuse: "deny",
       onGate: "deny",
+      onFail: "ask",
     })
     expect(parseApprovalsPolicy({ mode: "auto" }).legacyMode).toBe("auto")
   })
 
   test("invalid on* values fall back and are reported for the log line", () => {
-    const bad = parseApprovalsPolicy({ onApprove: "maybe", onRefuse: "no", onGate: "deny?", mode: "weird" })
-    expect(bad.policy).toEqual({ onApprove: "allow", onRefuse: "deny", onGate: "deny" })
+    const bad = parseApprovalsPolicy({
+      onApprove: "maybe",
+      onRefuse: "no",
+      onGate: "deny?",
+      onFail: "why",
+      mode: "weird",
+    })
+    expect(bad.policy).toEqual({ onApprove: "allow", onRefuse: "deny", onGate: "deny", onFail: "ask" })
     expect(bad.legacyMode).toBe(null)
-    expect(bad.invalid).toHaveLength(4)
+    expect(bad.invalid).toHaveLength(5)
   })
 })
 

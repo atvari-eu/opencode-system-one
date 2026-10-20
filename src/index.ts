@@ -111,7 +111,11 @@ import {
   secretPath,
   secretPathAction,
   sessionSurfaceKey,
+  approvalDefaultContext,
+  approvalFailureCause,
+  isReadOnlyShellCommand,
   shellChainSegments,
+  suggestedApprovalStats,
   rankSourcePopular,
   refKey,
   resolveApproval,
@@ -1059,6 +1063,20 @@ export default Plugin.define({
     // secrets=true (secret-path gate on) and readonlyBypass=true (read-only
     // shell commands skip the destructive-string check).
     const approvalsGates = parseGates(approvalsObj.gates)
+    // Per-judgment signal budget (approvals.jevTimeout, ms; clamped
+    // 2000-120000, default 8000): each judgment gets the budget plus one
+    // retry on transient failures (timeout / upstream http) before the
+    // request degrades to the fail path.
+    const rawJevTimeout = approvalsObj.jevTimeout
+    const approvalsJevTimeout =
+      typeof rawJevTimeout === "number" && Number.isFinite(rawJevTimeout) && rawJevTimeout > 0
+        ? Math.min(120_000, Math.max(2_000, rawJevTimeout))
+        : 8_000
+    // Read-only fast-path (approvals.readonlyAllow, default off): a shell
+    // request whose every chain segment is structurally read-only allows
+    // without a judgment. Gates still run first, so secret paths and
+    // destructive chains hold exactly as they would without the option.
+    const approvalsReadonlyAllow = approvalsObj.readonlyAllow === true
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1646,6 +1664,27 @@ export default Plugin.define({
           }
         }
 
+        // One approval judgment: the judge call with the configured signal
+        // budget plus a single retry on transient causes (timeout / http) -
+        // both commonly strike once in bursts, while config and credential
+        // faults ("error") fail fast and never retry. Returns the judged
+        // reply and the wall-clock latency covering both attempts.
+        const judgedApproval = async (
+          questions: Question[],
+          state: string,
+        ): Promise<{ reply: JevReply; latencyMs: number }> => {
+          const started = Date.now()
+          const attempt = (): Promise<{ reply: JevReply; cached: boolean }> =>
+            cachedJudge(questions, state, AbortSignal.timeout(approvalsJevTimeout))
+          try {
+            return { reply: (await attempt()).reply, latencyMs: Date.now() - started }
+          } catch (err) {
+            if (approvalFailureCause(err) === "error") throw err
+            await new Promise((resolve) => setTimeout(resolve, 400))
+            return { reply: (await attempt()).reply, latencyMs: Date.now() - started }
+          }
+        }
+
         // Session+hint keys already posted once (bounded).
         const hinted = new Set<string>()
 
@@ -1660,7 +1699,13 @@ export default Plugin.define({
           const resources: string[] = Array.isArray(event?.resources)
             ? event.resources.map((item: unknown) => normalizeWorkspacePath(location, String(item ?? "")))
             : []
-          const statsBound = { action, resources }
+          // judgeStarted mutates post-hoc so the catch can compute the
+          // judged span even when the try-local names never resolved
+          // (same scope trick as the action bound below).
+          const statsBound: { action: string; resources: string[]; judgeStarted?: number } = {
+            action,
+            resources,
+          }
           try {
             if (event?.effect !== "ask") return
             if (resources.length === 0) return
@@ -1781,6 +1826,21 @@ export default Plugin.define({
               }
             }
 
+            // Read-only fast-path (approvals.readonlyAllow): a request whose
+            // every shell segment is structurally read-only allows before
+            // any judgment - the pipeline class (grep | head | wc | …) that
+            // made up the largest ask+fail share in the recorded stats, and
+            // what non-read-only pipe segments fall back to jev for. Gates
+            // already ran above, so secret paths and destructive chains
+            // hold exactly as they would without the option.
+            if (approvalsReadonlyAllow && isShellAction(action) && resources.every(isReadOnlyShellCommand)) {
+              event.effect = "allow"
+              console.log(`[jev] approval: read-only fast-path ${action} ${resources.join(" && ").slice(0, 120)}`)
+              await recordApprovalStat(action, resources, { outcome: "allow" })
+              await postHint("allow")
+              return
+            }
+
             // The judged state carries named fields: workspace location,
             // action, the operations (capped at 10 × 1500, redacted per
             // field), rule context, and the current task (serves_task is
@@ -1798,8 +1858,14 @@ export default Plugin.define({
             for (const op of resources.slice(0, 10)) detail.push(`- ${redactText(op.slice(0, 1500)).text}`)
             if (event.metadata && typeof event.metadata === "object")
               detail.push(`details: ${redactText(JSON.stringify(event.metadata).slice(0, 2000)).text}`)
-            if (matched?.effect === "system-one" && matched.context)
+            if (matched?.effect === "system-one" && matched.context) {
               detail.push(`operator context: ${matched.context}`)
+            } else {
+              // Family default contexts for prefixes a scored review keeps
+              // misreading (curl, find, sed) - skipped when the rule spoke.
+              const defaultContext = isShellAction(action) ? approvalDefaultContext(resources[0] ?? "") : ""
+              if (defaultContext) detail.push(`default context: ${defaultContext}`)
+            }
             if (task) detail.push(`task: ${redactText(task).text}`)
             const state =
               "An OpenCode coding agent requests permission for the operation(s) below. Decide how it should be handled.\n\n" +
@@ -1809,11 +1875,10 @@ export default Plugin.define({
             // task), harmful - resolved by threshold bars on the returned
             // probabilities. Fail-closed: missing, malformed, or
             // out-of-range scores stay exactly the original prompt.
-            const { reply } = await cachedJudge(
-              approvalQuestions(action, task !== ""),
-              state,
-              AbortSignal.timeout(8_000),
-            )
+            // Judged with approvals.jevTimeout plus one transient retry; the
+            // judged span rides on statsBound so the catch can report it.
+            statsBound.judgeStarted = Date.now()
+            const { reply, latencyMs } = await judgedApproval(approvalQuestions(action, task !== ""), state)
             const answers = (reply as any).answers ?? {}
             const scores = {
               reversible: answers.reversible?.noul,
@@ -1836,6 +1901,7 @@ export default Plugin.define({
                 verdict: outcome.verdict,
                 confidence: outcome.confidence,
                 scores,
+                latencyMs,
                 usage: (reply as any).usage,
               })
               await postHint("allow")
@@ -1850,6 +1916,7 @@ export default Plugin.define({
                 verdict: outcome.verdict,
                 confidence: outcome.confidence,
                 scores,
+                latencyMs,
                 usage: (reply as any).usage,
               })
               await postHint("deny")
@@ -1861,13 +1928,51 @@ export default Plugin.define({
               verdict: outcome.verdict,
               confidence: outcome.confidence,
               scores,
+              latencyMs,
               usage: (reply as any).usage,
             })
             await postHint("ask")
           } catch (err: any) {
-            await recordApprovalStat(statsBound.action, statsBound.resources, { outcome: "fail" })
+            const cause = approvalFailureCause(err)
+            const latencyMs =
+              typeof statsBound.judgeStarted === "number" ? Date.now() - statsBound.judgeStarted : undefined
+            // approvals.onFail prices a failed judgment: "ask" (default)
+            // leaves OpenCode's own prompt untouched, "deny" refuses, and
+            // "allow" enacts the request the judgment never scored - an
+            // explicit delegation in which the endpoint's health becomes
+            // the approval, so it belongs to trusted-until-verified setups.
+            if (approvalsPolicy.onFail === "allow") {
+              event.effect = "allow"
+              annotate(event, `[jev] judgment failed (${cause}) - allowed by approvals.onFail`)
+              console.log(`[jev] approval: judgment failed (${cause}) - allowed by onFail`)
+              await recordApprovalStat(statsBound.action, statsBound.resources, {
+                outcome: "fail",
+                cause,
+                latencyMs,
+                enacted: "allow",
+              })
+              return
+            }
+            if (approvalsPolicy.onFail === "deny") {
+              event.effect = "deny"
+              event.message = `[jev] approval: denied - judgment failed (${cause})`
+              annotate(event, `[jev] judgment failed (${cause}) - denied by approvals.onFail`)
+              console.log(`[jev] approval: judgment failed (${cause}) - denied by onFail`)
+              await recordApprovalStat(statsBound.action, statsBound.resources, {
+                outcome: "fail",
+                cause,
+                latencyMs,
+                enacted: "deny",
+              })
+              return
+            }
+            await recordApprovalStat(statsBound.action, statsBound.resources, {
+              outcome: "fail",
+              cause,
+              latencyMs,
+            })
             await surfaceJev(err?.message, event?.sessionID)
-            console.error(`[jev] approval: judgment skipped (${String(err?.message ?? err)})`)
+            console.error(`[jev] approval: judgment skipped (${cause}: ${String(err?.message ?? err)})`)
           }
         })
       }
@@ -2320,6 +2425,13 @@ export default Plugin.define({
                     `ask=${r.ask ?? 0}`,
                     `gate=${r.gate ?? 0}`,
                     `fail=${r.fail ?? 0}`,
+                    r.failTimeout || r.failHttp || r.failError
+                      ? `failCauses=timeout:${r.failTimeout ?? 0} http:${r.failHttp ?? 0} error:${r.failError ?? 0}`
+                      : "",
+                    r.failEnactedAllow || r.failEnactedDeny
+                      ? `failedEnacted=${r.failEnactedAllow ?? 0}allow/${r.failEnactedDeny ?? 0}deny`
+                      : "",
+                    r.latencyCount ? `judge=~${Math.round((r.latencyTotal ?? 0) / r.latencyCount)}ms` : "",
                     r.inputTokens || r.outputTokens
                       ? `tokens=${r.inputTokens ?? 0}in/${r.outputTokens ?? 0}out`
                       : "",
@@ -2331,7 +2443,20 @@ export default Plugin.define({
                   return `${r.key} - ${parts.join(" ")}`
                 })
                 .join("\n")
-              await post(`[jev-approval-stats]\n${body}`)
+              const sum = (key: string): number =>
+                rows.reduce((acc: number, r: any) => acc + ((r as any)[key] ?? 0), 0)
+              const suggestion = suggestedApprovalStats(blob)
+              const suggestionParts = [
+                suggestion.approve === undefined ? "" : `approve>=${suggestion.approve}`,
+                suggestion.refuse === undefined ? "" : `refuse>=${suggestion.refuse}`,
+              ].filter(Boolean)
+              const header =
+                `[jev-approval-stats] totals: count=${sum("count")} allow=${sum("allow")} deny=${sum("deny")}` +
+                ` ask=${sum("ask")} gate=${sum("gate")} fail=${sum("fail")}` +
+                (suggestionParts.length
+                  ? `\nsuggested minConfidence floors: ${suggestionParts.join(" ")} (0.95 band coverage)`
+                  : "")
+              await post(`${header}\n${body}`)
             } catch (err: any) {
               await post(`[jev-approval-stats] failed: ${String(err?.message ?? err)}`)
             }
