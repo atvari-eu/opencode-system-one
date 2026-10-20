@@ -1787,8 +1787,9 @@ export function approvalQuestions(action: string, hasTask: boolean): QuestionLik
 // Hard "never auto-approve" patterns for shell resource strings (the
 // permission action is "shell" on OpenCode v2, "bash" on older releases).
 // This is a
-// deny-the-shortcut list, not a security sandbox: a false positive only keeps
-// the human prompt (annotate-only), never blocks anything. Recursive rm now
+// deny-the-shortcut list, not a security sandbox: a false positive enacts
+// the gate policy (`onGate`) - refusal with tool feedback by default, or
+// only the human prompt with "ask" in the config. Recursive rm now
 // gates only when a target is absolute or tilde-rooted - bulk deletion
 // outside the workspace - while routine workspace-local cleanup (rm -rf
 // dist) passes to the judge, whose deny criterion covers broad deletions.
@@ -2121,27 +2122,37 @@ export const REFUSE_BAR_DEFAULT = 0.85
 
 /** What each verdict does. Both directions default to enacting (allow /
  * deny) - bare config is full delegation; "ask" holds that verdict at the
- * human prompt it caused (the note annotates that prompt). */
+ * human prompt it caused (the note annotates that prompt). `onGate` does
+ * the same for the deterministic approval gates: the default refuses a
+ * held request outright (the reason rides back as tool feedback so the
+ * model picks another approach), `onGate: "ask"` leaves it at the prompt
+ * the gate hit. */
 export interface ApprovalPolicy {
   onApprove: "allow" | "ask"
   onRefuse: "deny" | "ask"
+  onGate: "deny" | "ask"
 }
 
-export const APPROVAL_POLICY_DEFAULT: ApprovalPolicy = { onApprove: "allow", onRefuse: "deny" }
+export const APPROVAL_POLICY_DEFAULT: ApprovalPolicy = {
+  onApprove: "allow",
+  onRefuse: "deny",
+  onGate: "deny",
+}
 
 // The deprecated single `mode` key maps onto the same knobs: annotate held
-// both directions, auto delegated both, deny delegated refusals only.
+// everything at the prompt (so its gates ask), auto delegated the verdicts
+// (gates deny - no interrupt), deny delegated refusals only.
 const APPROVAL_MODE_LEGACY: Record<string, ApprovalPolicy> = {
-  annotate: { onApprove: "ask", onRefuse: "ask" },
-  auto: { onApprove: "allow", onRefuse: "deny" },
-  deny: { onApprove: "ask", onRefuse: "deny" },
+  annotate: { onApprove: "ask", onRefuse: "ask", onGate: "ask" },
+  auto: { onApprove: "allow", onRefuse: "deny", onGate: "deny" },
+  deny: { onApprove: "ask", onRefuse: "deny", onGate: "deny" },
 }
 
 /** approvals config object → the verdict→effect policy. Explicit
- * `onApprove` / `onRefuse` keys win over the deprecated `mode`; unknown
- * values fall back and are reported as invalid for the caller to log. The
- * deprecated mode name (or null) comes back for a one-time deprecation
- * notice. */
+ * `onApprove` / `onRefuse` / `onGate` keys win over the deprecated `mode`;
+ * unknown values fall back and are reported as invalid for the caller to
+ * log. The deprecated mode name (or null) comes back for a one-time
+ * deprecation notice. */
 export function parseApprovalsPolicy(
   raw: unknown,
 ): { policy: ApprovalPolicy; legacyMode: string | null; invalid: string[] } {
@@ -2153,6 +2164,7 @@ export function parseApprovalsPolicy(
     legacyMode = entry.mode
     policy.onApprove = APPROVAL_MODE_LEGACY[entry.mode].onApprove
     policy.onRefuse = APPROVAL_MODE_LEGACY[entry.mode].onRefuse
+    policy.onGate = APPROVAL_MODE_LEGACY[entry.mode].onGate
   } else if (entry.mode !== undefined) {
     invalid.push(`mode ${JSON.stringify(String(entry.mode))}`)
   }
@@ -2160,6 +2172,8 @@ export function parseApprovalsPolicy(
   else if (entry.onApprove !== undefined) invalid.push(`onApprove ${JSON.stringify(String(entry.onApprove))}`)
   if (entry.onRefuse === "deny" || entry.onRefuse === "ask") policy.onRefuse = entry.onRefuse
   else if (entry.onRefuse !== undefined) invalid.push(`onRefuse ${JSON.stringify(String(entry.onRefuse))}`)
+  if (entry.onGate === "deny" || entry.onGate === "ask") policy.onGate = entry.onGate
+  else if (entry.onGate !== undefined) invalid.push(`onGate ${JSON.stringify(String(entry.onGate))}`)
   return { policy, legacyMode, invalid }
 }
 

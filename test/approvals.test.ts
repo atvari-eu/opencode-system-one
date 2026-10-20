@@ -175,37 +175,51 @@ describe("parseMinConfidence", () => {
 })
 
 describe("parseApprovalsPolicy", () => {
-  test("defaults enact both verdicts (bare true or {} is full delegation)", () => {
-    expect(parseApprovalsPolicy(true).policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
-    expect(parseApprovalsPolicy({}).policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
+  test("defaults enact both verdicts and deny gate holds (bare true or {} is full delegation)", () => {
+    const defaults = { onApprove: "allow", onRefuse: "deny", onGate: "deny" }
+    expect(parseApprovalsPolicy(true).policy).toEqual(defaults)
+    expect(parseApprovalsPolicy({}).policy).toEqual(defaults)
     expect(parseApprovalsPolicy({}).legacyMode).toBe(null)
     expect(parseApprovalsPolicy({}).invalid).toEqual([])
   })
 
   test("explicit keys pick per-verdict enactment and win over legacy mode", () => {
-    expect(parseApprovalsPolicy({ onApprove: "ask", onRefuse: "ask" }).policy).toEqual({
+    expect(parseApprovalsPolicy({ onApprove: "ask", onRefuse: "ask", onGate: "ask" }).policy).toEqual({
       onApprove: "ask",
       onRefuse: "ask",
+      onGate: "ask",
     })
-    // mode annotate maps both to ask; the explicit onApprove still wins
+    // mode annotate maps both verdicts and the gate to ask; the explicit keys still win
     const mixed = parseApprovalsPolicy({ mode: "annotate", onApprove: "allow" })
-    expect(mixed.policy).toEqual({ onApprove: "allow", onRefuse: "ask" })
+    expect(mixed.policy).toEqual({ onApprove: "allow", onRefuse: "ask", onGate: "ask" })
     expect(mixed.legacyMode).toBe("annotate")
     expect(mixed.invalid).toEqual([])
   })
 
   test("deprecated modes map onto the same knobs and come back for the notice", () => {
-    expect(parseApprovalsPolicy({ mode: "annotate" }).policy).toEqual({ onApprove: "ask", onRefuse: "ask" })
-    expect(parseApprovalsPolicy({ mode: "auto" }).policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
-    expect(parseApprovalsPolicy({ mode: "deny" }).policy).toEqual({ onApprove: "ask", onRefuse: "deny" })
+    expect(parseApprovalsPolicy({ mode: "annotate" }).policy).toEqual({
+      onApprove: "ask",
+      onRefuse: "ask",
+      onGate: "ask",
+    })
+    expect(parseApprovalsPolicy({ mode: "auto" }).policy).toEqual({
+      onApprove: "allow",
+      onRefuse: "deny",
+      onGate: "deny",
+    })
+    expect(parseApprovalsPolicy({ mode: "deny" }).policy).toEqual({
+      onApprove: "ask",
+      onRefuse: "deny",
+      onGate: "deny",
+    })
     expect(parseApprovalsPolicy({ mode: "auto" }).legacyMode).toBe("auto")
   })
 
   test("invalid on* values fall back and are reported for the log line", () => {
-    const bad = parseApprovalsPolicy({ onApprove: "maybe", onRefuse: "no", mode: "weird" })
-    expect(bad.policy).toEqual({ onApprove: "allow", onRefuse: "deny" })
+    const bad = parseApprovalsPolicy({ onApprove: "maybe", onRefuse: "no", onGate: "deny?", mode: "weird" })
+    expect(bad.policy).toEqual({ onApprove: "allow", onRefuse: "deny", onGate: "deny" })
     expect(bad.legacyMode).toBe(null)
-    expect(bad.invalid).toHaveLength(3)
+    expect(bad.invalid).toHaveLength(4)
   })
 })
 

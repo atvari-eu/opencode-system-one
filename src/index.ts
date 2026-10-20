@@ -1038,7 +1038,7 @@ export default Plugin.define({
       }
       if (parsedPolicy.legacyMode) {
         console.log(
-          `[jev] approvals: mode "${parsedPolicy.legacyMode}" is deprecated - use "onApprove": "allow" | "ask" and "onRefuse": "deny" | "ask"`,
+          `[jev] approvals: mode "${parsedPolicy.legacyMode}" is deprecated - use "onApprove": "allow" | "ask", "onRefuse": "deny" | "ask", "onGate": "deny" | "ask"`,
         )
       }
     }
@@ -1675,8 +1675,17 @@ export default Plugin.define({
                   : secretPath(resource),
               )
               if (hit) {
-                annotate(event, "[jev] gate: secret path - review required")
-                console.log(`[jev] approval: secret-path gate held ${action} for manual review`)
+                const deny = approvalsPolicy.onGate === "deny"
+                if (deny) {
+                  event.effect = "deny"
+                  event.message = "[jev] approval: denied by secret-path gate"
+                }
+                annotate(event, deny ? "[jev] gate: secret path - denied" : "[jev] gate: secret path - review required")
+                console.log(
+                  deny
+                    ? `[jev] approval: secret-path gate denied ${action}`
+                    : `[jev] approval: secret-path gate held ${action} for manual review`,
+                )
                 await recordApprovalStat(action, resources, { outcome: "gate" })
                 return
               }
@@ -1688,9 +1697,10 @@ export default Plugin.define({
             // guidance for what to do instead of repeating this class of
             // request (e.g. prefer /cd over repeated external_directory
             // access). A plain string applies to every outcome; an object
-            // keys the note by the resolved outcome, the gate counting as
-            // `ask`. The request itself still resolves by the normal
-            // rule/judgment handling below.
+            // keys the note by the resolved outcome, the deterministic gate
+            // counting as the outcome it enacts (`ask`, or `deny` under the
+            // default `onGate: "deny"`). The request itself still resolves
+            // by the normal rule/judgment handling below.
             const postHint = async (outcome: "allow" | "ask" | "deny"): Promise<void> => {
               if (!event.sessionID || !matched?.hint) return
               const text = typeof matched.hint === "string" ? matched.hint : matched.hint[outcome]
@@ -1752,10 +1762,20 @@ export default Plugin.define({
                     gates: approvalsGates,
                   })
                 ) {
-                  annotate(event, "[jev] gate: potentially destructive or sensitive - review required")
-                  console.log(`[jev] approval: gate held ${action} for manual review`)
+                  const deny = approvalsPolicy.onGate === "deny"
+                  if (deny) {
+                    event.effect = "deny"
+                    event.message = "[jev] approval: denied by approval gate"
+                  }
+                  annotate(
+                    event,
+                    deny
+                      ? "[jev] gate: potentially destructive or sensitive - denied"
+                      : "[jev] gate: potentially destructive or sensitive - review required",
+                  )
+                  console.log(`[jev] approval: gate ${deny ? "denied" : "held"} ${action}`)
                   await recordApprovalStat(action, resources, { outcome: "gate" })
-                  await postHint("ask")
+                  await postHint(deny ? "deny" : "ask")
                   return
                 }
               }
@@ -2964,7 +2984,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/gate:${approvalsPolicy.onGate})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the

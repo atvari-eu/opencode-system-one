@@ -361,8 +361,12 @@ permission numbers; what they enact is config.
 
 Config and gates follow the inversion. `mode` becomes explicit
 per-verdict delegation - `onApprove`: `allow`/`ask`, `onRefuse`:
-`deny`/`ask` (annotate/auto/deny remain as a deprecated alias mapped onto
-the pair, logging one notice) - and `minConfidence` becomes bars:
+`deny`/`ask`, plus `onGate`: `deny`/`ask` for what a deterministic-gate
+hold enacts - refusal by default (a gate false positive costs the model the
+request as tool feedback; `ask` keeps the pre-delegation prompt-holding
+posture, and the deprecated `annotate` mode maps its gate to `ask`,
+`auto`/`deny` to `deny`) (annotate/auto/deny remain as a deprecated alias
+mapped onto the knobs, logging one notice) - and `minConfidence` becomes bars:
 `approve`/`refuse` verdict bars (defaults 0.90/0.85, clamp 0.5-0.99,
 legacy `deny` = `refuse`; unparseable input falls back per-key so garbage
 cannot silently raise a bar, e.g. the refuse default for a bare number
