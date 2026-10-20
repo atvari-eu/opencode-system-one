@@ -356,7 +356,12 @@ cookbook) returns to probabilities with judge-owned criteria: three `noul`
 questions per judged request - `reversible` (undone with `git` or by
 rerunning, writes confined to `workspace`; 2026-10 dropped the bundled
 locality/no-network clauses after the stats showed them auto-asking every
-out-of-workspace read and GET fetch - the largest recorded ask class),
+out-of-workspace read and GET fetch - the largest recorded ask class; the
+operator's posture: the agent runs under the user's own account, so host
+filesystem permissions bound every path it can touch and out-of-workspace
+READS carry no marginal risk - the workspace clause confines WRITES, while
+secrets entering context stay covered by the secret-path gate and scrub
+and egress by `harmful`),
 `serves_task` (a reasonable next step toward the task line, only asked and
 enforced when the judged state actually carries one), `harmful` (the old
 deny criteria as one score) - and a pure arithmetic resolver

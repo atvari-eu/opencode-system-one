@@ -519,8 +519,11 @@ names itself in the prompt. The questions:
   and what they write there undoes with git or re-running. Reads outside the
   workspace and GET fetches score high - the old wording bundled
   workspace-locality and no-network use here and auto-asked exactly those
-  classes (the largest recorded ask source); network egress, destructive
-  acts and system paths stay covered by `harmful` and the gates.
+  classes (the largest recorded ask source). The posture: the agent runs
+  under your own account, so host filesystem permissions already bound what
+  it can touch and out-of-workspace reads add no marginal risk; writes stay
+  workspace-confined, secrets entering context stay covered by the
+  secret-path gate and scrub, and egress stays covered by `harmful`.
 - **`serves_task`** - is running these operations a reasonable next step
   toward the task currently being served? Only asked (and its bar only
   enforced) when the session actually has a task; the judged state carries
