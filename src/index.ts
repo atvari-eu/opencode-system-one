@@ -16,6 +16,16 @@
 //                                 batch with in-code aggregation), registered
 //                                 as first-class tools (codemode: false) so
 //                                 each call shows as its own tool row
+//   picker  /jev-models (TUI half): per-session System One judgment-model
+//                                 picks ("opencode-system-one/auto" is the
+//                                 routing pseudo-model; the pin here is the
+//                                 model the jev judgments themselves ride).
+//                                 A jev-config rpc binds the halves: the TUI
+//                                 dialogs, the server verifies with the same
+//                                 init ping and stores the pin (plugin
+//                                 storage), and every judged call of that
+//                                 session rides it. Cache + fault verdicts
+//                                 are per (endpoint, model) fingerprint.
 //   cache   replies for identical (state, questions, model) via plugin storage
 //   route   prompt hook - jev picks the thinking level (effort variant) and,
 //                                 optionally, the model from a validated
@@ -82,14 +92,17 @@ import {
   deploymentFingerprint,
   inlineScreenFailure,
   lookupPermission,
+  normalizePickerModels,
   normalizeWorkspacePath,
   parsePermissions,
   parseApprovalsPolicy,
   parseMinConfidence,
   taskFromMessages,
   doneCheckStandDown,
+  describeModelRows,
   doneTranscript,
   doneVerdict,
+  effectiveJevModel,
   emergencyRealModel,
   idleSessionID,
   isAvailableModel,
@@ -134,6 +147,7 @@ import {
 } from "./logic"
 import { type Candidate, type CredentialChain, type DeploymentFault, type ProviderOption } from "./logic"
 import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
+import { makeJevRpc, type JevModelsInfo, type JevSetResult } from "./rpc"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
@@ -180,6 +194,9 @@ interface JudgeManyInput {
 interface ToolContext {
   signal?: AbortSignal
   progress?: (update: { status?: string }) => Promise<void> | void
+  /** Present on host builds ≥ ~2.0.32 (the tool executor context): lets a
+   * tool's judgment ride the calling session's /jev-models pin. */
+  sessionID?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -325,14 +342,23 @@ let LATE_RESOLVE_INFLIGHT: Promise<boolean> | undefined = undefined
 
 // Set once by the init deployment check: while a fault is present, every
 // judged call fails closed with this fault's per-call wording (no network).
-// Config is fixed per process, so the check re-runs at the next start or
-// plugin reload. One exception: an unresolved host id re-checks the registry
-// on judged calls (lateResolveDeployment) - the config plugin can register
-// locally configured providers after this plugin's own setup pass - and a
-// late resolve clears the fault (with a fresh ping); other faults persist.
-let DEPLOY_FAULT: DeploymentFault | undefined = undefined
-// Fingerprint of the resolved deployment (endpoint+model); scopes the once
-// per session error-row gate.
+// Per-model now: verdicts key on the resolved (endpoint, model) fingerprint,
+// so /jev-models picks gate independently of the chain. Config is fixed per
+// process, so the chain's check re-runs at the next start or plugin reload.
+// One exception: an unresolved host id re-checks the registry on judged calls
+// (lateResolveDeployment) - the config plugin can register locally
+// configured providers after this plugin's own setup pass - and a late
+// resolve re-pings the chain under the resolved fingerprint; a stale
+// "unresolved" verdict for other models simply stops matching, because
+// theirs are keyed on the (endpoint, model) pair that only exists once the
+// endpoint resolved.
+type DeployVerdict = { ok: boolean; fault?: DeploymentFault }
+const DEPLOY_VERDICTS = new Map<string, DeployVerdict>()
+// One inflight ping per fingerprint: concurrent judged calls and picker
+// switches share the deployment check instead of racing it.
+const DEPLOY_INFLIGHT = new Map<string, Promise<DeployVerdict>>()
+// Fingerprint of the resolved chain deployment (endpoint + chain model); sets
+// the once-per-session error-row scope for calls that never had a sessionID.
 let DEPLOY_FINGERPRINT = ""
 
 /** Human-readable rendering of the selected provider option for logs. */
@@ -343,6 +369,17 @@ function providerOptionText(option: ProviderOption): string {
 
 function resolveModel(): string {
   return OPTIONS_MODEL || process.env.JEV_MODEL || "jev-1.13-free"
+}
+
+// Fingerprint of the deployment a given model would judge on: endpoint+model,
+// or the unresolved-key form when no endpoint resolved yet (deployFaultText's
+// "no-endpoint" path uses the same key).
+function fingerprintOfModel(model: string): string {
+  if (!RESOLVED_ENDPOINT) {
+    const id = OPTIONS_PROVIDER?.kind === "host" ? OPTIONS_PROVIDER.id : ""
+    return deploymentFingerprint(`unresolved:${id}|${model}`, model)
+  }
+  return deploymentFingerprint(resolveEndpoint(), model)
 }
 
 function toQuestionMap(questions: Question[]): Record<string, any> {
@@ -454,7 +491,8 @@ async function jevRequest(
   cred: Credential | undefined,
   questions: Question[],
   state: unknown,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  model: string,
 ): Promise<Response> {
   const ua = await hostClientUA()
   return fetch(resolveEndpoint(), {
@@ -465,7 +503,7 @@ async function jevRequest(
       ...(ua ? { "User-Agent": ua } : {}),
     },
     body: JSON.stringify({
-      model: resolveModel(),
+      model,
       state,
       questions: toQuestionMap(questions),
     }),
@@ -495,6 +533,7 @@ async function jevJudgeInner(
   questions: Question[],
   state: unknown,
   signal?: AbortSignal,
+  model: string = resolveModel(),
 ): Promise<JevReply> {
   const cred = await resolveCred()
   if (!cred) {
@@ -503,7 +542,7 @@ async function jevJudgeInner(
     )
   }
 
-  let response = await jevRequest(cred, questions, state, signal)
+  let response = await jevRequest(cred, questions, state, signal, model)
   let text = await response.text()
   // A cached CLI-store key can expire or rotate between calls. On a
   // credential-class rejection (401, or a worn-credential diagnostic - see
@@ -520,7 +559,7 @@ async function jevJudgeInner(
     invalidateCliStoreCredential(cred.cliIntegration ?? "opencode")
     const fresh = await resolveCred()
     if (fresh && fresh.key !== cred.key) {
-      response = await jevRequest(fresh, questions, state, signal)
+      response = await jevRequest(fresh, questions, state, signal, model)
       text = await response.text()
     }
   }
@@ -542,8 +581,9 @@ async function jevJudge(
   questions: Question[],
   state: unknown,
   signal?: AbortSignal,
+  model: string = resolveModel(),
 ): Promise<JevReply> {
-  return jevJudgeInner(resolveKey, questions, state, signal)
+  return jevJudgeInner(resolveKey, questions, state, signal, model)
 }
 
 // ---------------------------------------------------------------------------
@@ -620,8 +660,8 @@ async function resolveDeploymentEndpoint(ctx: any): Promise<void> {
   )
 }
 
-async function pingDeploy(cred: Credential | undefined, signal: AbortSignal): Promise<void> {
-  const response = await jevRequest(cred, PING_QUESTIONS, PING_STATE, signal)
+async function pingDeploy(cred: Credential | undefined, model: string, signal: AbortSignal): Promise<void> {
+  const response = await jevRequest(cred, PING_QUESTIONS, PING_STATE, signal, model)
   const text = await response.text()
   if (!response.ok) {
     throw new Error(jevAuthError(response.status, detailOf(text)))
@@ -634,24 +674,33 @@ async function pingDeploy(cred: Credential | undefined, signal: AbortSignal): Pr
   }
 }
 
-async function checkDeployState(): Promise<{ ok: true } | { ok: false; fault: DeploymentFault }> {
+async function checkDeployState(
+  requestedModel?: string,
+): Promise<
+  { ok: true; fingerprint: string } | { ok: false; fingerprint: string; fault: DeploymentFault & { fingerprint: string } }
+> {
   // An unresolved host id (no registry entry, no env override, no URL form)
   // fails closed on its own remedy instead of pinging a mismatched endpoint.
   if (!RESOLVED_ENDPOINT) {
     const id = OPTIONS_PROVIDER?.kind === "host" ? OPTIONS_PROVIDER.id : ""
-    const model = resolveModel()
+    const model = requestedModel ?? resolveModel()
+    const fingerprint = deploymentFingerprint(`unresolved:${id}|${model}`, model)
     return {
       ok: false,
+      fingerprint,
       fault: {
         ...deployFaultText("no-endpoint", { host: id, model }),
-        fingerprint: deploymentFingerprint(`unresolved:${id}|${model}`, model),
+        fingerprint,
       },
     }
   }
   const endpoint = resolveEndpoint()
-  const model = resolveModel()
+  const model = requestedModel ?? resolveModel()
   const fingerprint = deploymentFingerprint(endpoint, model)
-  const fault = (kind: DeploymentFault["kind"], detail?: string) => ({
+  const fault = (
+    kind: DeploymentFault["kind"],
+    detail?: string,
+  ): DeploymentFault & { fingerprint: string } => ({
     ...deployFaultText(kind, { host: deployHost(endpoint), model, detail }),
     fingerprint,
   })
@@ -663,12 +712,12 @@ async function checkDeployState(): Promise<{ ok: true } | { ok: false; fault: De
     cred = undefined
   }
   try {
-    await pingDeploy(cred, AbortSignal.timeout(10_000))
-    return { ok: true }
+    await pingDeploy(cred, model, AbortSignal.timeout(10_000))
+    return { ok: true, fingerprint }
   } catch (err) {
     if (err instanceof SyntaxError) {
       // non-JSON body from a non-System One server
-      return { ok: false, fault: fault("unknown", "non-System One response") }
+      return { ok: false, fingerprint, fault: fault("unknown", "non-System One response") }
     }
     const message = (err as Error)?.message ?? String(err)
     const { kind, detail } = classifyJevFailure(message)
@@ -676,10 +725,55 @@ async function checkDeployState(): Promise<{ ok: true } | { ok: false; fault: De
     // "no credential" fault (with the chain's remedy), not a generic
     // rejection; a keyless deployment answering 2xx is simply fine.
     if (!cred && (kind === "credential" || kind === "gate")) {
-      return { ok: false, fault: fault("no-credential") }
+      return { ok: false, fingerprint, fault: fault("no-credential") }
     }
-    return { ok: false, fault: fault(kind, detail || message) }
+    return { ok: false, fingerprint, fault: fault(kind, detail || message) }
   }
+}
+
+/** The deployVerdict gate for one judged call: the cached verdict of
+ * (endpoint, model), pinged on demand (shared inflight) and fail-closed
+ * whenever absent or faulted. Unresolved endpoints craft the no-endpoint
+ * fault without network; a later late resolve overwrites the verdict. */
+async function deployVerdict(model: string): Promise<DeployVerdict> {
+  const fingerprint = fingerprintOfModel(model)
+  const cached = DEPLOY_VERDICTS.get(fingerprint)
+  if (cached) return cached
+  if (!RESOLVED_ENDPOINT) {
+    const attempted = await checkDeployState(model)
+    const verdict: DeployVerdict = attempted.ok
+      ? { ok: true }
+      : { ok: false, fault: attempted.fault }
+    DEPLOY_VERDICTS.set(attempted.fingerprint, verdict)
+    return verdict
+  }
+  const inflight = DEPLOY_INFLIGHT.get(fingerprint)
+  if (inflight) return inflight
+  const attempt: Promise<DeployVerdict> = (async () => {
+    try {
+      const attempted = await checkDeployState(model)
+      const verdict: DeployVerdict = attempted.ok
+        ? { ok: true }
+        : { ok: false, fault: attempted.fault }
+      DEPLOY_VERDICTS.set(attempted.fingerprint, verdict)
+      return verdict
+    } catch (err) {
+      const verdict: DeployVerdict = {
+        ok: false,
+        fault: deployFaultText("unknown", {
+          host: deployHost(resolveEndpoint()),
+          model,
+          detail: String((err as Error)?.message ?? err),
+        }),
+      }
+      DEPLOY_VERDICTS.set(fingerprint, verdict)
+      return verdict
+    }
+  })()
+  DEPLOY_INFLIGHT.set(fingerprint, attempt)
+  const verdict = await attempt
+  DEPLOY_INFLIGHT.delete(fingerprint)
+  return verdict
 }
 
 // ---------------------------------------------------------------------------
@@ -918,9 +1012,12 @@ export default Plugin.define({
     // most once per session per error kind via the standard call-site
     // catch paths.
     await resolveDeploymentEndpoint(ctx)
-    DEPLOY_FINGERPRINT = deploymentFingerprint(resolveEndpoint(), resolveModel())
     const deployCheck = await checkDeployState()
-    DEPLOY_FAULT = deployCheck.ok ? undefined : deployCheck.fault
+    DEPLOY_FINGERPRINT = deployCheck.fingerprint
+    DEPLOY_VERDICTS.set(
+      deployCheck.fingerprint,
+      deployCheck.ok ? { ok: true } : { ok: false, fault: deployCheck.fault },
+    )
     try {
       if (!deployCheck.ok) {
         const fault = deployCheck.fault
@@ -1099,7 +1196,19 @@ export default Plugin.define({
     const surfaceJev = async (message: unknown, sessionID?: string): Promise<void> => {
       const error = jevUserError(message)
       if (!error) return
-      const key = sessionSurfaceKey(sessionID, error.title, DEPLOY_FINGERPRINT)
+      // The error-row scope follows the deployment the call actually rode:
+      // a session pin (/jev-models) gets its own fingerprint, so switching
+      // models re-arms the once-per-kind gate instead of hiding a new
+      // deployment's first fault behind the old scope.
+      let fingerprint = DEPLOY_FINGERPRINT
+      if (sessionID) {
+        try {
+          fingerprint = fingerprintOfModel(effectiveJevModel(await pinOf(sessionID), resolveModel()))
+        } catch {
+          fingerprint = DEPLOY_FINGERPRINT
+        }
+      }
+      const key = sessionSurfaceKey(sessionID, error.title, fingerprint)
       if (surfacedRows.has(key)) return
       if (surfacedRows.size > 1000) surfacedRows.clear()
       surfacedRows.add(key)
@@ -1135,7 +1244,11 @@ export default Plugin.define({
             `[jev] provider: ${OPTIONS_PROVIDER.id} resolved after boot - ${RESOLVED_ENDPOINT}`,
           )
           const deployCheck = await checkDeployState()
-          DEPLOY_FAULT = deployCheck.ok ? undefined : deployCheck.fault
+          DEPLOY_FINGERPRINT = deployCheck.fingerprint
+          DEPLOY_VERDICTS.set(
+            deployCheck.fingerprint,
+            deployCheck.ok ? { ok: true } : { ok: false, fault: deployCheck.fault },
+          )
           return deployCheck.ok
         } finally {
           LATE_RESOLVE_INFLIGHT = undefined
@@ -1144,22 +1257,51 @@ export default Plugin.define({
       return LATE_RESOLVE_INFLIGHT
     }
 
+    // Per-session System One model pins (the /jev-models picker in the TUI
+    // writes them through the jev-config rpc): an in-memory cache over plugin
+    // storage keyed by sessionID. The empty string marks "checked, no pin" so
+    // a pinless session costs one storage read per process, not per call.
+    // Set/reset write through to storage; this process is the only writer.
+    const MODEL_PINS = new Map<string, string>()
+    const pinKeyOf = (sessionID: string): string => `jev-model-pin/${sessionID}`
+    // pins compat: hosts without storage.remove leave a durable record that
+    // still loads empty-weight; the in-memory delete is what matters here.
+    const pinOf = async (sessionID: string): Promise<string | undefined> => {
+      if (!sessionID) return undefined
+      const cached = MODEL_PINS.get(sessionID)
+      if (cached !== undefined) return cached === "" ? undefined : cached
+      let stored: any
+      try {
+        stored = await (ctx as any).storage.get(pinKeyOf(sessionID))
+      } catch {
+        stored = undefined
+      }
+      const model =
+        stored && typeof stored.model === "string" && stored.model.trim() !== ""
+          ? stored.model.trim()
+          : ""
+      MODEL_PINS.set(sessionID, model)
+      return model || undefined
+    }
+
     async function cachedJudge(
       questions: Question[],
       state: unknown,
       signal?: AbortSignal,
+      sessionID?: string,
     ): Promise<{ reply: JevReply; cached: boolean }> {
-      // Init deployment check faulted: fail closed with the fault's per-call
-      // wording, instantly, no network. Call sites lump this into their
-      // existing catch paths, surfacing the standard per-session rows.
-      // Unresolved host ids get one post-boot re-resolve attempt first - the
-      // registry may now contain the locally configured provider.
-      if (DEPLOY_FAULT) {
-        if (!(await lateResolveDeployment())) throw new Error(DEPLOY_FAULT.surface)
-      }
-      const model = resolveModel()
+      // Deployment gate for the model this call actually uses: a session pin
+      // (/jev-models) overrides the chain per the picker contract, and every
+      // verdict (including the pin's target) is verified with a ping before
+      // anything rides it. Unresolved host ids get one post-boot re-resolve
+      // attempt first - the registry may now contain the locally configured
+      // provider.
+      const model = effectiveJevModel(sessionID ? await pinOf(sessionID) : undefined, resolveModel())
+      if (!RESOLVED_ENDPOINT) await lateResolveDeployment()
+      const verdict = await deployVerdict(model)
+      if (!verdict.ok) throw new Error(verdict.fault?.surface ?? "jev: deployment fault")
       const endpoint = resolveEndpoint()
-      if (!cacheEnabled) return { reply: await jevJudge(questions, state, signal), cached: false }
+      if (!cacheEnabled) return { reply: await jevJudge(questions, state, signal, model), cached: false }
       const key = `judgment/${createHash("sha256")
         .update(JSON.stringify({ endpoint, model, state, questions: toQuestionMap(questions) }))
         .digest("hex")}`
@@ -1167,19 +1309,114 @@ export default Plugin.define({
       if (hit && hit.answers && typeof hit.answers === "object") {
         return { reply: hit as JevReply, cached: true }
       }
-      const reply = await jevJudge(questions, state, signal)
+      const reply = await jevJudge(questions, state, signal, model)
       await (ctx as any).storage.set(key, reply)
       return { reply, cached: false }
     }
 
-    // runScreen dep: cachedJudge's reply shaped as { answers, cached }.
+    // runScreen dep: cachedJudge's reply shaped as { answers, cached }. The
+    // sessionID rides through so screen-shaped calls inherit the caller's
+    // /jev-models pin; callers without one stay on the chain.
     const cachedJudgeReply = async (
       questions: Question[],
       state: string,
       signal?: AbortSignal,
+      sessionID?: string,
     ): Promise<{ answers?: Record<string, { noul?: number }>; cached: boolean }> => {
-      const { reply, cached } = await cachedJudge(questions, state, signal)
+      const { reply, cached } = await cachedJudge(questions, state, signal, sessionID)
       return { ...(reply as object), cached } as { answers?: Record<string, { noul?: number }>; cached: boolean }
+    }
+
+    // -- picker: /jev-models support (TUI half drives; the server verifies) --
+    //
+    // The picker command lives in the TUI half (src/tui.ts); this side owns
+    // the truth: candidate list (plugin option "models", default the known
+    // Console models), the storage pin, and the verified verdict per
+    // (endpoint, model). Only a model that passed the same ping as the init
+    // check sticks, so a typo dies in the dialog, not on the next judged
+    // call. Precedence: a session pin wins over the options' "model".
+    const PICK_MODELS = normalizePickerModels(o.models)
+
+    const setModelPin = async (sessionID: string, modelID: string): Promise<JevSetResult> => {
+      const sid = typeof sessionID === "string" ? sessionID.trim() : ""
+      const model = typeof modelID === "string" ? modelID.trim() : ""
+      if (!sid || !model) return { ok: false, message: "missing sessionID or model" }
+      // The ping result is cached per fingerprint, so a repeated broken pick
+      // fails instantly without re-hitting the deployment.
+      const verdict = await deployVerdict(model)
+      if (!verdict.ok) {
+        console.log(
+          `[jev] picker: rejected ${JSON.stringify(model)} for session ${sid} - ${verdict.fault?.message ?? "deployment fault"}`,
+        )
+        return { ok: false, message: verdict.fault?.message ?? "model unavailable at this deployment" }
+      }
+      try {
+        await (ctx as any).storage.set(pinKeyOf(sid), { model, at: new Date().toISOString() })
+      } catch (err: any) {
+        console.error(`[jev] picker: pin store failed for session ${sid} (${String(err?.message ?? err)})`)
+        return { ok: false, message: "pin store failed" }
+      }
+      MODEL_PINS.set(sid, model)
+      console.log(`[jev] picker: session ${sid} pinned ${model}`)
+      return { ok: true }
+    }
+
+    // resetModelPin writes an empty-model tombstone rather than trusting a
+    // storage delete API: pinOf maps the empty value to "no pin" for every
+    // future process, so a cleared session never resurrects the old pick.
+    const resetModelPin = async (sessionID: string): Promise<JevSetResult> => {
+      const sid = typeof sessionID === "string" ? sessionID.trim() : ""
+      if (!sid) return { ok: false, message: "missing sessionID" }
+      try {
+        await (ctx as any).storage.remove?.(pinKeyOf(sid))
+      } catch {}
+      try {
+        await (ctx as any).storage.set(pinKeyOf(sid), { model: "", at: new Date().toISOString() })
+      } catch {}
+      MODEL_PINS.delete(sid)
+      console.log(`[jev] picker: session ${sid} cleared its model pin`)
+      return { ok: true }
+    }
+
+    let jevRpcDescriptor: unknown | undefined = undefined
+    try {
+      jevRpcDescriptor = await makeJevRpc()
+    } catch (err) {
+      console.log(`[jev] picker: rpc descriptor unavailable (${String((err as Error)?.message ?? err)})`)
+    }
+    if (jevRpcDescriptor) {
+      const rpcApi: any = (ctx as any).rpc
+      if (typeof rpcApi?.register !== "function") {
+        console.log(
+          "[jev] picker: ctx.rpc unavailable on this OpenCode version - /jev-models is unavailable; use the model plugin option or JEV_MODEL",
+        )
+      } else {
+        try {
+          await rpcApi.register(jevRpcDescriptor, {
+            describe: async (input: any): Promise<JevModelsInfo> => {
+              const sessionID = typeof input?.sessionID === "string" ? input.sessionID : ""
+              const pin = sessionID ? await pinOf(sessionID) : undefined
+              const info: JevModelsInfo = {
+                base: resolveModel(),
+                models: describeModelRows(PICK_MODELS, (id) => {
+                  const cached = DEPLOY_VERDICTS.get(fingerprintOfModel(id))
+                  return cached && !cached.ok ? cached.fault?.message : undefined
+                }),
+              }
+              if (pin) info.pick = pin
+              return info
+            },
+            set: async (input: any): Promise<JevSetResult> =>
+              setModelPin(String(input?.sessionID ?? ""), String(input?.model ?? "")),
+            reset: async (input: any): Promise<JevSetResult> => resetModelPin(String(input?.sessionID ?? "")),
+          })
+          console.log(
+            `[jev] picker: jev-config rpc registered (${PICK_MODELS.length} candidates; /jev-models in the TUI)`,
+          )
+        } catch (err: any) {
+          console.error(`[jev] picker: rpc registration failed (${String(err?.message ?? err)})`)
+        }
+      }
     }
 
     // -- scrub: tool inputs + user prompts (deterministic, no model calls) --
@@ -1527,7 +1764,7 @@ export default Plugin.define({
               scrub: (t: string) => redactText(t).text,
               // cachedJudge resolves to { reply, cached }: unwrap the reply.
               judge: async (questions: any, state: any, signal: any) =>
-                (await cachedJudge(questions, state, signal)).reply,
+                (await cachedJudge(questions, state, signal, event.sessionID)).reply,
             },
           )
 
@@ -1695,10 +1932,11 @@ export default Plugin.define({
           questions: Question[],
           state: string,
           leanState: string,
+          sessionID?: string,
         ): Promise<{ reply: JevReply; latencyMs: number }> => {
           const started = Date.now()
           const attempt = (payload: string): Promise<{ reply: JevReply; cached: boolean }> =>
-            cachedJudge(questions, payload, AbortSignal.timeout(approvalsJevTimeout))
+            cachedJudge(questions, payload, AbortSignal.timeout(approvalsJevTimeout), sessionID)
           try {
             return { reply: (await attempt(state)).reply, latencyMs: Date.now() - started }
           } catch (err) {
@@ -1924,6 +2162,7 @@ export default Plugin.define({
               approvalQuestions(action, task !== "", approvalsSandboxNote !== ""),
               state,
               leanState,
+              event.sessionID,
             )
             const answers = (reply as any).answers ?? {}
             const scores = {
@@ -2052,7 +2291,13 @@ export default Plugin.define({
         const sample = text0.slice(0, 12000)
         try {
           const outcome = await runScreen(
-            { judge: cachedJudgeReply, scrub: redactText },
+            {
+              // session-bound: a screened result judged with the calling
+              // session's /jev-models pin, not the process chain.
+              judge: (questions, state, signal) =>
+                cachedJudgeReply(questions, state, signal, event?.sessionID),
+              scrub: redactText,
+            },
             sample,
             { secretThreshold: screenSecretThreshold },
           )
@@ -2172,7 +2417,12 @@ export default Plugin.define({
           },
           options: { namespace: "jev", codemode: false },
           execute: async (input: DecideInput, context: ToolContext) => {
-            const { reply, cached } = await cachedJudge(input.questions, input.state, context.signal)
+            const { reply, cached } = await cachedJudge(
+              input.questions,
+              input.state,
+              context.signal,
+              context.sessionID,
+            )
             await context.progress?.({ status: `jev ${cached ? "(cached)" : ""}` })
             return {
               content: JSON.stringify({ summary: input.summary, ...reply, cached }, null, 2),
@@ -2208,7 +2458,11 @@ export default Plugin.define({
           options: { namespace: "jev", codemode: false },
           execute: async (input: { summary: string; content: string; source?: string }, context: ToolContext) => {
             const outcome = await runScreen(
-              { judge: cachedJudgeReply, scrub: redactText },
+              {
+                judge: (questions, state, signal) =>
+                  cachedJudgeReply(questions, state, signal, context.sessionID),
+                scrub: redactText,
+              },
               input.content,
               { signal: context.signal, secretThreshold: screenSecretThreshold },
             )
@@ -2303,7 +2557,12 @@ export default Plugin.define({
             const settled: Settled[] = await Promise.all(
               input.items.map(async (item, i) => {
                 try {
-                  const { reply, cached } = await cachedJudge([question], stateOf(item, i), context.signal)
+                  const { reply, cached } = await cachedJudge(
+                    [question],
+                    stateOf(item, i),
+                    context.signal,
+                    context.sessionID,
+                  )
                   return { index: i, ok: true as const, answer: reply.answers?.value, cached }
                 } catch (err) {
                   return { index: i, ok: false as const, error: String(err instanceof Error ? err.message : err) }
@@ -2374,7 +2633,7 @@ export default Plugin.define({
                 root: () => location,
                 // cachedJudge resolves to { reply, cached }: unwrap the reply.
                 judge: async (questions: any, state: any, signal: any) =>
-                  (await cachedJudge(questions, state, signal)).reply,
+                  (await cachedJudge(questions, state, signal, context?.sessionID)).reply,
                 scrub: (t: string) => redactText(t).text,
               },
               input?.query,
@@ -2414,7 +2673,7 @@ export default Plugin.define({
                 sample = readFileSync(target, "utf8").slice(0, 12000)
               }
               const scrubbed = redactText(sample)
-              const { reply } = await cachedJudge(SCREEN_QUESTIONS, scrubbed.text)
+              const { reply } = await cachedJudge(SCREEN_QUESTIONS, scrubbed.text, undefined, sessionID)
               const junk = reply.answers?.junk?.noul
               const injection = reply.answers?.injection?.noul
               const secret = secretScoreNormalized(reply.answers?.secret)
@@ -2543,7 +2802,7 @@ export default Plugin.define({
             try {
               const messages = contextRows(await (ctx as any).session.context({ sessionID }))
               const tail = doneTranscript(messages)
-              const { reply } = await cachedJudge([DONE_QUESTION], tail.text)
+              const { reply } = await cachedJudge([DONE_QUESTION], tail.text, undefined, sessionID)
               const done = reply.answers?.done?.noul
               await (ctx as any).session.synthetic({
                 sessionID,
@@ -2774,7 +3033,7 @@ export default Plugin.define({
           if (doneCheckStandDown(seen, userCount)) return
           const tail = doneTranscript(messages)
           if (seen?.hash === tail.hash) return
-          const { reply } = await cachedJudge([DONE_QUESTION], tail.text, AbortSignal.timeout(8_000))
+          const { reply } = await cachedJudge([DONE_QUESTION], tail.text, AbortSignal.timeout(8_000), sessionID)
           const done = reply.answers?.done?.noul
           try {
             await (ctx as any).storage.set(key, { hash: tail.hash })
@@ -2962,7 +3221,7 @@ export default Plugin.define({
           const plan = await runCompaction(
             event.messages,
             async (questions, state) =>
-              (await cachedJudge(questions as Question[], state, undefined)).reply,
+              (await cachedJudge(questions as Question[], state, undefined, sid)).reply,
             SECRET_PATTERNS,
             compactionOptions,
             () => window,
@@ -3165,7 +3424,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} picker(${PICK_MODELS.length}) (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the
