@@ -6,7 +6,8 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "paths": {
-      "@opencode/plugin": ["./test/stubs/@opencode-plugin.ts"]
+      "@opencode/plugin": ["./test/stubs/@opencode-plugin.ts"],
+      "@opencode/plugin/rpc": ["./test/stubs/@opencode-plugin-rpc.ts"]
     }
   }
 }
