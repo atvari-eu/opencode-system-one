@@ -1771,15 +1771,19 @@ export interface ApprovalScores {
   harmful?: number
 }
 
-// Shell commands keep the recipe's reversibility wording; everything else
-// (edit, reads, webfetch, MCP tools, ...) a generalized one. Net effect: an
-// operation that must reach a network service or files outside the workspace
-// cannot score high enough to auto-approve.
+// The reversible question asks just what the name says - undoable or
+// harmless to repeat - with one exception kept verbatim: anything it WRITES
+// must stay inside `workspace`. Bundling workspace-locality and no-network
+// use into this question (the old wording) auto-asked whole classes of
+// out-of-workspace reads and GET fetches: 62 `reversible/<0.5` bands in the
+// recorded stats, the largest ask class by far. Network and system impact
+// still gate through the harmful question, the secret-path gate, and the
+// destructive-regex gate.
 export const APPROVAL_REVERSIBLE_SHELL_INSTRUCTIONS =
-  "Every operation in `operations` only reads or changes files inside `workspace` and can be undone with git or by rerunning it. It does not push, publish, deploy, delete files outside the workspace, change system settings, or send data to a network service."
+  "Every operation in `operations` only reads, or changes files inside `workspace`, and what it changes there can be undone with git or by rerunning it. It does not delete uncommitted work, and it does not publish, deploy, or push."
 
 export const APPROVAL_REVERSIBLE_GENERAL_INSTRUCTIONS =
-  "Every operation in `operations` stays inside `workspace` or only reads files, is undoable or harmless to repeat, and does not push, publish, deploy, delete anything outside the workspace, change system settings, or send data to a network service."
+  "The operation only reads, or changes files inside `workspace`, and what it changes can be undone or harmlessly repeated. It performs no publishes, deployments, pushes, or deletions of uncommitted work."
 
 export const APPROVAL_SERVES_TASK_INSTRUCTIONS =
   "Running the operations is a reasonable next step toward `task`."
@@ -1862,19 +1866,49 @@ export function matchesPatterns(text: string, patterns: Array<RegExp>): boolean 
 // they bypass the destructive-pattern gate - secrets still gate, and only
 // ALL-readonly chains qualify (one mutating segment holds the gate).
 export const READ_ONLY_SHELL =
-  /^\s*(?:grep|rg|ls|cat|tail|head|find|stat|file|diff|echo|wc|sort|awk|pwd|which|readlink|sha256sum|du|tree|jq|column|man|whoami|basename|dirname)\b/
+  /^\s*(?:grep|rg|ls|cat|tail|head|find|stat|file|diff|echo|wc|sort|awk|pwd|which|readlink|sha256sum|du|tree|jq|column|man|whoami|basename|dirname|uniq|cut|nl|rev|tac|tr|strings|xxd|od|hexdump|base64|md5sum|sha1sum|date|uname|id|nproc|df|free|ps|printf|seq)\b/
 
-/** True when every chain segment of a shell command matches READ_ONLY_SHELL:
- * the whole command reads and lists, never mutates. Chain separators are
- * already stripped by the split, so any remaining `>` (redirect target,
- * `2>&1`) marks a write and fails the check - backgrounding (`&`) splits
- * away harmlessly. The approval hook uses it for the optional read-only
- * fast-path (approvals.readonlyAllow), which still runs after the
- * deterministic gates so secret paths hold. */
+/** One whole shell command is read-only when EVERY chain segment is (see
+ * readOnlyShellSegment). Chain separators are already stripped by the split;
+ * any remaining `>` (redirect target, stream rewrite, `2>&1`) marks a write
+ * and fails the check - backgrounding (`&`) splits away harmlessly. The
+ * approval hook uses it for the optional read-only fast-path
+ * (approvals.readonlyAllow), which still runs after the deterministic gates
+ * so secret paths hold. */
+
+/** A curl segment that only fetches writes stdout: no defining method that
+ * sends a body, no request body (-d/--data*), no form (-F/--form), no upload
+ * (-T), no file output (-o/-O/-J/--output/--remote-name*), no header dump to
+ * a file (-D), no config source (-K --config), no --json. A bundled short
+ * group (like `-sdo`) must not hide a mutating flag, and the conservative
+ * scanner answers false - the doubted segment falls back to the judged
+ * path, never to the fast path. Risky short flags: d (-d data), D (-D dump
+ * headers to file), F (-F form), T (-T upload), o (-o output), O (-O remote
+ * name), J (-J header name), K (-K config); -f (--fail) stays harmless. */
+const CURL_METHOD = /(?:^|\s)-X\s*['"]?([A-Za-z]+)/
+const CURL_MUTATING =
+  /(?:^|\s)(?:--data(?:-ascii|-raw|-binary|-urlencode)?\b|--form(?:-string)?\b|--upload-file\b|--output\b|--remote-name(?:-all)?\b|--remote-header-name\b|--dump-header\b|--config\b|--json\b|--libcurl\b)|(?<!\S)-[A-Za-z]*[dDFToOJK]/
+
+export function curlReadOnly(segment: string): boolean {
+  if (!/^\s*curl(?:\s|$)/.test(segment)) return false
+  const method = CURL_METHOD.exec(segment)?.[1]
+  if (method && !/^get$/i.test(method)) return false
+  return !CURL_MUTATING.test(segment)
+}
+
+/** `find` segments stay read-only only while they actually only print:
+ * -delete and the -exec family mutate or run. */
+const FIND_MUTATING = /(?<!\S)-(?:delete|exec(?:dir)?|ok(?:dir)?)\b/
+
+/** One shell segment is read-only when it is a READ_ONLY_SHELL builtin
+ * (minus mutating find flags) or a fetch-only curl. */
+export function readOnlyShellSegment(segment: string): boolean {
+  if (/^\s*find\b/.test(segment) && FIND_MUTATING.test(segment)) return false
+  return READ_ONLY_SHELL.test(segment) || curlReadOnly(segment)
+}
+
 export function isReadOnlyShellCommand(resource: string): boolean {
-  return shellChainSegments(resource).every(
-    (segment) => !segment.includes(">") && READ_ONLY_SHELL.test(segment),
-  )
+  return shellChainSegments(resource).every((segment) => !segment.includes(">") && readOnlyShellSegment(segment))
 }
 
 /** The two deterministic-gate toggles (approvals.gates): `secrets` gates
@@ -2128,7 +2162,7 @@ export function approvalGate(action: string, resource: string, deps: ApprovalGat
     // A read-only command's arguments often mention destructive strings
     // without performing them (grep patterns, quoted log lines) - only a
     // chain with at least one mutating segment can destroy anything.
-    if (!shellChainSegments(resource).every((segment) => READ_ONLY_SHELL.test(segment))) return true
+    if (!shellChainSegments(resource).every(readOnlyShellSegment)) return true
   }
   if (action === "edit" && !deps.isProjectPath(resource)) return true
   return false
@@ -2143,8 +2177,10 @@ const probabilityOf = (value: unknown): number | undefined =>
 
 /** Bars for the two verdicts. `approve` governs the approve-facing questions
  * (reversible, serves_task), each individually overridable via the matching
- * key; `harmful` is the approve-side ceiling on the harmful score (default
- * 1 - approve, clamped to <= 0.5); `refuse` is harmful's refusal bar. */
+ * key; `harmful` is the approve-side ceiling on the harmful score (an
+ * explicit override clamps 0-0.5; without one the ceiling is the complement
+ * `1 - approve`, so a sub-0.5 approve loosens both dimensions together);
+ * `refuse` is harmful's refusal bar. */
 export interface ApprovalBars {
   approve: number
   refuse: number
@@ -2153,12 +2189,13 @@ export interface ApprovalBars {
   harmful?: number
 }
 
-// Defaults follow the recipe's captured calibration: approve 0.90 keeps the
-// routine case (reversible 0.93 / serves_task 0.95) above the band where the
-// off-task examples stranded (0.45 / 0.09); refuse keeps the prior 0.85.
+// Defaults sit at the noul midline 0.5: within an `approvals` setup the
+// operator already opted into judged delegation, so anything weakly-certain
+// approves and the mid-band harmful score refuses rather than prompts - the
+// higher recipe calibration (0.90/0.85) stays reachable via minConfidence.
 // Scores wobble ~0.05 run to run - tune from the recorded bands, not by feel.
-export const APPROVE_BAR_DEFAULT = 0.9
-export const REFUSE_BAR_DEFAULT = 0.85
+export const APPROVE_BAR_DEFAULT = 0.5
+export const REFUSE_BAR_DEFAULT = 0.5
 
 /** What each verdict does. Both directions default to enacting (allow /
  * deny) - bare config is full delegation; "ask" holds that verdict at the
@@ -2238,14 +2275,20 @@ export function parseGates(raw: unknown): ApprovalGates {
   }
 }
 
-const clampBar = (value: number): number => Math.min(0.99, Math.max(0.5, value))
+// Bars clamp 0..0.99: the 0.99 ceiling keeps a bar reachable by a finite
+// score, and the 0 floor lets an operator auto-enact a verdict even on
+// unsure (sub-0.5) scores - an explicit delegation, since the judged state
+// still has to carry valid scores for every approve-side question.
+const clampBar = (value: number): number => Math.min(0.99, Math.max(0, value))
 const clampCeiling = (value: number): number => Math.min(0.5, Math.max(0, value))
 
 /** approvals.minConfidence → bars. A single number sets both verdict bars;
  * an object sets `approve` / `refuse` individually (legacy `deny` = refuse)
  * and may carry per-question overrides for the approve side - `reversible`
  * and `serves_task` take their own bar (beat the verdict key), `harmful`
- * takes the approve-side ceiling (floor is 0, not 0.5). Precedence: question
+ * takes the approve-side ceiling (clamped 0-0.5; the other bars clamp
+ * 0-0.99, so sub-0.5 bars - auto-enacting on unsure scores - are available
+ * to the operator). Precedence: question
  * key > verdict key > default; unknown keys are ignored. */
 export function parseMinConfidence(raw: unknown): ApprovalBars {
   const number = (value: unknown): number | undefined =>
@@ -2287,6 +2330,22 @@ export interface ApprovalInput {
   policy: ApprovalPolicy
 }
 
+/** Why a resolved outcome landed on ask (or deny): the first failing
+ * approve-side check, an unavailable score, or a policy-held verdict. Recorded
+ * into the stats bands (`reason/...`) so tuning can see which check, not just
+ * which score band, produced prompts. */
+export type ApprovalReason =
+  | "refuse-bar-met"
+  | "hold-refuse"
+  | "hold-approve"
+  | "verdict-unavailable"
+  | "reversible-unavailable"
+  | "reversible-below-bar"
+  | "serves-task-unavailable"
+  | "serves-task-below-bar"
+  | "harmful-unavailable"
+  | "harmful-over-ceiling"
+
 export interface ApprovalOutcome {
   /** What the caller applies: allow auto-runs, deny refuses, ask prompts. */
   effect: "allow" | "deny" | "ask"
@@ -2296,6 +2355,8 @@ export interface ApprovalOutcome {
   verdict?: ApprovalVerdict
   /** The binding score behind a decisive verdict. */
   confidence?: number
+  /** Why the outcome resolved this way (undefined for a clean allow). */
+  reason?: ApprovalReason
 }
 
 const reversibleBar = (bars: ApprovalBars): number => bars.reversible ?? bars.approve
@@ -2328,12 +2389,19 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   if (harmful !== undefined && harmful >= bars.refuse) {
     const pct = fmtOf(harmful)
     if (policy.onRefuse === "ask")
-      return { effect: "ask", note: `[jev] refuses (${pct}) - held for you`, verdict: "refuse", confidence: harmful }
+      return {
+        effect: "ask",
+        note: `[jev] refuses (${pct}) - held for you`,
+        verdict: "refuse",
+        confidence: harmful,
+        reason: "hold-refuse",
+      }
     return {
       effect: "deny",
       note: `[jev] refused (${pct}) - the agent must pick another approach`,
       verdict: "refuse",
       confidence: harmful,
+      reason: "refuse-bar-met",
     }
   }
 
@@ -2349,29 +2417,39 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
     const shown = serves !== undefined ? Math.min(reversible, serves) : reversible
     const pct = fmtOf(shown)
     if (policy.onApprove === "ask")
-      return { effect: "ask", note: `[jev] approves (${pct}) - held for you`, verdict: "approve", confidence: shown }
+      return {
+        effect: "ask",
+        note: `[jev] approves (${pct}) - held for you`,
+        verdict: "approve",
+        confidence: shown,
+        reason: "hold-approve",
+      }
     return { effect: "allow", note: `[jev] approved (${pct})`, verdict: "approve", confidence: shown }
   }
 
   // The unclear band: annotated human prompt, naming the first failing
   // approve-side check so the prompt answers "why didn't this auto-run?".
   if (reversible === undefined && harmful === undefined && (!input.task || scores.serves_task === undefined)) {
-    return { effect: "ask", note: "[jev] verdict unavailable" }
+    return { effect: "ask", note: "[jev] verdict unavailable", reason: "verdict-unavailable" }
   }
-  if (reversible === undefined) return { effect: "ask", note: "[jev] unclear (reversible unavailable)" }
+  if (reversible === undefined)
+    return { effect: "ask", note: "[jev] unclear (reversible unavailable)", reason: "reversible-unavailable" }
   if (reversible < reversibleBar(bars)) {
     return {
       effect: "ask",
       note: `[jev] reversible ${fmtOf(reversible)} (below ${fmtOf(reversibleBar(bars))})`,
+      reason: "reversible-below-bar",
     }
   }
   if (input.task) {
-    if (serves === undefined) return { effect: "ask", note: "[jev] unclear (serves_task unavailable)" }
+    if (serves === undefined)
+      return { effect: "ask", note: "[jev] unclear (serves_task unavailable)", reason: "serves-task-unavailable" }
     if (serves < servesTaskBar(bars))
-      return { effect: "ask", note: `[jev] off-task (serves_task ${fmtOf(serves)})` }
+      return { effect: "ask", note: `[jev] off-task (serves_task ${fmtOf(serves)})`, reason: "serves-task-below-bar" }
   }
-  if (harmful === undefined) return { effect: "ask", note: "[jev] unclear (harmful unavailable)" }
-  return { effect: "ask", note: `[jev] unclear (harmful ${fmtOf(harmful)})` }
+  if (harmful === undefined)
+    return { effect: "ask", note: "[jev] unclear (harmful unavailable)", reason: "harmful-unavailable" }
+  return { effect: "ask", note: `[jev] unclear (harmful ${fmtOf(harmful)})`, reason: "harmful-over-ceiling" }
 }
 
 /** Classify a judgment failure for the stats: aborts/timeouts come from the
@@ -2432,6 +2510,8 @@ export interface ApprovalStatsEvent {
   usage?: { input_tokens?: number; output_tokens?: number }
   /** Judge-failure class, when the outcome is "fail" (recorded post-retry). */
   cause?: "timeout" | "http" | "error"
+  /** Why the judged outcome resolved this way (resolveApproval's reason). */
+  reason?: ApprovalReason
   /** Judgment latency in ms, once a judgment reached the endpoint. */
   latencyMs?: number
   /** What approvals.onFail enacted for a "fail" outcome. */
@@ -2455,9 +2535,12 @@ export function approvalStatsBand(confidence: number | undefined): string {
 /** Suggest minConfidence bars from recorded stats: the 0.95-mass floors.
  * For each verdict the bands record the binding score per slice; the walk
  * starts at the top band and descends until 95% of that verdict's mass is
- * covered, proposing the floor of the band it lands on. Fields stay
- * undefined below 50 samples in either direction - the defaults are quiet
- * enough that thin data must not move them. */
+ * covered, proposing the floor of the band it lands on. Bands now descend
+ * into the sub-0.5 territory too (propose 0 - the sub-0.5 band is opaque, so
+ * the bar drops as far as the clamp allows, which still requires every score
+ * to exist and validate). Fields stay undefined below 50 samples in either
+ * direction - the defaults are quiet enough that thin data must not move
+ * them. */
 export function suggestedApprovalStats(blob: unknown): { approve?: number; refuse?: number } {
   const rows =
     blob && typeof blob === "object" && !Array.isArray(blob)
@@ -2480,11 +2563,13 @@ export function suggestedApprovalStats(blob: unknown): { approve?: number; refus
     const samples = sums.reduce((acc, n) => acc + n, 0)
     if (samples < 50) return undefined
     let covered = 0
-    for (let i = sums.length - 1; i >= 1; i--) {
+    for (let i = sums.length - 1; i >= 0; i--) {
       covered += sums[i]
       if (covered / samples >= 0.95) {
-        // Band floors ascend with the index: 0.5-0.6 -> 0.5, >=0.9 -> 0.9.
-        return 0.5 + (i - 1) * 0.1
+        // Band floors ascend with the index: 0.5-0.6 -> 0.5, >=0.9 -> 0.9;
+        // the sub-0.5 band (index 0) has no knowable floor below 0.5, so the
+        // walk proposes 0 - auto-enact on any validating score.
+        return i === 0 ? 0 : 0.5 + (i - 1) * 0.1
       }
     }
     return 0.5
@@ -2522,6 +2607,7 @@ export function mergeApprovalStats(existing: unknown, event: ApprovalStatsEvent)
     if (event.outcome === "ask" && (event.verdict === "approve" || event.verdict === "refuse")) {
       bump(`asked-${event.verdict}`)
     }
+    if (event.reason) bump(`reason/${event.reason}`)
   }
   const usageSum = (value: unknown): number =>
     typeof value === "number" && Number.isFinite(value) ? value : 0

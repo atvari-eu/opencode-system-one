@@ -327,7 +327,8 @@ convenience). A verdict names the action, so enforcement is a pure mapping
 (`resolveApproval` in logic.ts): `auto` enacts both decisive verdicts,
 `deny` enacts only the refusal, `annotate` never enacts; the winner must
 clear `minConfidence` (default 0.85, on confidence-in-the-verdict,
-clamped 0.5-0.99). Originally a per-action allowlist (`approvals.actions`,
+clamped 0-0.99 - the 0 floor seats sub-0.5 bars, the explicit delegation on
+unsure scores; pre-2026-10 the floor was 0.5).Originally a per-action allowlist (`approvals.actions`,
 default `shell`+`edit`) gated enactment; it was removed because the
 `permissions` ruleset already covers its one legitimate use - pinning a
 slice that must always prompt with an `ask` rule - while the list itself
@@ -353,7 +354,9 @@ single most common needless prompt.
 The second redesign (2026-10, following OpenRouter's jev approvals
 cookbook) returns to probabilities with judge-owned criteria: three `noul`
 questions per judged request - `reversible` (undone with `git` or by
-rerunning; general undoable-or-harmless-to-repeat wording for other tools),
+rerunning, writes confined to `workspace`; 2026-10 dropped the bundled
+locality/no-network clauses after the stats showed them auto-asking every
+out-of-workspace read and GET fetch - the largest recorded ask class),
 `serves_task` (a reasonable next step toward the task line, only asked and
 enforced when the judged state actually carries one), `harmful` (the old
 deny criteria as one score) - and a pure arithmetic resolver
@@ -380,11 +383,14 @@ request as tool feedback; `ask` keeps the pre-delegation prompt-holding
 posture, and the deprecated `annotate` mode maps its gate to `ask`,
 `auto`/`deny` to `deny`) (annotate/auto/deny remain as a deprecated alias
 mapped onto the knobs, logging one notice) - and `minConfidence` becomes bars:
-`approve`/`refuse` verdict bars (defaults 0.90/0.85, clamp 0.5-0.99,
+`approve`/`refuse` verdict bars (defaults 0.5/0.5 - the noul midline: within
+an `approvals` setup the operator already delegated, so anything weakly
+certain enacts and mid-band harmful refuses; clamp 0-0.99 - the 0
+floor seats sub-0.5 bars, the explicit delegation on unsure scores),
 legacy `deny` = `refuse`; unparseable input falls back per-key so garbage
 cannot silently raise a bar, e.g. the refuse default for a bare number
 that sets both) plus per-question overrides `reversible`/`serves_task`
-(own bars) and `harmful` (own ceiling). The task line (`taskFromMessages`)
+(own bars, same clamp) and `harmful` (own ceiling). The task line (`taskFromMessages`)
 is strict extraction: the newest real user message over the same text
 sources messageText reads, minus its JSON.stringify fallback - a row
 without text parts supplies no task - own `[jev-…` notice rows and
@@ -398,7 +404,12 @@ words stay transmit-only (`approve`/`refuse`; "ask" is never a judged
 answer), one judged request per permission ask, and the stats event grew
 per-question score bands, `asked-approve`/`asked-refuse` counters and
 judged token totals - so a bar moves off its default from calibration
-data, not taste.
+data, not taste. The 2026-10 tuning pass added the `reason/...` band
+(which failing check resolved the outcome), the transient retry's lean
+judged state (same questions on fewer operations - payload traded for fit
+inside the same budget), the fetch-only `curl` fast path and the widened
+stdout-only builtin whitelist; `jevTimeout` was deliberately left at its
+default - budgets stay put, payloads got smaller.
 
 ## Credential self-heal: re-read on worn-key diagnostics
 

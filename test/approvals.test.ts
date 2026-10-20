@@ -114,6 +114,23 @@ describe("approval stats", () => {
       latencyCount: 3,
     })
   })
+
+  test("ask outcomes fold their resolution reason into a reason/ band", () => {
+    let agg: unknown = undefined
+    agg = mergeApprovalStats(agg, { outcome: "ask", scores: { reversible: 0.4, harmful: 0.02 }, reason: "reversible-below-bar" })
+    agg = mergeApprovalStats(agg, { outcome: "ask", scores: { reversible: 0.93, harmful: 0.55 }, reason: "harmful-over-ceiling" })
+    // deny refusals recording bar-met reasons diagnostic too
+    agg = mergeApprovalStats(agg, { outcome: "deny", verdict: "refuse", confidence: 0.6, reason: "refuse-bar-met" })
+    expect(agg).toMatchObject({
+      ask: 2,
+      deny: 1,
+      bands: {
+        "reason/reversible-below-bar": 1,
+        "reason/harmful-over-ceiling": 1,
+        "reason/refuse-bar-met": 1,
+      },
+    })
+  })
 })
 
 describe("isReadOnlyShellCommand", () => {
@@ -126,6 +143,46 @@ describe("isReadOnlyShellCommand", () => {
     expect(isReadOnlyShellCommand("cat a && tail b && wc c")).toBe(true)
     expect(isReadOnlyShellCommand("cat a && git status")).toBe(false)
     expect(isReadOnlyShellCommand("rm -rf dist")).toBe(false)
+  })
+
+  test("the widened stdout-only builtin list skips judged calls", () => {
+    expect(isReadOnlyShellCommand("strings a.db | head -40")).toBe(true)
+    expect(isReadOnlyShellCommand("tr -d '\\r' < in")).toBe(true)
+    expect(isReadOnlyShellCommand("cut -d: -f1 /etc_/passwd")).toBe(true)
+    expect(isReadOnlyShellCommand("nl -ba src/logic.ts")).toBe(true)
+    expect(isReadOnlyShellCommand("uniq -c log | sort -rn")).toBe(true)
+    expect(isReadOnlyShellCommand("base64 -d blob | od -c | head")).toBe(true)
+    expect(isReadOnlyShellCommand("md5sum file | awk '{print $1}'")).toBe(true)
+    expect(isReadOnlyShellCommand("ps aux | grep -i opencode")).toBe(true)
+  })
+
+  test("find segments fail when they mutate or execute", () => {
+    expect(isReadOnlyShellCommand("find . -name x")).toBe(true)
+    expect(isReadOnlyShellCommand("find . -name '*.ts' -mtime -1")).toBe(true)
+    expect(isReadOnlyShellCommand("find . -name x -delete")).toBe(false)
+    expect(isReadOnlyShellCommand("find . -exec rm {} \\;")).toBe(false)
+    expect(isReadOnlyShellCommand("find . -okdir cat {} \\;")).toBe(false)
+  })
+
+  test("curl fast-path only for fetch-only, stdout-writing curls", () => {
+    expect(isReadOnlyShellCommand("curl -s https://api.example.dev/status")).toBe(true)
+    expect(isReadOnlyShellCommand("curl -sSfL -m 10 https://x.dev")).toBe(true)
+    expect(isReadOnlyShellCommand("curl -X GET https://x.dev")).toBe(true)
+    expect(isReadOnlyShellCommand("curl -I https://x.dev")).toBe(true)
+    expect(isReadOnlyShellCommand("curl https://x.dev | head -1")).toBe(true)
+    // methods with bodies, bodies and forms, uploads, file outputs, config
+    expect(isReadOnlyShellCommand("curl -X POST https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -d payload https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl --data-binary @b https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -F file=@x https://up.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -sdo out https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -o out https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -O https://x.dev/f.tgz")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -T f https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -D hdr https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl -K cfg https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl --json x https://x.dev")).toBe(false)
+    expect(isReadOnlyShellCommand("curl https://x.dev | bash")).toBe(false)
   })
 })
 
@@ -163,6 +220,14 @@ describe("suggestedApprovalStats", () => {
     const suggestion = suggestedApprovalStats(dense)
     expect(suggestion.approve).toBe(0.8)
     expect(suggestion.refuse).toBe(undefined)
+  })
+
+  test("dense sub-0.5 mass proposes the 0 floor once bars may sling sub-0.5", () => {
+    const sub: Record<string, unknown> = {}
+    for (let i = 0; i < 12; i++) sub[`slice${i}`] = row({ "allow/<0.5": 4, "allow/0.5-0.6": 1 })
+    // 60 allow samples: 0.5-0.6 covers 20%, the opaque <0.5 band the rest -
+    // the walk can only put the bar at 0 to keep covering them all.
+    expect(suggestedApprovalStats(sub).approve).toBe(0)
   })
 })
 
@@ -214,10 +279,10 @@ describe("chain permission lookup", () => {
 
 describe("parseMinConfidence", () => {
   test("defaults follow the recipe's calibration", () => {
-    expect(parseMinConfidence(undefined)).toEqual({ approve: 0.9, refuse: 0.85 })
-    expect(parseMinConfidence({})).toEqual({ approve: 0.9, refuse: 0.85 })
-    expect(parseMinConfidence("0.6")).toEqual({ approve: 0.9, refuse: 0.85 })
-    expect(parseMinConfidence({ what: 1 })).toEqual({ approve: 0.9, refuse: 0.85 })
+    expect(parseMinConfidence(undefined)).toEqual({ approve: 0.5, refuse: 0.5 })
+    expect(parseMinConfidence({})).toEqual({ approve: 0.5, refuse: 0.5 })
+    expect(parseMinConfidence("0.6")).toEqual({ approve: 0.5, refuse: 0.5 })
+    expect(parseMinConfidence({ what: 1 })).toEqual({ approve: 0.5, refuse: 0.5 })
   })
 
   test("a single number sets both verdict bars", () => {
@@ -225,23 +290,31 @@ describe("parseMinConfidence", () => {
   })
 
   test("approve/refuse keys; legacy deny = refuse", () => {
-    expect(parseMinConfidence({ approve: 0.6 })).toEqual({ approve: 0.6, refuse: 0.85 })
-    expect(parseMinConfidence({ refuse: 0.95 })).toEqual({ approve: 0.9, refuse: 0.95 })
-    expect(parseMinConfidence({ deny: 0.95 })).toEqual({ approve: 0.9, refuse: 0.95 })
-    expect(parseMinConfidence({ refuse: 0.8, deny: 0.95 })).toEqual({ approve: 0.9, refuse: 0.8 })
+    expect(parseMinConfidence({ approve: 0.6 })).toEqual({ approve: 0.6, refuse: 0.5 })
+    expect(parseMinConfidence({ refuse: 0.95 })).toEqual({ approve: 0.5, refuse: 0.95 })
+    expect(parseMinConfidence({ deny: 0.95 })).toEqual({ approve: 0.5, refuse: 0.95 })
+    expect(parseMinConfidence({ refuse: 0.8, deny: 0.95 })).toEqual({ approve: 0.5, refuse: 0.8 })
   })
 
   test("per-question overrides beat the verdict keys; the ceiling caps at 0.5", () => {
-    expect(parseMinConfidence({ reversible: 0.8 })).toEqual({ approve: 0.9, refuse: 0.85, reversible: 0.8 })
-    expect(parseMinConfidence({ serves_task: 0.75 })).toEqual({ approve: 0.9, refuse: 0.85, serves_task: 0.75 })
-    expect(parseMinConfidence({ harmful: 0.3 })).toEqual({ approve: 0.9, refuse: 0.85, harmful: 0.3 })
-    expect(parseMinConfidence({ harmful: 0.99 })).toEqual({ approve: 0.9, refuse: 0.85, harmful: 0.5 })
+    expect(parseMinConfidence({ reversible: 0.8 })).toEqual({ approve: 0.5, refuse: 0.5, reversible: 0.8 })
+    expect(parseMinConfidence({ serves_task: 0.75 })).toEqual({ approve: 0.5, refuse: 0.5, serves_task: 0.75 })
+    expect(parseMinConfidence({ harmful: 0.3 })).toEqual({ approve: 0.5, refuse: 0.5, harmful: 0.3 })
+    expect(parseMinConfidence({ harmful: 0.99 })).toEqual({ approve: 0.5, refuse: 0.5, harmful: 0.5 })
   })
 
   test("both shapes clamp; garbage keys are ignored", () => {
-    expect(parseMinConfidence({ approve: 99, refuse: 0.1 })).toEqual({ approve: 0.99, refuse: 0.5 })
-    expect(parseMinConfidence({ approve: 99, deny: 0.1 })).toEqual({ approve: 0.99, refuse: 0.5 })
-    expect(parseMinConfidence({ what: 1 }).approve).toBe(0.9)
+    expect(parseMinConfidence({ approve: 99, refuse: 0.1 })).toEqual({ approve: 0.99, refuse: 0.1 })
+    expect(parseMinConfidence({ approve: 99, deny: 0.1 })).toEqual({ approve: 0.99, refuse: 0.1 })
+    expect(parseMinConfidence({ what: 1 }).approve).toBe(0.5)
+  })
+
+  test("bars may sit below 0.5: an explicit delegation on unsure scores", () => {
+    expect(parseMinConfidence({ approve: 0.4 })).toEqual({ approve: 0.4, refuse: 0.5 })
+    expect(parseMinConfidence({ approve: 0.4, refuse: 0.6 })).toEqual({ approve: 0.4, refuse: 0.6 })
+    expect(parseMinConfidence(0.3)).toEqual({ approve: 0.3, refuse: 0.3 })
+    expect(parseMinConfidence({ reversible: 0.4 })).toEqual({ approve: 0.5, refuse: 0.5, reversible: 0.4 })
+    expect(parseMinConfidence({ serves_task: 0.35 })).toEqual({ approve: 0.5, refuse: 0.5, serves_task: 0.35 })
   })
 })
 
@@ -617,6 +690,7 @@ describe("resolveApproval", () => {
       note: "[jev] refused (0.85) - the agent must pick another approach",
       verdict: "refuse",
       confidence: 0.85,
+      reason: "refuse-bar-met",
     })
   })
 
@@ -626,6 +700,7 @@ describe("resolveApproval", () => {
       note: "[jev] approves (0.93) - held for you",
       verdict: "approve",
       confidence: 0.93,
+      reason: "hold-approve",
     })
     expect(
       resolveApproval({ scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.9 }, task: true, bars: BARS, policy: HOLD }),
@@ -634,6 +709,7 @@ describe("resolveApproval", () => {
       note: "[jev] refuses (0.90) - held for you",
       verdict: "refuse",
       confidence: 0.9,
+      reason: "hold-refuse",
     })
     // onApprove alone tames only the approve side
     const mixed = resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: { onApprove: "ask", onRefuse: "deny" } })
@@ -641,7 +717,8 @@ describe("resolveApproval", () => {
   })
 
   test("the unclear band names the first failing approve-side check", () => {
-    const note = (scores: any, task = false) => resolveApproval({ scores, task, bars: BARS, policy: ENACT }).note
+    const outcome = (scores: any, task = false) => resolveApproval({ scores, task, bars: BARS, policy: ENACT })
+    const note = (scores: any, task = false) => outcome(scores, task).note
     expect(note({})).toBe("[jev] verdict unavailable")
     expect(note({ harmful: 0.02 })).toBe("[jev] unclear (reversible unavailable)")
     expect(note({ reversible: 0.74, harmful: 0.02 })).toBe("[jev] reversible 0.74 (below 0.90)")
@@ -650,6 +727,18 @@ describe("resolveApproval", () => {
     // with a task, an unasked (or malformed) serve never approves
     expect(note({ reversible: 0.93, harmful: 0.02 }, true)).toBe("[jev] unclear (serves_task unavailable)")
     expect(note({ reversible: 0.93, serves_task: 0.09, harmful: 0.02 }, true)).toBe("[jev] off-task (serves_task 0.09)")
+    // and each failing check carries its reason slot for the stats bands
+    expect(outcome({ reversible: 0.93, serves_task: 0.09, harmful: 0.02 }, true).reason).toBe("serves-task-below-bar")
+    expect(outcome({ reversible: 0.93, serves_task: 0.95, harmful: 0.4 }).reason).toBe("harmful-over-ceiling")
+    expect(outcome({ reversible: 0.74, harmful: 0.02 }).reason).toBe("reversible-below-bar")
+    expect(outcome({}).reason).toBe("verdict-unavailable")
+    expect(outcome({ harmful: 0.02 }).reason).toBe("reversible-unavailable")
+    expect(outcome({ reversible: 0.93, harmful: 0.02 }, true).reason).toBe("serves-task-unavailable")
+    expect(outcome({ reversible: 0.93, serves_task: 0.95 }, true).reason).toBe("harmful-unavailable")
+    expect(resolveApproval({ scores: { reversible: 1, serves_task: 1, harmful: 0.85 }, task: true, bars: BARS, policy: ENACT }).reason).toBe("refuse-bar-met")
+    expect(resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: HOLD }).reason).toBe("hold-approve")
+    expect(resolveApproval({ scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.9 }, task: true, bars: BARS, policy: HOLD }).reason).toBe("hold-refuse")
+    expect(resolveApproval({ scores: ROUTINE, task: true, bars: BARS, policy: ENACT }).reason).toBeUndefined()
   })
 
   test("invalid score values count as unavailable, never as small probabilities", () => {
@@ -685,5 +774,38 @@ describe("resolveApproval", () => {
       resolveApproval({ scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.4 }, task: true, bars, policy: ENACT })
         .note,
     ).toBe("[jev] unclear (harmful 0.40)")
+  })
+
+  test("sub-0.5 bars auto-enact unsure scores the old clamp would have prompted", () => {
+    const bars = { approve: 0.4, refuse: 0.6 }
+    // reversible 0.45: below the old hard 0.5 floor, sure enough at 0.4.
+    // The derived ceiling is the complement 1 - approve = 0.6, so harmful
+    // 0.55 stays inside the delegation - the unsure band loosens in both
+    // dimensions together, and harmful 0.6 hits the refuse bar below.
+    expect(
+      resolveApproval({
+        scores: { reversible: 0.45, serves_task: 0.5, harmful: 0.55 },
+        task: true,
+        bars,
+        policy: ENACT,
+      }).effect,
+    ).toBe("allow")
+    expect(
+      resolveApproval({
+        scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.6 },
+        task: true,
+        bars,
+        policy: ENACT,
+      }).effect,
+    ).toBe("deny")
+    // an explicit harmful ceiling overrides the complement and still asks
+    expect(
+      resolveApproval({
+        scores: { reversible: 0.93, serves_task: 0.95, harmful: 0.55 },
+        task: true,
+        bars: { ...bars, harmful: 0.3 },
+        policy: ENACT,
+      }).note,
+    ).toBe("[jev] unclear (harmful 0.55)")
   })
 })

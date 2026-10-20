@@ -1678,21 +1678,25 @@ export default Plugin.define({
         // One approval judgment: the judge call with the configured signal
         // budget plus a single retry on transient causes (timeout / http) -
         // both commonly strike once in bursts, while config and credential
-        // faults ("error") fail fast and never retry. Returns the judged
-        // reply and the wall-clock latency covering both attempts.
+        // faults ("error") fail fast and never retry. The retry re-asks the
+        // same questions on the lean state (first three operations, trimmed,
+        // no metadata): the budget stays put and the retry trades payload
+        // for fit instead of extending it. Returns the judged reply and the
+        // wall-clock latency covering both attempts.
         const judgedApproval = async (
           questions: Question[],
           state: string,
+          leanState: string,
         ): Promise<{ reply: JevReply; latencyMs: number }> => {
           const started = Date.now()
-          const attempt = (): Promise<{ reply: JevReply; cached: boolean }> =>
-            cachedJudge(questions, state, AbortSignal.timeout(approvalsJevTimeout))
+          const attempt = (payload: string): Promise<{ reply: JevReply; cached: boolean }> =>
+            cachedJudge(questions, payload, AbortSignal.timeout(approvalsJevTimeout))
           try {
-            return { reply: (await attempt()).reply, latencyMs: Date.now() - started }
+            return { reply: (await attempt(state)).reply, latencyMs: Date.now() - started }
           } catch (err) {
             if (approvalFailureCause(err) === "error") throw err
             await new Promise((resolve) => setTimeout(resolve, 400))
-            return { reply: (await attempt()).reply, latencyMs: Date.now() - started }
+            return { reply: (await attempt(leanState)).reply, latencyMs: Date.now() - started }
           }
         }
 
@@ -1853,9 +1857,11 @@ export default Plugin.define({
             }
 
             // The judged state carries named fields: workspace location,
-            // action, the operations (capped at 10 × 1500, redacted per
-            // field), rule context, and the current task (serves_task is
-            // asked only when a task actually exists).
+            // action, the operations (deduped, capped at 10 × 1500, redacted
+            // per field), rule context, and the current task (serves_task is
+            // asked only when a task actually exists). A lean variant keeps
+            // the first three operations at 300 chars each with no metadata
+            // for the transient retry - same decision, smaller request.
             let task = ""
             if (event.sessionID) {
               try {
@@ -1865,10 +1871,11 @@ export default Plugin.define({
                 task = taskFromMessages(Array.isArray(rows) ? rows : [])
               } catch {}
             }
+            const ops = Array.from(new Set(resources.slice(0, 10)))
             const detail: string[] = [`workspace: ${location || "(unknown)"}`, `action: ${action}`]
-            for (const op of resources.slice(0, 10)) detail.push(`- ${redactText(op.slice(0, 1500)).text}`)
+            for (const op of ops) detail.push(`- ${redactText(op.slice(0, 1500)).text}`)
             if (event.metadata && typeof event.metadata === "object")
-              detail.push(`details: ${redactText(JSON.stringify(event.metadata).slice(0, 2000)).text}`)
+              detail.push(`details: ${redactText(JSON.stringify(event.metadata).slice(0, 800)).text}`)
             if (matched?.effect === "system-one" && matched.context) {
               detail.push(`operator context: ${matched.context}`)
             } else {
@@ -1881,6 +1888,13 @@ export default Plugin.define({
             const state =
               "An OpenCode coding agent requests permission for the operation(s) below. Decide how it should be handled.\n\n" +
               detail.join("\n")
+            const leanState =
+              (matched?.effect === "system-one" && matched.context ? `operator context: ${matched.context}\n` : "") +
+              (task ? `task: ${redactText(task).text}\n` : "") +
+              ops
+                .slice(0, 3)
+                .map((op) => `- ${redactText(op.slice(0, 300)).text}`)
+                .join("\n")
 
             // Three noul questions - reversible, serves_task (only with a
             // task), harmful - resolved by threshold bars on the returned
@@ -1889,7 +1903,7 @@ export default Plugin.define({
             // Judged with approvals.jevTimeout plus one transient retry; the
             // judged span rides on statsBound so the catch can report it.
             statsBound.judgeStarted = Date.now()
-            const { reply, latencyMs } = await judgedApproval(approvalQuestions(action, task !== ""), state)
+            const { reply, latencyMs } = await judgedApproval(approvalQuestions(action, task !== ""), state, leanState)
             const answers = (reply as any).answers ?? {}
             const scores = {
               reversible: answers.reversible?.noul,
@@ -1927,6 +1941,7 @@ export default Plugin.define({
                 verdict: outcome.verdict,
                 confidence: outcome.confidence,
                 scores,
+                reason: outcome.reason,
                 latencyMs,
                 usage: (reply as any).usage,
               })
@@ -1939,6 +1954,7 @@ export default Plugin.define({
               verdict: outcome.verdict,
               confidence: outcome.confidence,
               scores,
+              reason: outcome.reason,
               latencyMs,
               usage: (reply as any).usage,
             })
