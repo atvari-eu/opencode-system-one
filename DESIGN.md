@@ -399,7 +399,13 @@ that sets both) plus per-question overrides `reversible`/`serves_task`
 is strict extraction: the newest real user message over the same text
 sources messageText reads, minus its JSON.stringify fallback - a row
 without text parts supplies no task - own `[jev-…` notice rows and
-synthetic kinds skipped, capped at 2000 chars, scrubbed in the hook.
+synthetic kinds skipped, capped at 600 chars (the task feeds a comparison
+judgment, relating one operation to a goal - a verbatim long message buys
+no serving-score sharpness), scrubbed in the hook. Operations ride the
+same tightness: 6 × 1200-char cap, middle-elided so a long command's
+final targets always reach the judge (redirect targets, `&& rm -rf …`
+live at the end); the transient retry keeps the first three at 300 with
+a 60-char tail.
 Sandbox posture (`approvals.sandbox`): an operator-asserted claim that the
 agent runs inside a filesystem/network sandbox - the plugin cannot verify
 it, the same trust family as `onFail: "allow"` - exists only to calibrate

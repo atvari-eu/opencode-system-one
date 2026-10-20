@@ -31,6 +31,7 @@ import {
   shellChainSegments,
   suggestedApprovalStats,
   taskFromMessages,
+  elideMiddle,
 } from "../src/logic"
 
 describe("approval stats", () => {
@@ -741,7 +742,34 @@ describe("taskFromMessages", () => {
 
   test("flat v2 rows and the task cap", () => {
     expect(taskFromMessages([{ type: "user", text: "ship it" }])).toBe("ship it")
-    expect(taskFromMessages([row("user", "y".repeat(3000))])).toHaveLength(2000)
+    expect(taskFromMessages([row("user", "y".repeat(3000))])).toHaveLength(600)
+  })
+})
+
+describe("elideMiddle", () => {
+  test("short strings pass through unchanged", () => {
+    expect(elideMiddle("git status", 1200)).toBe("git status")
+    expect(elideMiddle("", 300, 60)).toBe("")
+  })
+
+  test("long strings keep head and tail, elide the middle, stay within cap", () => {
+    const text = "git fetch origin && " + "x".repeat(2000) + " && rm -rf ~/target"
+    const out = elideMiddle(text, 1200)
+    expect(out.length).toBeLessThanOrEqual(1200)
+    expect(out.startsWith("git fetch origin")).toBe(true)
+    expect(out.endsWith("rm -rf ~/target")).toBe(true)
+    expect(out).toContain("chars]…")
+    // head and tail budgets are pinned (910 + marker + 250), not cap-fractional
+    const capped = elideMiddle("a".repeat(4000), 1200)
+    expect(capped.length).toBeLessThanOrEqual(1200)
+    expect(capped.startsWith("a".repeat(910))).toBe(true)
+    expect(capped.endsWith("a".repeat(250))).toBe(true)
+    expect(elideMiddle("b".repeat(9000), 1200)).toMatch(/^b{910} …\[\d+ chars\]… b{250}$/)
+  })
+
+  test("tiny caps fall back to a plain head slice", () => {
+    expect(elideMiddle("abcdef", 4, 3)).toBe("abcd")
+    expect(elideMiddle("a".repeat(1000), 100, 60)).toHaveLength(100)
   })
 })
 

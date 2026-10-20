@@ -115,6 +115,7 @@ import {
   approvalDefaultContext,
   approvalFailureCause,
   approvalSandboxNote,
+  elideMiddle,
   isReadOnlyShellCommand,
   shellChainSegments,
   suggestedApprovalStats,
@@ -1866,12 +1867,14 @@ export default Plugin.define({
 
             // The judged state carries named fields: workspace location,
             // action, the sandbox posture when asserted, the operations
-            // (deduped, capped at 10 × 1500, redacted per field), rule
-            // context, and the current task (serves_task is asked only when
-            // a task actually exists). A lean variant keeps the sandbox
-            // note, context and first three operations at 300 chars each
-            // with no metadata for the transient retry - same decision,
-            // smaller request.
+            // (deduped, capped at 6 × 1200, middle-elided head+tail so a
+            // long command's final targets always show, redacted per
+            // field), rule context, and the current task (serves_task is
+            // asked only when a task actually exists; capped at 600 by
+            // taskFromMessages). A lean variant keeps the sandbox note,
+            // context and first three operations at 300 chars each
+            // (tail 60 kept) with no metadata for the transient retry -
+            // same decision, smaller request.
             let task = ""
             if (event.sessionID) {
               try {
@@ -1881,10 +1884,10 @@ export default Plugin.define({
                 task = taskFromMessages(Array.isArray(rows) ? rows : [])
               } catch {}
             }
-            const ops = Array.from(new Set(resources.slice(0, 10)))
+            const ops = Array.from(new Set(resources.slice(0, 6)))
             const detail: string[] = [`workspace: ${location || "(unknown)"}`, `action: ${action}`]
             if (approvalsSandboxNote) detail.push(approvalsSandboxNote)
-            for (const op of ops) detail.push(`- ${redactText(op.slice(0, 1500)).text}`)
+            for (const op of ops) detail.push(`- ${redactText(elideMiddle(op, 1200)).text}`)
             if (event.metadata && typeof event.metadata === "object")
               detail.push(`details: ${redactText(JSON.stringify(event.metadata).slice(0, 800)).text}`)
             if (matched?.effect === "system-one" && matched.context) {
@@ -1905,7 +1908,7 @@ export default Plugin.define({
               (task ? `task: ${redactText(task).text}\n` : "") +
               ops
                 .slice(0, 3)
-                .map((op) => `- ${redactText(op.slice(0, 300)).text}`)
+                .map((op) => `- ${redactText(elideMiddle(op, 300, 60)).text}`)
                 .join("\n")
 
             // Three noul questions - reversible, serves_task (only with a

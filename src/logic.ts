@@ -898,8 +898,10 @@ export function userRowCount(messages: any[]): number {
 // synthetic rows never supply the task; the approval judgment only ever sees
 // the task it actually carries (serves_task is asked only when this finds
 // one). Unlike messageText, no JSON fallback: a row without text parts
-// supplies no task.
-export const TASK_MAX = 2000
+// supplies no task. The cap serves the comparison judgment - relating one
+// operation to a goal - so 600 covers the goal statement; a verbatim long
+// message buys no serving-score sharpness on any judged call that reads it.
+export const TASK_MAX = 600
 export function taskFromMessages(messages: any[]): string {
   // The same extraction messageText performs, minus its JSON.stringify
   // fallback: a row without text parts supplies no task.
@@ -922,6 +924,21 @@ export function taskFromMessages(messages: any[]): string {
     return text.slice(0, TASK_MAX)
   }
   return ""
+}
+
+/** Long operation strings elide their MIDDLE, never the tail: judged
+ * questions read a command's verbs and its final targets (redirects,
+ * `&& rm -rf …`, output paths live at the end), while the elided middle
+ * carries the long argument bodies (URL query strings, heredoc payloads,
+ * base64) the questions do not need. Head and tail budgets are pinned so a
+ * cap change never moves what survives; the result stays <= cap. Caps near
+ * or below the tail+marker budget fall back to a plain head slice. */
+export function elideMiddle(text: string, cap: number, tail = 250): string {
+  if (text.length <= cap) return text
+  if (cap <= tail + 64) return text.slice(0, cap)
+  const head = text.slice(0, cap - tail - 40)
+  const middle = text.length - head.length - tail
+  return `${head} …[${middle} chars]… ${text.slice(text.length - tail)}`
 }
 
 // Stand-down rule: after a notice was posted (userCountAtNotice stored), no
