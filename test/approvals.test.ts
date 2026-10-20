@@ -513,7 +513,7 @@ describe("approvalGate", () => {
 
   test("metadata-only listings clear the secret-path gate", () => {
     // the operator-cited case: listing names/stats never ingests contents
-    expect(approvalGate("shell", "ls -l ~/.ssh/atvari_sign*", deps)).toBe(false)
+    expect(approvalGate("shell", "ls -l ~/.ssh/sign*", deps)).toBe(false)
     expect(approvalGate("shell", "stat ~/.ssh/config", deps)).toBe(false)
     expect(approvalGate("shell", "find ~/.ssh -name '*.pub'", deps)).toBe(false)
     expect(approvalGate("shell", "du ~/.gnupg", deps)).toBe(false)

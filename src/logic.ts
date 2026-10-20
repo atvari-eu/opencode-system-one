@@ -2201,7 +2201,7 @@ export function secretPath(resource: string): boolean {
 // `ls ~/.ssh > out` are not listings. The secret-path gate exempts a shell
 // chain whose every segment is one of these - the weakest-segment rule, one
 // ingest-capable command anywhere holds the whole chain - so
-// `ls -l ~/.ssh/atvari_sign*` judges instead of gating while
+// `ls -l ~/.ssh/sign*` judges instead of gating while
 // `cat ~/.ssh/id_ed25519` and `read .env` hold as always.
 const APPROVAL_SECRET_METADATA_VERB =
   /^(?:ls|stat|find|du|tree|readlink|basename|dirname|test|\[|\[\[|which|whereis|type)$/
@@ -2238,7 +2238,7 @@ export function approvalGate(action: string, resource: string, deps: ApprovalGat
   if (deps.gates.secrets && secretPathAction(action)) {
     // Per-chain-segment matching: ~/.ssh mid-chain (`ls ~/.ssh | xargs cat`)
     // skipped the whole-string check, which only matched when the path ended
-    // the string. Metadata listings (ls -l ~/.ssh/atvari_sign*) cite names
+    // the string. Metadata listings (ls -l ~/.ssh/sign*) cite names
     // and never ingest content - the gate exists for content reaching the
     // context - so a shell chain whose every segment is metadata-only passes
     // to the judge (or the read-only fast path), and one ingest-capable

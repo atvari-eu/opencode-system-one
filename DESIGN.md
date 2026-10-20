@@ -426,7 +426,7 @@ secret-path gate matches per chain segment and exempts metadata-only
 shell chains - every segment a name-only command (ls, stat, du, find
 without -exec/-ok/-delete), no command substitution, no redirection:
 listing cites names and never ingests content, so `ls -l
-~/.ssh/atvari_sign*` judges instead of gating, while one ingest-capable
+~/.ssh/sign*` judges instead of gating, while one ingest-capable
 command anywhere holds the chain; `.ssh`/`.gnupg`/`.aws` match with a
 word-boundary lookahead so mid-argument placements hold too. Verdict
 words stay transmit-only (`approve`/`refuse`; "ask" is never a judged
