@@ -723,6 +723,33 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
 }
 
 // toRef: switches/pins store refs the way OpenCode emits them (id not modelID).
+/** Unwraps the SDK response envelope when one is present ({ data: X }).
+ * The host client has shipped single-object reads both plain and
+ * envelope-wrapped (provider.get needed both shapes in code 42359ac, and
+ * session.get drifted the same way - a wrapped read left the route prompt
+ * hook silently bail out on every prompt, parking sessions on the auto
+ * pseudo-model). Plain values, arrays, and non-envelope objects pass
+ * through untouched - never guess a shape here. */
+export function unwrapEnvelope<T>(value: T): unknown {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "data" in (value as Record<string, unknown>)
+  ) {
+    const data = (value as any).data
+    return data === undefined ? value : data
+  }
+  return value
+}
+
+/** `session.context` rows under every host shape: envelope-wrapped or plain,
+ * always a list (empty when unreadable). */
+export function contextRows(value: unknown): any[] {
+  const unwrapped: unknown = unwrapEnvelope(value)
+  return Array.isArray(unwrapped) ? unwrapped : []
+}
+
 /** settings.baseURL of a provider-registry entry, whatever wrapper the host
  * puts in: SDK responses wrap payloads in { data }, settings live at
  * .settings.baseURL. Unknown shapes resolve undefined - never a guess. */

@@ -78,6 +78,7 @@ import {
   chainPermissionEffect,
   classifyJevFailure,
   clampThreshold,
+  contextRows,
   deploymentFingerprint,
   inlineScreenFailure,
   lookupPermission,
@@ -126,6 +127,7 @@ import {
   screenVerdict,
   shouldNotifyIncomplete,
   toRef,
+  unwrapEnvelope,
   userRowCount,
 } from "./logic"
 import { type Candidate, type CredentialChain, type DeploymentFault, type ProviderOption } from "./logic"
@@ -1364,7 +1366,14 @@ export default Plugin.define({
         try {
           const text = typeof event?.prompt?.text === "string" ? event.prompt.text : ""
           if (text.trim().length === 0) return
-          const session: any = await (ctx as any).session.get({ sessionID: event.sessionID })
+          // session.get answers envelope-wrapped under some host builds ({ data:
+          // Session.Info }): the parked-model read must unwrap both shapes, or the
+          // hook bails on every prompt - leaving sessions parked on the auto entry
+          // (ConnectionRefused) and effort pinned at default. Same tolerance as the
+          // provider-registry reads (42359ac).
+          const session: any = unwrapEnvelope(
+            await (ctx as any).session.get({ sessionID: event.sessionID }),
+          )
           const model = session?.model
           if (!model?.providerID || !model?.id) return
           // The auto model feature engages only where the user parked the
@@ -1432,7 +1441,9 @@ export default Plugin.define({
           // Manual picks of a real model never reach this handler, so the
           // pin read only feeds routeTurn's bookkeeping (it records whose
           // switch it was for the idle resting reset).
-          const rows: any[] = await ((ctx as any).session.context({ sessionID: event.sessionID }).catch(() => []))
+          const rows: any[] = contextRows(
+            await (ctx as any).session.context({ sessionID: event.sessionID }).catch(() => []),
+          )
           const last = latestSwitch(rows)
           let pin: any
           try {
@@ -2493,7 +2504,7 @@ export default Plugin.define({
           execute: async (input: any) => {
             const sessionID = input?.sessionID
             try {
-              const messages = await (ctx as any).session.context({ sessionID })
+              const messages = contextRows(await (ctx as any).session.context({ sessionID }))
               const tail = doneTranscript(messages)
               const { reply } = await cachedJudge([DONE_QUESTION], tail.text)
               const done = reply.answers?.done?.noul
@@ -2579,7 +2590,9 @@ export default Plugin.define({
     // fails visibly exactly as it would have before the fail-safe.
     const ensureOffEntry = async (sessionID: string, messages: ReadonlyArray<any>): Promise<void> => {
       try {
-        const model = (await (ctx as any).session.get({ sessionID }))?.model
+        const model = unwrapEnvelope(
+          await (ctx as any).session.get({ sessionID }),
+        )?.model
         if (!isAutoEntry(autoEntry, model)) return
         let wakePin: any
         try {
@@ -2634,11 +2647,13 @@ export default Plugin.define({
             }
           } catch {}
           if (!pin) return
-          const rows: any[] = await ((ctx as any).session.context({ sessionID }).catch(() => []))
+          const rows: any[] = contextRows(
+            await (ctx as any).session.context({ sessionID }).catch(() => []),
+          )
           const last = latestSwitch(rows)
           if (!last || !pinMatches(last, pin)) return
 
-          const session: any = await (ctx as any).session.get({ sessionID })
+          const session: any = unwrapEnvelope(await (ctx as any).session.get({ sessionID }))
           const model = session?.model
           if (!model?.providerID || !model?.id) return
           const currentRef = {
@@ -2709,7 +2724,7 @@ export default Plugin.define({
         if (probing.has(sessionID)) return
         probing.add(sessionID)
         try {
-          const messages = await (ctx as any).session.context({ sessionID })
+          const messages = contextRows(await (ctx as any).session.context({ sessionID }))
           const userCount = userRowCount(messages)
           const key = `done-check/${String(sessionID)}`
           let seen: any
@@ -3011,14 +3026,14 @@ export default Plugin.define({
               // Absolute target wins; else derive from the session model's window.
               let target = idleAuto.tokens
               if (target === 0 && idleAuto.share > 0) {
-                const session: any = await (ctx as any).session.get({ sessionID })
+                const session: any = unwrapEnvelope(await (ctx as any).session.get({ sessionID }))
                 const model = session?.model
                 if (!model?.providerID || !model?.id) return
                 target = Math.floor(idleAuto.share * (await windowOf(model)))
               }
               if (target <= 0) return
-              const messages: any[] = await (ctx as any).session.context({ sessionID })
-              if (!Array.isArray(messages) || messages.length === 0) return
+              const messages: any[] = contextRows(await (ctx as any).session.context({ sessionID }))
+              if (messages.length === 0) return
               const chars = messages.reduce(
                 (sum: number, message: any) => sum + messageChars(message),
                 0,
@@ -3096,8 +3111,8 @@ export default Plugin.define({
         if (manualInflight.has(sid)) throw new Error("another /jev-compact is already running")
         manualInflight.add(sid)
         try {
-          const messages: any[] = await (ctx as any).session.context({ sessionID: sid })
-          if (!Array.isArray(messages) || messages.length === 0) {
+          const messages: any[] = contextRows(await (ctx as any).session.context({ sessionID: sid }))
+          if (messages.length === 0) {
             throw new Error("nothing to compact - the transcript is empty")
           }
           MANUAL_POSTED.set(sid, Date.now())
