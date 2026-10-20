@@ -403,14 +403,20 @@ synthetic kinds skipped, capped at 2000 chars, scrubbed in the hook.
 Sandbox posture (`approvals.sandbox`): an operator-asserted claim that the
 agent runs inside a filesystem/network sandbox - the plugin cannot verify
 it, the same trust family as `onFail: "allow"` - exists only to calibrate
-jev: with it a factual note rides in the judged state and `reversible`
-swaps to the sandbox-aware wording, where writes into the sandbox's allowed
-writable paths are undoable and an operation outside the allowed set that
-fails harmlessly is reversible rather than damage. Deterministic-first is
-untouched - the secret-path and destructive gates run exactly as without
-the option and `harmful` is unchanged, so a destructive command inside the
-writable space stays harmful - and a wrong-typed value reads as absent, so
-a bad claim never silently relaxes the questions.
+jev: with it a factual note rides in the judged state and both questions
+swap to the sandbox-aware wordings - `reversible` counts a write or
+deletion inside the sandbox's allowed writable paths as reversible even
+when the action itself cannot be undone (the sandbox bounds every
+mistake), and `harmful`'s refusal lanes narrow to what the sandbox cannot
+compensate for (uncommitted-work loss, `push --force`, egress, publishing,
+`sudo`) while bulk out-of-workspace destruction and system-path contact
+fall away: outside the allowed set an operation fails harmlessly, inside
+it the operator granted it. The destructive gate defers its holds to the
+judgment under the posture (recursive `rm` to `~`/absolute paths,
+publishes, `dd`, `chmod 777` - judge instead of denying up front; the
+residual misfire risk is capped by what the sandbox actually allows), while
+secrets and out-of-project edits hold exactly as always. A wrong-typed
+value reads as absent, so a bad claim never silently relaxes the questions.
 Gates gained the infra-mutation verbs (terraform/tofu `apply`/`destroy`,
 kubectl `delete`/`apply`, wrangler/vercel/fly `deploy`) and `.npmrc`/
 `.netrc` secret paths, and shell chains now split on `|` and background

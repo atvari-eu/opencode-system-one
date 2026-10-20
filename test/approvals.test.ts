@@ -451,6 +451,24 @@ describe("sandbox posture (approvals.sandbox)", () => {
     // the question SET is unchanged - only the wording swaps
     expect(approvalQuestions("shell", true, true).map((q) => q.id)).toEqual(["reversible", "serves_task", "harmful"])
   })
+
+  test("harmful swaps to the sandbox lanes: bounded deletion in, system paths out", () => {
+    const plain = harmfulQuestion().instructions
+    const sandbox = harmfulQuestion(true).instructions
+    expect(sandbox).not.toBe(plain)
+    // the plain lanes keep their anchors
+    expect(plain).toContain("uncommitted work")
+    expect(plain).toContain("/etc, /boot, /sbin, /dev")
+    // the sandbox lanes drop bulk-out-of-workspace and system-path wording,
+    // keep the uncommitted-work refusal and name the bounded-deletion rule
+    expect(sandbox).toContain("uncommitted source work")
+    expect(sandbox).toContain("deleting files there is not harmful by itself")
+    expect(sandbox).toContain("fails harmlessly")
+    expect(sandbox).not.toContain("/etc, /boot, /sbin, /dev")
+    expect(sandbox).toContain("push --force")
+    expect(approvalQuestions("shell", true, true)[2].instructions).toBe(sandbox)
+    expect(harmfulQuestion().instructions).toBe(plain)
+  })
 })
 
 const isProjectPath = (path: string) => !path.startsWith("/") || path === "/home/dev/work" || path.startsWith("/home/dev/work/")
@@ -459,6 +477,10 @@ const deps = {
   isProjectPath,
   gates: { secrets: true, readonlyBypass: true },
 }
+// Same gate fixture under the asserted sandbox posture (approvals.sandbox)
+// - destructive holds defer to the judged questions, secrets and
+// out-of-project edits hold exactly as always.
+const depsSandbox = { ...deps, sandbox: true }
 
 // ---------------------------------------------------------------------------
 // Gates: deterministic, judgment-free, fail toward the human prompt
@@ -474,6 +496,19 @@ describe("approvalGate", () => {
     expect(approvalGate("shell", "rm -rf ./build", deps)).toBe(false)
     expect(approvalGate("shell", "rm x.tmp", deps)).toBe(false)
     expect(approvalGate("edit", "src/index.ts", deps)).toBe(false)
+  })
+
+  test("sandbox posture defers destructive holds to the judge", () => {
+    expect(approvalGate("shell", "rm -rf /tmp/cache", depsSandbox)).toBe(false)
+    expect(approvalGate("shell", "rm -rf /", depsSandbox)).toBe(false)
+    expect(approvalGate("shell", "rm -rf ~/snapshots", depsSandbox)).toBe(false)
+    expect(approvalGate("shell", "rm -r -f /usr/lib/things", depsSandbox)).toBe(false)
+    expect(approvalGate("shell", "git push -f origin main", depsSandbox)).toBe(false)
+    expect(approvalGate("shell", "npm publish", depsSandbox)).toBe(false)
+    // holds unrelated to the posture stay
+    expect(approvalGate("shell", "echo sk-ant-secret", depsSandbox)).toBe(true)
+    expect(approvalGate("shell", "cat [REDACTED:api-key]", depsSandbox)).toBe(true)
+    expect(approvalGate("edit", "/home/alice/notes.txt", depsSandbox)).toBe(true)
   })
 
   test("holds recursive rm aimed outside the workspace", () => {

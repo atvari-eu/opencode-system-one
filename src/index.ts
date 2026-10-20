@@ -1827,6 +1827,7 @@ export default Plugin.define({
                     isRedactedOrSecret,
                     isProjectPath,
                     gates: approvalsGates,
+                    sandbox: Boolean(approvalsSandboxNote),
                   })
                 ) {
                   const deny = approvalsPolicy.onGate === "deny"
