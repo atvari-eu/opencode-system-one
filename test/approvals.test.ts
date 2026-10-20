@@ -511,6 +511,26 @@ describe("approvalGate", () => {
     expect(approvalGate("edit", "/home/alice/notes.txt", depsSandbox)).toBe(true)
   })
 
+  test("metadata-only listings clear the secret-path gate", () => {
+    // the operator-cited case: listing names/stats never ingests contents
+    expect(approvalGate("shell", "ls -l ~/.ssh/atvari_sign*", deps)).toBe(false)
+    expect(approvalGate("shell", "stat ~/.ssh/config", deps)).toBe(false)
+    expect(approvalGate("shell", "find ~/.ssh -name '*.pub'", deps)).toBe(false)
+    expect(approvalGate("shell", "du ~/.gnupg", deps)).toBe(false)
+    // one ingest-capable segment holds the chain (weakest-segment rule)
+    expect(approvalGate("shell", "ls ~/.ssh && cat ~/.ssh/id_ed25519", deps)).toBe(true)
+    expect(approvalGate("shell", "ls ~/.ssh | xargs cat", deps)).toBe(true)
+    expect(approvalGate("shell", "find ~/.ssh -exec cat {} \\;", deps)).toBe(true)
+    // no nested evaluation or redirection inside exempt segments
+    expect(approvalGate("shell", "echo $(ls ~/.ssh)", deps)).toBe(true)
+    expect(approvalGate("shell", "ls ~/.ssh > out.txt", deps)).toBe(true)
+    // ingest verbs hold exactly as always
+    expect(approvalGate("shell", "cat ~/.ssh/id_ed25519", deps)).toBe(true)
+    expect(approvalGate("shell", "sudo cat ~/.ssh/id_ed25519", deps)).toBe(true)
+    // non-shell tools ingest by nature; unchanged
+    expect(approvalGate("read", ".env", deps)).toBe(true)
+  })
+
   test("holds recursive rm aimed outside the workspace", () => {
     expect(approvalGate("shell", "rm -rf /tmp/cache", deps)).toBe(true)
     expect(approvalGate("shell", "rm -rf /", deps)).toBe(true)

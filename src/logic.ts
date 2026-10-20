@@ -2182,9 +2182,9 @@ export const APPROVAL_SECRET_PATHS: RegExp[] = [
   /(?:^|\/)\.npmrc$/i,
   /(?:^|\/)\.netrc$/i,
   /\.(?:pem|key|age|kdbx|p12|pfx|gpg|asc)$/i,
-  /(?:^|\/)\.ssh(?:\/|$)/i,
-  /(?:^|\/)\.gnupg(?:\/|$)/i,
-  /(?:^|\/)\.aws(?:\/|$)/i,
+  /(?:^|\/)\.ssh(?![\w-])/i,
+  /(?:^|\/)\.gnupg(?![\w-])/i,
+  /(?:^|\/)\.aws(?![\w-])/i,
   /(?:^|\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\.[\w-]+)?$/i,
   /(?:^|\/)credentials?(?:\.[\w-]+)?$/i,
   /(?:^|\/)[\w.\-]*(?:secret|credential|token|apikey|api_key)s?(?![\w])[\w.\-]*$/i,
@@ -2192,6 +2192,31 @@ export const APPROVAL_SECRET_PATHS: RegExp[] = [
 
 export function secretPath(resource: string): boolean {
   return matchesPatterns(resource, APPROVAL_SECRET_PATHS)
+}
+
+// Metadata-only shell verbs: they never ingest a file's content - they cite
+// names, sizes, timestamps, existence. `find` qualifies only without
+// -exec/-ok/-delete (those run other commands or erase), and a segment must
+// carry no command substitution or redirection: `ls -l $(cat ~/.ssh/x)` and
+// `ls ~/.ssh > out` are not listings. The secret-path gate exempts a shell
+// chain whose every segment is one of these - the weakest-segment rule, one
+// ingest-capable command anywhere holds the whole chain - so
+// `ls -l ~/.ssh/atvari_sign*` judges instead of gating while
+// `cat ~/.ssh/id_ed25519` and `read .env` hold as always.
+const APPROVAL_SECRET_METADATA_VERB =
+  /^(?:ls|stat|find|du|tree|readlink|basename|dirname|test|\[|\[\[|which|whereis|type)$/
+const APPROVAL_SECRET_METADATA_WRAPPER = /^(?:sudo|nice|nohup|time|env|command)$/
+
+export function secretMetadataClean(segment: string): boolean {
+  if (/\$\(|`|<|>/.test(segment)) return false
+  let tokens = segment.trim().split(/\s+/)
+  while (tokens.length > 0 && (/^[\w-]+=/.test(tokens[0]) || APPROVAL_SECRET_METADATA_WRAPPER.test(tokens[0])))
+    tokens = tokens.slice(1)
+  if (tokens.length === 0) return false
+  const verb = (tokens[0].split("/").pop() ?? "").replace(/^\.*/, "")
+  if (!APPROVAL_SECRET_METADATA_VERB.test(verb)) return false
+  if (verb === "find" && /-(?:delete|exec|ok)\b/.test(segment)) return false
+  return true
 }
 
 // Which actions the secret-path gate applies to: the local content/path
@@ -2210,7 +2235,19 @@ export function secretPathAction(action: string): boolean {
 // whole, so one bad command holds the entire request.
 export function approvalGate(action: string, resource: string, deps: ApprovalGateDeps): boolean {
   if (deps.isRedactedOrSecret(resource)) return true
-  if (deps.gates.secrets && secretPathAction(action) && secretPath(resource)) return true
+  if (deps.gates.secrets && secretPathAction(action)) {
+    // Per-chain-segment matching: ~/.ssh mid-chain (`ls ~/.ssh | xargs cat`)
+    // skipped the whole-string check, which only matched when the path ended
+    // the string. Metadata listings (ls -l ~/.ssh/atvari_sign*) cite names
+    // and never ingest content - the gate exists for content reaching the
+    // context - so a shell chain whose every segment is metadata-only passes
+    // to the judge (or the read-only fast path), and one ingest-capable
+    // command anywhere holds. Non-shell verbs (read/grep/edit/write) ingest
+    // by nature and hold as always.
+    const chain = isShellAction(action) ? shellChainSegments(resource) : null
+    const hit = chain ? chain.some((seg) => secretPath(seg)) : secretPath(resource)
+    if (hit && !(chain && chain.every(secretMetadataClean))) return true
+  }
   if (isShellAction(action) && matchesPatterns(resource, APPROVAL_DESTRUCTIVE)) {
     // Sandbox posture: the asserted sandbox bounds what a destructive request
     // can cost, so every class below defers to the judged questions - whose
