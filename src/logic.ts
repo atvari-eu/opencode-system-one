@@ -1462,6 +1462,73 @@ export function footerAutoMarker(
 }
 
 // ---------------------------------------------------------------------------
+// /jev-models: per-session System One judgment-model picks
+//
+// The picker's candidate list is static (no System One deployment exposes a
+// listing route) and validated against the deployment with the same ping the
+// init check uses; the pick itself is a per-session record in plugin storage
+// consulted ahead of the configured chain. Pure logic here; index.ts owns
+// storage, pings and the RPC surface, src/tui.ts the command and dialog.
+// ---------------------------------------------------------------------------
+
+// Known System One models at the OpenCode Console deployment: jev-1.13 bills
+// Console credits, "-free" is the default no-cost tier.
+export const PICKER_DEFAULT_MODELS = ["jev-1.13-free", "jev-1.13"]
+
+/** Candidate ids for the /jev-models picker: a "models" plugin option replaces
+ * the known list with operator-chosen ids (custom deployments); strings are
+ * trimmed and deduped in order, and an invalid or empty option keeps the
+ * known defaults. */
+export function normalizePickerModels(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [...PICKER_DEFAULT_MODELS]
+  const out: string[] = []
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue
+    const id = entry.trim()
+    if (!id) continue
+    if (!out.includes(id)) out.push(id)
+  }
+  return out.length > 0 ? out : [...PICKER_DEFAULT_MODELS]
+}
+
+/** Precedence for one judged call: a session pin (a /jev-models pick) wins
+ * over the resolved chain model (the plugin options' "model", then JEV_MODEL,
+ * then the baked default). Empty or absent pins resolve to the chain. */
+export function effectiveJevModel(pin: unknown, chainModel: string): string {
+  if (typeof pin === "string" && pin.trim() !== "") return pin.trim()
+  return chainModel
+}
+
+/** Short display form for the footer marker and toasts: strips the redundant
+ * "jev-" prefix (jev-1.13-free shows as "(jev:1.13-free)") and keeps custom
+ * ids verbatim. Empty input yields "" so a marker slot can skip rendering. */
+export function jevModelTag(model: unknown): string {
+  const id = typeof model === "string" ? model.trim() : ""
+  if (!id) return ""
+  const bare = id.replace(/^jev-/, "")
+  return `(jev:${bare || id})`
+}
+
+export interface JevModelRow {
+  id: string
+  /** The cached deployment fault for this id, when one was pinged and
+   * failed; absent means available (or not verified yet). */
+  fault?: string
+}
+
+/** The describe() rows of the picker: candidate ids plus whatever verdict the
+ * deployment check currently caches per id. */
+export function describeModelRows(
+  models: readonly string[],
+  faultOf?: (id: string) => string | undefined,
+): JevModelRow[] {
+  return models.map((id) => {
+    const fault = faultOf?.(id)
+    return { id, ...(fault ? { fault } : {}) }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Jev auth plumbing: parsing `opencode auth export` and status-aware error
 // text. Pure functions; src/index.ts owns resolution order, caching and HTTP.
 // ---------------------------------------------------------------------------
