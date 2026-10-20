@@ -162,6 +162,58 @@ describe("renderCallReport", () => {
   })
 })
 
+describe("runCompaction batching", () => {
+  /** A transcript of `calls` tool calls, each unpinned. */
+  const callTranscript = (calls: number): any[] => [
+    message("user", "work through the backlog"),
+    ...Array.from({ length: calls }, (_, i) => ({
+      role: "assistant",
+      content: [
+        { type: "text", text: `step ${i} done.` },
+        { type: "tool-call", id: `ct${i}`, name: "bash", input: { command: `step ${i}` } },
+        {
+          type: "tool-result",
+          id: `ct${i}`,
+          result: { type: "text", value: `ok, ${1200 + i} chars of output (omitted-fixture)`.repeat(20) },
+        },
+      ],
+    })),
+  ]
+
+  const judgeBatchSizes = async (
+    messages: any[],
+    options: Partial<typeof DEFAULTS> = {},
+  ): Promise<number[]> => {
+    const sizes: number[] = []
+    const judge = async (questions: Array<{ id: string }>): Promise<unknown> => {
+      sizes.push(questions.length)
+      return { answers: Object.fromEntries(questions.map((q) => [q.id, { noul: 0.9 }])), usage: {} }
+    }
+    await runCompaction(messages, judge as never, [], { ...DEFAULTS, ...options }, () => 200_000)
+    return sizes
+  }
+
+  test("with defaults each request stays under the deployment question cap", async () => {
+    const sizes = await judgeBatchSizes(callTranscript(40), {
+      maxStateTokens: 60_000,
+      preserveRecentMessages: 0,
+    })
+    // 40 calls = 80 questions; the 64-question cap (32 calls) must split them.
+    expect(sizes.length).toBeGreaterThanOrEqual(2)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(64)
+    expect(Math.min(...sizes)).toBeGreaterThan(0)
+  })
+
+  test("the cap is the only wrapper when the token budget is roomy", async () => {
+    const sizes = await judgeBatchSizes(callTranscript(33), {
+      maxStateTokens: 60_000,
+      preserveRecentMessages: 0,
+    })
+    // 33 calls = 66 questions -> 32-call cap splits into exactly two batches.
+    expect(sizes).toEqual([64, 2])
+  })
+})
+
 describe("parseIdleAuto", () => {
   test("off by default and for nonsense shapes", () => {
     expect(parseIdleAuto(undefined)).toEqual({ tokens: 0, share: 0 })

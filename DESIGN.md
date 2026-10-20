@@ -274,6 +274,19 @@ in their input schemas; compaction's Judge passthrough type follows. A bare
 score question now fails at the deployment with the endpoint's own 422 -
 fail-closed wording handles that surface like any other rejection.
 
+Same class, second hit: the questions object count. Compaction batched
+calls purely by token budget - a big session judged 90+ questions in one
+request, which the Console deployment accepted (its schema has no max) and
+the Munito one rejected wholesale with `422 - Invalid fields: questions`
+(their schema caps `questions` at `maxProperties: 64`; other providers
+publish yet other caps - ZeroGPU 16, NDI 512). It 422'd on the first batch,
+so every compaction attempt failed the same way, and only compaction:
+every other feature stays small (screen 3, approvals 3, decide a handful).
+Batches now also wrap at `maxBatchCalls` calls (default 32 = 64 questions,
+the largest cap documented today), so each request is valid at the strictest
+deployment currently in use. The cost is more requests, each re-sending the
+shared state - inherent to splitting, and `stats.requests` reports it.
+
 ## jev_find: the cascade and what was simplified
 
 `src/find.ts` ports oh-my-pi's `jfind` cascade

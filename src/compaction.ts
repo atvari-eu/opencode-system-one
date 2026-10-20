@@ -19,7 +19,9 @@
 //   - every non-pinned call gets two `noul` questions: should the call
 //     stay (made + input still matters), should the RESULT stay verbatim
 //     (contents still needed, re-running would not do); questions are
-//     batched so state + questions fit `maxRequestTokens`, batches run
+//     batched so state + questions fit `maxRequestTokens` and each
+//     request keeps at most `maxBatchCalls` calls (deployments cap the
+//     questions object - Munito at 64 = 32 calls), batches run
 //     concurrently and share the same full state
 //   - decisions: result >= keepThreshold -> keep both; else call >=
 //     keepThreshold -> keep call, truncate result to `truncateHeadChars`
@@ -57,6 +59,14 @@ export interface Options {
   preserveRecentMessages: number
   maxStateTokens: number
   maxRequestTokens: number
+  /**
+   * Per judged request, how many tool calls may be judged together. Each call
+   * carries two questions, so the default 32 makes 64 questions per request -
+   * the largest documented System One deployment cap (Munito; the TypeSafe
+   * Console deployment accepts any count). Strict deployments (e.g. a
+   * 16-question provider) need a lower value.
+   */
+  maxBatchCalls: number
   truncateHeadChars: number
   /** Minimum relative drop (in chars) before a hook-supplied summary may replace the built-in one. */
   minReduction: number
@@ -82,6 +92,7 @@ export const DEFAULTS: Options = {
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
+  maxBatchCalls: 32,
   truncateHeadChars: 300,
   minReduction: 0.25,
 }
@@ -541,7 +552,7 @@ function questionsFor(call: Call) {
 function batchCalls(
   calls: ReadonlyArray<Call>,
   stateTokens: number,
-  options: Pick<Options, "maxRequestTokens">,
+  options: Pick<Options, "maxRequestTokens" | "maxBatchCalls">,
 ): Call[][] {
   const budget = options.maxRequestTokens - stateTokens - REQUEST_OVERHEAD_TOKENS
   const batches: Call[][] = []
@@ -549,7 +560,9 @@ function batchCalls(
   let currentTokens = 0
   for (const call of calls) {
     const tokens = estimateTokens(JSON.stringify(questionsFor(call)))
-    if (current.length > 0 && currentTokens + tokens > budget) {
+    // Deployments cap the questions object (Munito: maxProperties 64 = 32
+    // calls at two questions each), so the call count wraps batches too.
+    if ((currentTokens + tokens > budget || current.length >= options.maxBatchCalls) && current.length > 0) {
       batches.push(current)
       current = []
       currentTokens = 0

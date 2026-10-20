@@ -2656,6 +2656,10 @@ export default Plugin.define({
         ),
         maxStateTokens: num(c.maxStateTokens, COMPACTION_DEFAULTS.maxStateTokens),
         maxRequestTokens: num(c.maxRequestTokens, COMPACTION_DEFAULTS.maxRequestTokens),
+        maxBatchCalls: Math.max(
+          1,
+          Math.floor(num(c.maxBatchCalls, COMPACTION_DEFAULTS.maxBatchCalls)),
+        ),
         truncateHeadChars: num(c.truncateHeadChars, COMPACTION_DEFAULTS.truncateHeadChars),
         minReduction: num(c.minReduction, COMPACTION_DEFAULTS.minReduction),
         ...(typeof c.maxSummaryTokens === "number" && Number.isFinite(c.maxSummaryTokens)

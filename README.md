@@ -704,8 +704,11 @@ from Claude Code to the OpenCode plugin hook:
    one-lined, dropped, merged).
 3. Every non-pinned call gets two `noul` questions: does the call still
    matter, does its result still need to stay verbatim? Questions are batched
-   under `maxRequestTokens`; batches run concurrently and are cached like
-   every other jev reply.
+   under `maxRequestTokens` and at most `maxBatchCalls` calls per request
+   (each call carries two questions, so the default 32 loads up to 64
+   questions - the largest documented System One deployment cap, Munito's;
+   stricter deployments need a lower value). Batches run concurrently and
+   are cached like every other jev reply.
 4. Decisions: result ≥ `keepThreshold` → keep both; else call ≥
    `keepThreshold` → keep the call, truncate the result to
    `truncateHeadChars` plus a note; else drop call and result together.
@@ -757,6 +760,7 @@ Options (all defaults mirror the reference):
 | `preserveRecentMessages` | `6` | Newest messages pinned untouched. |
 | `maxStateTokens` | `25000` | Judgment state budget before staged fitting gives up. |
 | `maxRequestTokens` | `30000` | Per-request budget (state + questions); splits into batches. |
+| `maxBatchCalls` | `32` | Tool calls judged per request (two questions each = 64 questions - the maximum System One deployments document, Munito's 64-question cap; lower it for stricter deployments). |
 | `truncateHeadChars` | `300` | Head kept when a result is pruned. |
 | `minReduction` | `0.25` | Required relative shrink before a hook-supplied summary replaces the built-in one. |
 | `maxSummaryTokens` | half the model window | Cap on the hook-supplied summary (estimated tokens). |
