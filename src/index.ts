@@ -114,6 +114,7 @@ import {
   sessionSurfaceKey,
   approvalDefaultContext,
   approvalFailureCause,
+  approvalSandboxNote,
   isReadOnlyShellCommand,
   shellChainSegments,
   suggestedApprovalStats,
@@ -1079,6 +1080,12 @@ export default Plugin.define({
     // without a judgment. Gates still run first, so secret paths and
     // destructive chains hold exactly as they would without the option.
     const approvalsReadonlyAllow = approvalsObj.readonlyAllow === true
+    // Sandbox posture (approvals.sandbox): an operator-asserted claim that
+    // the agent runs inside a sandbox - never verified, same trust family as
+    // onFail: "allow". With it the reversible question swaps to the
+    // sandbox-aware wording (out-of-allow-set operations fail harmlessly) and
+    // the note rides in the judged state; deterministic gates always hold.
+    const approvalsSandboxNote = approvalSandboxNote(approvalsObj.sandbox)
     const location = (ctx as any).location?.directory ?? ""
 
     // User-relevant jev failures post one "[jev-error] …" synthetic row per
@@ -1857,11 +1864,13 @@ export default Plugin.define({
             }
 
             // The judged state carries named fields: workspace location,
-            // action, the operations (deduped, capped at 10 × 1500, redacted
-            // per field), rule context, and the current task (serves_task is
-            // asked only when a task actually exists). A lean variant keeps
-            // the first three operations at 300 chars each with no metadata
-            // for the transient retry - same decision, smaller request.
+            // action, the sandbox posture when asserted, the operations
+            // (deduped, capped at 10 × 1500, redacted per field), rule
+            // context, and the current task (serves_task is asked only when
+            // a task actually exists). A lean variant keeps the sandbox
+            // note, context and first three operations at 300 chars each
+            // with no metadata for the transient retry - same decision,
+            // smaller request.
             let task = ""
             if (event.sessionID) {
               try {
@@ -1873,6 +1882,7 @@ export default Plugin.define({
             }
             const ops = Array.from(new Set(resources.slice(0, 10)))
             const detail: string[] = [`workspace: ${location || "(unknown)"}`, `action: ${action}`]
+            if (approvalsSandboxNote) detail.push(approvalsSandboxNote)
             for (const op of ops) detail.push(`- ${redactText(op.slice(0, 1500)).text}`)
             if (event.metadata && typeof event.metadata === "object")
               detail.push(`details: ${redactText(JSON.stringify(event.metadata).slice(0, 800)).text}`)
@@ -1889,6 +1899,7 @@ export default Plugin.define({
               "An OpenCode coding agent requests permission for the operation(s) below. Decide how it should be handled.\n\n" +
               detail.join("\n")
             const leanState =
+              (approvalsSandboxNote ? `${approvalsSandboxNote}\n` : "") +
               (matched?.effect === "system-one" && matched.context ? `operator context: ${matched.context}\n` : "") +
               (task ? `task: ${redactText(task).text}\n` : "") +
               ops
@@ -1903,7 +1914,11 @@ export default Plugin.define({
             // Judged with approvals.jevTimeout plus one transient retry; the
             // judged span rides on statsBound so the catch can report it.
             statsBound.judgeStarted = Date.now()
-            const { reply, latencyMs } = await judgedApproval(approvalQuestions(action, task !== ""), state, leanState)
+            const { reply, latencyMs } = await judgedApproval(
+              approvalQuestions(action, task !== "", approvalsSandboxNote !== ""),
+              state,
+              leanState,
+            )
             const answers = (reply as any).answers ?? {}
             const scores = {
               reversible: answers.reversible?.noul,
@@ -3144,7 +3159,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/gate:${approvalsPolicy.onGate})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the

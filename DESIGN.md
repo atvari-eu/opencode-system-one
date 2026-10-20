@@ -400,6 +400,17 @@ is strict extraction: the newest real user message over the same text
 sources messageText reads, minus its JSON.stringify fallback - a row
 without text parts supplies no task - own `[jev-…` notice rows and
 synthetic kinds skipped, capped at 2000 chars, scrubbed in the hook.
+Sandbox posture (`approvals.sandbox`): an operator-asserted claim that the
+agent runs inside a filesystem/network sandbox - the plugin cannot verify
+it, the same trust family as `onFail: "allow"` - exists only to calibrate
+jev: with it a factual note rides in the judged state and `reversible`
+swaps to the sandbox-aware wording, where writes into the sandbox's allowed
+writable paths are undoable and an operation outside the allowed set that
+fails harmlessly is reversible rather than damage. Deterministic-first is
+untouched - the secret-path and destructive gates run exactly as without
+the option and `harmful` is unchanged, so a destructive command inside the
+writable space stays harmful - and a wrong-typed value reads as absent, so
+a bad claim never silently relaxes the questions.
 Gates gained the infra-mutation verbs (terraform/tofu `apply`/`destroy`,
 kubectl `delete`/`apply`, wrangler/vercel/fly `deploy`) and `.npmrc`/
 `.netrc` secret paths, and shell chains now split on `|` and background

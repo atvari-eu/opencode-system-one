@@ -9,6 +9,7 @@ import {
   approvalFailureCause,
   approvalGate,
   approvalQuestions,
+  approvalSandboxNote,
   approvalStatsBand,
   approvalStatsBucket,
   chainPermissionEffect,
@@ -411,6 +412,44 @@ describe("approvalQuestions", () => {
     const harm = harmfulQuestion().instructions
     expect(harm).toContain("push --force")
     expect(harm).toContain("fetched content")
+  })
+})
+
+describe("sandbox posture (approvals.sandbox)", () => {
+  test("approvalSandboxNote: true -> default line, string -> verbatim, garbage -> empty", () => {
+    expect(approvalSandboxNote(true)).toContain("sandbox")
+    expect(approvalSandboxNote(true)).toContain("fail harmlessly")
+    expect(approvalSandboxNote("landlock; only bundled paths writable, network denied - POSTs fail")).toBe(
+      "sandbox: landlock; only bundled paths writable, network denied - POSTs fail",
+    )
+    expect(approvalSandboxNote("  ")).toBe("")
+    expect(approvalSandboxNote(false)).toBe("")
+    expect(approvalSandboxNote(undefined)).toBe("")
+    expect(approvalSandboxNote(1)).toBe("")
+    expect(approvalSandboxNote({ kind: "nono" })).toBe("")
+    expect(approvalSandboxNote(`x${"y".repeat(400)}`).length).toBeLessThanOrEqual(300 + "sandbox: ".length)
+  })
+
+  test("reversibleQuestion carries the sandbox wording only when asserted", () => {
+    const plain = reversibleQuestion("shell").instructions
+    const sandbox = reversibleQuestion("shell", true).instructions
+    expect(sandbox).not.toBe(plain)
+    expect(sandbox).toContain("sandbox's allowed writable paths")
+    expect(sandbox).toContain("fail harmlessly")
+    expect(plain).not.toContain("fail harmlessly")
+    expect(reversibleQuestion("edit", true).instructions).toContain("sandbox's allowed writable paths")
+    // the sandbox wording keeps the uncommitted-work and publish clauses
+    expect(sandbox).toContain("uncommitted work")
+    expect(sandbox).toContain("push")
+  })
+
+  test("approvalQuestions threads the sandbox flag into the reversible wording", () => {
+    expect(approvalQuestions("shell", true, true)[0].instructions).toBe(
+      reversibleQuestion("shell", true).instructions,
+    )
+    expect(approvalQuestions("shell", true)[0].instructions).toBe(reversibleQuestion("shell").instructions)
+    // the question SET is unchanged - only the wording swaps
+    expect(approvalQuestions("shell", true, true).map((q) => q.id)).toEqual(["reversible", "serves_task", "harmful"])
   })
 })
 
