@@ -261,6 +261,11 @@ How a turn is routed:
   offered; unusable ones are dropped whole (up to 12 options), and routing
   stays off when nothing usable remains. Price hints from the catalog are
   woven into the option criteria.
+- Right after a restart the catalog populates asynchronously. While none of
+  the candidates is listed yet, validation waits up to ~2.5 s (bounded,
+  backing off, boot window only) instead of dropping every candidate as
+  absent; a lookup that missed is never memoized, so the next prompt sees
+  the provider that activated later.
 - Fail-safe: jev unreachable, timeout (8 s), or an uninterpretable answer
   reverts to the session's base model - a no-op unless a routed switch is
   already active. Low confidence keeps the current model, routed switch
@@ -321,12 +326,15 @@ display name.
   the last real model it ran (its own pin's parked-from model, else the
   newest `model-switched` row) *before* the judge refines the pick, and
   without `auto.fallback` that same last-used model closes the routing
-  chain. Idle notices (done-check) and idle-triggered compaction move a
-  resting session off the entry before posting or summarizing, so their
-  wake turns run real too - those admissions never pass the prompt hook,
-  only this head start protects them. The pseudo-entry itself fails fast
-  when hit (closed-port base URL makes the failure immediate rather than
-  hanging).
+  chain. A fresh session has no last-used model, so the last resort there
+  is the first named candidate: any real model beats a guaranteed failure
+  on the closed-port entry. If the host rejects that switch, the remaining
+  usable candidates are tried in order. Idle notices (done-check) and
+  idle-triggered compaction move a resting session off the entry before
+  posting or summarizing, so their wake turns run real too - those
+  admissions never pass the prompt hook, only this head start protects
+  them. The pseudo-entry itself fails fast when hit (closed-port base URL
+  makes the failure immediate rather than hanging).
 - Re-engaging is simply selecting `auto` in the picker again.
 
 The judgment is cached per prompt - repeating the same prompt costs
@@ -399,6 +407,10 @@ notices you unprompted - rules that keep it polite:
   changes the tail hash, so the hash gate alone cannot stop a nudge loop.
   After a notice is posted, the checker stands down until a new user
   message arrives.
+- A notice never wakes a dead turn: when the session rests on the `Auto`
+  entry and no real model is known to move it to, the notice is skipped
+  (and logged) instead of waking a turn that would fail on the closed-port
+  entry.
 - Loop-aware: a run of identical rows in the tail (whitespace-normalized,
   own notices excluded) is reported as a loop - the notice says the
   session is repeating itself and asks you to interrupt or send a new

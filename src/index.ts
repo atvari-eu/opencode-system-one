@@ -1119,7 +1119,7 @@ export default Plugin.define({
     const autoFallback: Candidate | null = parseCandidates(autoFallbackList)[0] ?? null
     if (autoEntry && !autoFallback) {
       console.log(
-        '[jev] auto: enabled without fallback - an unroutable turn stays on "auto" and fails visibly when it invokes the pseudo-model',
+        '[jev] auto: enabled without fallback - an unroutable turn falls back to the session\'s last real model, else the first candidate; with neither it fails visibly on the pseudo-model',
       )
     }
     const doneCheckAuto = o.doneCheck?.auto === true
@@ -1492,6 +1492,14 @@ export default Plugin.define({
       // { location, data } - also excluding providers that have not finished
       // activation, so it is re-read per prompt before candidate filtering.
       const listIndex = { map: null as Map<string, any> | null, at: 0 }
+      // Boot-lag waiver for auto-entry routing: while none of the candidates
+      // is listed yet, candidate validation waits up to ~2.5 s (5 attempts,
+      // backing off) before giving up on the turn's candidates - and only
+      // during the boot window after setup, never on a long-lived process.
+      const ROUTE_CATALOG_ATTEMPTS = 5
+      const ROUTE_CATALOG_DELAY_MS = 250
+      const ROUTE_BOOT_WINDOW_MS = 60_000
+      const routeBootAt = Date.now()
       const refreshListIndex = async (): Promise<void> => {
         try {
           const listed: any = await (ctx as any).model?.list?.()
@@ -1503,13 +1511,20 @@ export default Plugin.define({
       await refreshListIndex()
       const modelInfo = async (providerID: any, modelID: any): Promise<any> => {
         const cacheKey = `${providerID}/${modelID}`
-        if (infoCache.has(cacheKey)) return infoCache.get(cacheKey)
+        // Hits only: a miss is often just boot lag (provider not activated
+        // yet), and memoizing it dropped that candidate for the whole
+        // process - every later prompt re-validated against the stale miss.
+        const cached = infoCache.get(cacheKey)
+        if (cached) return cached
         let info: any = null
         try {
-          info = (await (ctx as any).model?.get?.(providerID, modelID)) ?? null
+          info = unwrapEnvelope(await (ctx as any).model?.get?.(providerID, modelID)) ?? null
         } catch {}
         if (!info && listIndex.map) info = listIndex.map.get(cacheKey) ?? null
-        infoCache.set(cacheKey, info)
+        // Only healthy entries are memoized: an unavailable flag can be a
+        // transient (provider still activating, workspace enable in flight),
+        // and re-reading it costs one map lookup once the list is fresh.
+        if (info && isAvailableModel(info)) infoCache.set(cacheKey, info)
         return info
       }
       const levelsFor = async (providerID: any, modelID: any): Promise<string[]> => {
@@ -1634,6 +1649,10 @@ export default Plugin.define({
             variant: typeof model.variant === "string" ? model.variant : "default",
           }
 
+          // The whole pool the judge may pick from: explicit candidates first,
+          // then sourced ones. Kept outside the auto-entry block so the
+          // last-resort switch below can still reach a real model.
+          let candidatePool: Candidate[] = modelCandidates
           const usableCandidates: Candidate[] = []
           if (atAutoEntry) {
             // Providers activate asynchronously; the registry is complete
@@ -1654,25 +1673,50 @@ export default Plugin.define({
               }
               if (extra.length > 0) combined = [...modelCandidates, ...extra]
             }
-            for (const candidate of combined) {
-            // The auto entry routes FROM it only - it is never a destination.
-            if (autoEntry && candidateKey(candidate) === `${AUTO_PROVIDER}/${AUTO_MODEL}`) continue
-              const info = await modelInfo(candidate.providerID, candidate.modelID)
-              // Absent from the session's domain entirely (provider not
-              // connected, workspace-disabled there) ...
-              if (info === null) continue
-              // ... or present but marked unusable (disabled, deprecated).
-              // Logged once per candidate so silent filtering stays visible
-              // when someone stares at the logs.
-              if (!isAvailableModel(info)) {
-                const key = candidateKey(candidate)
-                if (!noticedDrops.has(key)) {
-                  noticedDrops.add(key)
-                  console.log(`[jev] route: candidate unavailable in this session - dropped: ${key}`)
+            candidatePool = combined
+            const filterUsable = async (): Promise<Candidate[]> => {
+              const usable: Candidate[] = []
+              for (const candidate of combined) {
+                // The auto entry routes FROM it only - it is never a destination.
+                if (autoEntry && candidateKey(candidate) === `${AUTO_PROVIDER}/${AUTO_MODEL}`) continue
+                const info = await modelInfo(candidate.providerID, candidate.modelID)
+                // Absent from the session's domain entirely (provider not
+                // connected, workspace-disabled there) ...
+                if (info === null) continue
+                // ... or present but marked unusable (disabled, deprecated).
+                // Logged once per candidate so silent filtering stays visible
+                // when someone stares at the logs.
+                if (!isAvailableModel(info)) {
+                  const key = candidateKey(candidate)
+                  if (!noticedDrops.has(key)) {
+                    noticedDrops.add(key)
+                    console.log(`[jev] route: candidate unavailable in this session - dropped: ${key}`)
+                  }
+                  continue
                 }
-                continue
+                usable.push(candidate)
               }
-              usableCandidates.push(candidate)
+              return usable
+            }
+            // Boot lag: a prompt arriving before the provider registry has
+            // populated sees every candidate as "absent from this domain" and
+            // would leave the session parked on the auto entry - a dead turn.
+            // Wait briefly for the candidates to appear, bounded: once any of
+            // them is listed a miss is config (disabled, wrong id), and after
+            // the boot window a miss is config too - no waiting either way.
+            const anyCandidateListed = (): boolean =>
+              !!listIndex.map && combined.some((c) => listIndex.map!.has(candidateKey(c)))
+            for (let attempt = 0; combined.length > 0; attempt++) {
+              const usable = await filterUsable()
+              if (usable.length > 0) {
+                usableCandidates.push(...usable)
+                break
+              }
+              if (attempt >= ROUTE_CATALOG_ATTEMPTS - 1) break
+              if (anyCandidateListed()) break
+              if (Date.now() - routeBootAt > ROUTE_BOOT_WINDOW_MS) break
+              await new Promise((resolve) => setTimeout(resolve, ROUTE_CATALOG_DELAY_MS * (attempt + 1)))
+              await refreshListIndex()
             }
             if (usableCandidates.length === 0) {
               console.log("[jev] route: no usable candidates - effort handling continues without routing")
@@ -1812,7 +1856,30 @@ export default Plugin.define({
                   from: toRef(currentRef),
                 }
               } else {
-                console.log(`[jev] route: no fallback and no last-used model - this turn stays on auto and will fail visibly`)
+                // Last resort: any real model beats a guaranteed
+                // ConnectionRefused on the pseudo-entry. A fresh session has
+                // no last-used model, and a candidate the catalog could not
+                // resolve yet may still work at switch time - so try the
+                // first pool entry instead of leaving the turn on auto.
+                const first =
+                  usableCandidates[0] ??
+                  candidatePool.find((c) => candidateKey(c) !== `${AUTO_PROVIDER}/${AUTO_MODEL}`)
+                if (first) {
+                  outcome.logs.push(
+                    `[jev] route: auto could not route this turn - trying ${candidateKey(first)}`,
+                  )
+                  outcome.switchTo = {
+                    providerID: first.providerID,
+                    modelID: first.modelID,
+                    variant: "default",
+                  }
+                  outcome.recordPin = {
+                    to: toRef({ providerID: first.providerID, modelID: first.modelID, variant: "default" }),
+                    from: toRef(currentRef),
+                  }
+                } else {
+                  console.log(`[jev] route: no fallback, no last-used model and no candidates - this turn stays on auto and will fail visibly`)
+                }
               }
             }
           }
@@ -1851,17 +1918,48 @@ export default Plugin.define({
           }
 
           if (outcome?.switchTo) {
-            await (ctx as any).session.switchModel({
-              sessionID: event.sessionID,
-              model: {
-                providerID: outcome.switchTo.providerID,
-                id: outcome.switchTo.modelID,
-                ...(outcome.switchTo.variant && outcome.switchTo.variant !== "default"
-                  ? { variant: outcome.switchTo.variant }
-                  : {}),
-              },
-            })
-            if (outcome.recordPin) {
+            // A switch can fail while the provider registry is still waking
+            // up (the candidate resolved on a later read, the host has not
+            // registered it for switching). Never leave an auto-entry turn on
+            // the dead pseudo-model: fall through the remaining usable
+            // candidates before giving up.
+            const targets: Array<{ providerID: string; modelID: string; variant?: string }> = [
+              outcome.switchTo,
+            ]
+            if (atAutoEntry) {
+              const chosen = `${outcome.switchTo.providerID}/${outcome.switchTo.modelID}`
+              for (const candidate of usableCandidates) {
+                if (candidateKey(candidate) === chosen) continue
+                targets.push({ providerID: candidate.providerID, modelID: candidate.modelID })
+              }
+            }
+            let applied = false
+            for (const target of targets) {
+              try {
+                await (ctx as any).session.switchModel({
+                  sessionID: event.sessionID,
+                  model: {
+                    providerID: target.providerID,
+                    id: target.modelID,
+                    ...(target.variant && target.variant !== "default" ? { variant: target.variant } : {}),
+                  },
+                })
+                if (target !== outcome.switchTo) {
+                  console.error(
+                    `[jev] route: switch to ${outcome.switchTo.providerID}/${outcome.switchTo.modelID} failed - using ${target.providerID}/${target.modelID}`,
+                  )
+                  outcome.switchTo = target
+                  outcome.recordPin = { to: toRef(target), from: toRef(currentRef) }
+                }
+                applied = true
+                break
+              } catch (err: any) {
+                console.error(
+                  `[jev] route: switch to ${target.providerID}/${target.modelID} failed (${String(err?.message ?? err)})`,
+                )
+              }
+            }
+            if (applied && outcome.recordPin) {
               try {
                 // Key reflects the turn's actual mode, not a global flag:
                 // both auto routing and plain effort-auto can be on, and the
@@ -2882,20 +2980,21 @@ export default Plugin.define({
     // prompt hook's fail-safe (a synthetic notice wakes a turn on the
     // session's CURRENT model; the built-in summarizer inside session.compact
     // makes a model call the same way), so one parked at the entry would die
-    // ConnectionRefused mid-wake. Best effort: if the move fails, the wake
-    // fails visibly exactly as it would have before the fail-safe.
-    const ensureOffEntry = async (sessionID: string, messages: ReadonlyArray<any>): Promise<void> => {
+    // ConnectionRefused mid-wake. Returns true when the post is safe (already
+    // off the entry, or moved); false when the session is on auto and no real
+    // model is known - posting then would guarantee a dead turn.
+    const ensureOffEntry = async (sessionID: string, messages: ReadonlyArray<any>): Promise<boolean> => {
       try {
         const model = unwrapEnvelope(
           await (ctx as any).session.get({ sessionID }),
         )?.model
-        if (!isAutoEntry(autoEntry, model)) return
+        if (!isAutoEntry(autoEntry, model)) return true
         let wakePin: any
         try {
           wakePin = await (ctx as any).storage.get(`route-pin/${String(sessionID)}`)
         } catch {}
         const emergency = emergencyRealModel(messages, AUTO_PROVIDER, wakePin)
-        if (!emergency) return
+        if (!emergency) return false
         await (ctx as any).session.switchModel({
           sessionID,
           model: {
@@ -2907,7 +3006,10 @@ export default Plugin.define({
         console.log(
           `[jev] wake: ${sessionID} left the auto entry (${emergency.providerID}/${emergency.modelID}) before a posted turn`,
         )
-      } catch {}
+        return true
+      } catch {
+        return false
+      }
     }
 
     // -- resting reset: pull auto picks back to their resting point at turn end --
@@ -3042,7 +3144,14 @@ export default Plugin.define({
             // The notice wakes a turn this plugin never sees admitted - get
             // the session off the entry first (ensureOffEntry); the route
             // resting reset re-parks at the entry after the wake turn ends.
-            await ensureOffEntry(sessionID, messages)
+            // On auto with no known real model the wake would die
+            // ConnectionRefused: skip the notice instead of guaranteeing it.
+            if (!(await ensureOffEntry(sessionID, messages))) {
+              console.log(
+                `[jev] done-check: ${sessionID} p=${fmt(done)} - notice skipped (session rests on auto with no real model to wake)`,
+              )
+              return
+            }
             const text = tail.loop
               ? `[jev-done-check] loop detected (p(complete)=${fmt(done)}): the tail repeats identical messages - the remaining work is likely not actionable by replying again. Interrupt or send a new instruction.`
               : `[jev-done-check] p(complete)=${fmt(done)} → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user`

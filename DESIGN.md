@@ -156,6 +156,27 @@ pin storage). Rationale worth remembering when extending it:
   turn). Irreducible remainder: a host-generated
   synthetic reaching a session that never ran a real model before - the
   entry's closed-port base URL keeps that failure immediate.
+  **Boot-window dead turns** (2026-10-21): a fresh session's first prompt
+  right after a restart still hit that remainder because two adapter
+  defects lined up. (1) Candidate validation ran against the startup
+  catalog snapshot; providers activate asynchronously, so every candidate
+  read as "absent from this domain" - and `modelInfo` memoized the miss,
+  poisoning every later prompt for the process lifetime. Misses are no
+  longer cached, and while none of the candidates is listed yet validation
+  waits briefly (5 attempts, ~2.5 s, backing off, only in the 60 s boot
+  window after setup) before concluding the candidate is unavailable; once
+  a candidate is listed a miss is config, not boot, and is not waited on.
+  (2) A fresh session has no pin and no
+  `model-switched` row, so the emergency chain had no target and the turn
+  executed on auto. The adapter now closes with the first named candidate
+  when both `auto.fallback` and history are absent, and a `switchModel`
+  the host rejects falls through the remaining usable candidates instead
+  of leaving the session parked on the entry. Ordering stays: configured
+  fallback > last-used real model > first candidate. The same remainder
+  bit synthetic wakes: with no history to fall back to, `ensureOffEntry`
+  used to return silently and the done-check notice still posted into a
+  guaranteed ConnectionRefused. It now reports "not safe", and the notice
+  is skipped (logged) instead of waking a dead turn.
   Idle reset (the resting point pull-back - auto entry or, for plain
   auto effort, the model's default variant) lives in a shared idle
   subscription and only touches plugin-made switches (`pinMatches`),
