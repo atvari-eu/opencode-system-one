@@ -5,6 +5,8 @@ import {
   effectiveJevModel,
   jevModelTag,
   normalizePickerModels,
+  seedJevBaseLabel,
+  settleUnverifiedJevSession,
 } from "../src/logic"
 
 describe("normalizePickerModels", () => {
@@ -79,5 +81,48 @@ describe("describeModelRows", () => {
     const rows = describeModelRows(["a", "b", "c"], (id) => (id === "b" ? "unreachable" : undefined))
     expect(rows).toEqual([{ id: "a" }, { id: "b", fault: "unreachable" }, { id: "c" }])
     expect("fault" in describeModelRows(["b"], () => "")[0]!).toBe(false)
+  })
+})
+
+describe("seedJevBaseLabel", () => {
+  test("a missing base takes the plugin option model", () => {
+    const draft = { sessions: {} }
+    seedJevBaseLabel(draft, "jev-1.13")
+    expect(draft.base).toBe("jev-1.13")
+  })
+
+  test("unknown or blank options leave the draft alone; whitespace trims", () => {
+    const draft: { base?: string; sessions: Record<string, string> } = { sessions: {} }
+    seedJevBaseLabel(draft, undefined)
+    seedJevBaseLabel(draft, 42)
+    seedJevBaseLabel(draft, "   ")
+    expect(draft.base).toBeUndefined()
+    draft.base = undefined
+    seedJevBaseLabel(draft, "  jev-1.13-free  ")
+    expect(draft.base).toBe("jev-1.13-free")
+  })
+
+  test("a base describe already filled in is never overwritten", () => {
+    const draft = { base: "jev-1.13-free", sessions: {} }
+    seedJevBaseLabel(draft, "jev-1.13")
+    expect(draft.base).toBe("jev-1.13-free")
+  })
+})
+
+describe("settleUnverifiedJevSession", () => {
+  test("an unknown session settles to the empty checked entry", () => {
+    const draft: { base?: string; sessions?: Record<string, string> } = { base: "jev-1.13" }
+    settleUnverifiedJevSession(draft, "s1")
+    expect(draft.sessions).toEqual({ s1: "" })
+    expect(draft.base).toBe("jev-1.13")
+  })
+
+  test("missing sessions map and existing entries (a settled pin) are kept", () => {
+    const draft: { sessions?: Record<string, string> } = {}
+    settleUnverifiedJevSession(draft, "s1")
+    expect(draft.sessions).toEqual({ s1: "" })
+    const pinned = { sessions: { s1: "jev-1.13-free" } }
+    settleUnverifiedJevSession(pinned, "s1")
+    expect(pinned.sessions).toEqual({ s1: "jev-1.13-free" })
   })
 })

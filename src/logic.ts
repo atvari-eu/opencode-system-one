@@ -1528,6 +1528,33 @@ export function describeModelRows(
   })
 }
 
+/** The reactive label store draft: the base chain model plus one entry per
+ * session ("" means "checked, no pin"). Structurally the same shape the
+ * picker writes and the footer marker reads over the label store. */
+export interface JevLabelDraft {
+  base?: string
+  sessions?: Record<string, string>
+}
+
+/** Seeds the marker's base label from the plugin's "model" option (the
+ * chain default the server half rides), so the label is visible from the
+ * first render instead of only after a describe() answer arrives; misses
+ * on unknown options and never overwrites a base describe already filled
+ * in. */
+export function seedJevBaseLabel(draft: JevLabelDraft, optionModel: unknown): void {
+  const model = typeof optionModel === "string" ? optionModel.trim() : ""
+  if (!draft.base && model) draft.base = model
+}
+
+/** Marks a session whose describe() could not answer as "checked, no pin"
+ * ("") so its label falls back to the base instead of staying unknown
+ * forever - a failed check must not wedge the marker into silence. */
+export function settleUnverifiedJevSession(draft: JevLabelDraft, sessionID: string): void {
+  if (draft.sessions === undefined || draft.sessions[sessionID] === undefined) {
+    draft.sessions = { ...(draft.sessions ?? {}), [sessionID]: "" }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Jev auth plumbing: parsing `opencode auth export` and status-aware error
 // text. Pure functions; src/index.ts owns resolution order, caching and HTTP.

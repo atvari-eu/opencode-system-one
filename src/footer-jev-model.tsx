@@ -20,7 +20,7 @@
 // screen-panel.tsx / footer-marker.tsx; a failure here never hides the
 // "(auto)" marker, which loads separately in src/tui.ts).
 import type { JSX } from "@opentui/solid"
-import { jevModelTag } from "./logic"
+import { jevModelTag, seedJevBaseLabel, settleUnverifiedJevSession } from "./logic"
 import { jevRpcClientOf, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
 
 /** The session id the footer last rendered for (the current session as far
@@ -37,6 +37,13 @@ export default {
       initial: { sessions: {} } as JevModelStore,
     })
 
+    // Seed the base from the plugin's "model" option (the chain default the
+    // server half rides): the marker shows the chain label from the first
+    // render, and describe() overwrites it with the deployed answer.
+    store[1]((draft: JevModelStore) => {
+      seedJevBaseLabel(draft, context?.options?.model)
+    })
+
     // The jev-config subclient, built lazily once - describe is optional
     // (a host without the rpc surface leaves the marker on the picker
     // writes alone, which cover its own set/reset).
@@ -50,12 +57,25 @@ export default {
     // otherwise (picker writes land in the same store, so the label never
     // re-fetches after a local pick).
     const fetchedSessions = new Set<string>()
+
+    // A describe that cannot answer still leaves the session label checked
+    // ("" = no pin), so the marker falls back to the base instead of
+    // rendering nothing forever.
+    const settleUnavailable = (sessionID: string): void => {
+      store[1]((draft: JevModelStore) => {
+        settleUnverifiedJevSession(draft, sessionID)
+      })
+    }
+
     const describeSession = (sessionID: string): void => {
       if (fetchedSessions.has(sessionID)) return
       fetchedSessions.add(sessionID)
       void (async () => {
         const jev = await rpc()
-        if (!jev?.describe) return
+        if (!jev?.describe) {
+          settleUnavailable(sessionID)
+          return
+        }
         try {
           const info = await jev.describe({ sessionID })
           const base = typeof info?.base === "string" && info.base.trim() !== "" ? info.base.trim() : ""
@@ -67,7 +87,10 @@ export default {
             const pick = typeof info?.pick === "string" && info.pick.trim() !== "" ? info.pick.trim() : ""
             draft.sessions = { ...(draft.sessions ?? {}), [sessionID]: pick }
           })
-        } catch {}
+        } catch (err) {
+          console.log(`[jev] tui: describe unavailable: ${String((err as Error)?.message ?? err)}`)
+          settleUnavailable(sessionID)
+        }
       })()
     }
 
