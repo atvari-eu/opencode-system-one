@@ -36,14 +36,21 @@ behavior change instead of duplicating them here.
   chain between providers/endpoints. Status errors surface the endpoint's own
   diagnostic (401 credential rejection, 402 funds, 403 free-tier/pairing
   gate); new auth/HTTP code must preserve these readings.
-- Credentials: env override first, then `opencode auth export` (always the
-  single `opencode` integration — the jev deployment is chosen by the
-  key↔endpoint pairing, not a separate CLI integration), then the legacy
-  `~/.local/share/opencode/auth.json` entry. The store level is re-read once
-  per call on a credential-class rejection: 401, or a diagnostic naming the
-  key/credential as expired/revoked/invalid. The Console's 422
+- Credentials: env override first, then the CLI store - the `opencode auth
+  export` subprocess channel, falling back to a direct read-only read of
+  the db-backed store (`src/store-db.ts`) when the subprocess is
+  unavailable in the running context; either way the active OAuth session
+  outranks a stored plain key, an oauth entry past its stored expiry is
+  skipped as stale, and the CLI-store level still serves the single
+  `opencode` integration - the jev deployment is chosen by the key↔endpoint
+  pairing, not a separate CLI integration - then the legacy
+  `~/.local/share/opencode/auth.json` entry. The store level is re-read
+  once per call on a credential-class rejection: 401, or a diagnostic
+  naming the key/credential as expired/revoked/invalid. The Console's 422
   "Upstream request failed: Endpoint is unavailable" is a deployment
-  upstream outage, not a credential surface - do not re-read on it. Never
+  upstream outage, not a credential surface - do not re-read on it. A
+  legacy-only expired key surfaces the delete-the-legacy-entries remedy
+  (the live Console session is shadowed), never "create a new key". Never
   log, print, or persist a key.
 - Cached judgments store answers + usage only, never the judged state text.
 - Secret redaction is deterministic regex — never a model call — and runs on

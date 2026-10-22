@@ -188,3 +188,26 @@ describe("expired Console API key 401 class", () => {
     )
   })
 })
+
+describe("legacy auth.json store expired-key class", () => {
+  const LEGACY_MARKER =
+    " (the key is the legacy auth.json store entry - delete its stale opencode/opencode-go entries so the CLI store's Console session serves jev)"
+
+  test("a marked expired-key message gets the delete-the-legacy-entries remedy", () => {
+    expect(jevUserError(`jev: 401 - This API key has expired.${LEGACY_MARKER}`)?.title).toBe(
+      "jev: the stored auth.json key expired (401) - delete the stale opencode/opencode-go entries in ~/.local/share/opencode/auth.json so the live Console session serves jev",
+    )
+  })
+
+  test("the marker wins over the generic create-a-new-key wording", () => {
+    const generic =
+      "jev: 401 - This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key."
+    expect(jevUserError(`${generic}${LEGACY_MARKER}`)?.title).toContain("delete the stale")
+  })
+
+  test("unmarked messages keep the generic remedy", () => {
+    expect(
+      jevUserError("jev: 401 - This API key has expired. Signing in again will not renew this key.")?.title,
+    ).not.toContain("auth.json")
+  })
+})

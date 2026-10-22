@@ -165,9 +165,13 @@ async function runScenario(
     HOME: home,
     TYPESAFE_API_KEY: credEnv,
     // Other test files pin these process-wide (host.test.ts); the scenario
-    // must not inherit them.
+    // must not inherit them. XDG_DATA_HOME stays pointed at the scratch
+    // dir (NOT cleared-empty, and not through $HOME: bun caches homedir()
+    // from process start): the db-backed store channel must never reach
+    // the operator's real credential store from a test.
     JEV_ENDPOINT: undefined,
     OPENCODE_BIN: undefined,
+    XDG_DATA_HOME: home,
   })
   const entry = {
     id: "munito",

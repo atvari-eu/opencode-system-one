@@ -15,6 +15,9 @@ import { describe, expect, test } from "bun:test"
 
 process.env.JEV_ENDPOINT = "http://127.0.0.1:1/"
 process.env.OPENCODE_BIN = "/bin/false"
+// the db-backed store channel must not reach the operator's real store
+// (bun caches homedir() at process start, so $HOME pins would not isolate)
+process.env.XDG_DATA_HOME = `/tmp/jev-nostore-${process.pid}`
 
 type HookFn = (...args: any[]) => any
 

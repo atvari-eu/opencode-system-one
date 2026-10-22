@@ -503,6 +503,64 @@ unchanged: no re-read can make a failed call look successful; the retry
 fires only when the fresh key differs from the old one, still only against
 the default Console endpoint for the cli-store source.
 
+## The db-backed store channel: when the auth-export subprocess is killed by the context
+
+Live fault (Oct 2026): `loadCliStoreCredential` executed
+`opencode auth export` through the operator's PATH, but the deployment
+that mattered ran the opencode service sandboxed while the operator's
+opencode builds are sandbox-wrapped - a nested execution refuses with a
+nonzero exit and an empty stdout, for every candidate binary. The chain
+fell through to the legacy `auth.json` entry, which held a stale planted
+API key, and every judged call rode that key into a 401 with the
+replace-the-key remedy. The deployment could not see it as a plugin
+fault: normal chat calls authenticate through the host's own credential
+path (no subprocess involved), so everything except jev worked.
+
+Direct probes established the data line: the CLI's `auth export`, run
+where nested execution is not refused, returns the active OAuth session
+for integration "opencode" (device-method, with a refresh token the CLI
+rotates on its own rejections), and the System One endpoint accepts
+exactly that session's access token (200) while it rejects the stale
+planted key with precisely the diagnostic the toasts had shown. The
+export's entry shape matches `parseAuthExport` (`type:"oauth"` →
+`access`), so the parsing was never the fault - only the execution plane
+was.
+
+Decision: the CLI store keeps two channels, first usable wins.
+
+- `opencode auth export` stays channel 1 (the documented interface; works
+  wherever the CLI runs).
+- Channel 2 reads the CLI's db-backed store directly (`src/store-db.ts`,
+  `src/store-db.test.ts`): readonly sqlite opens of the candidate db
+  files (`XDG_DATA_HOME/opencode/*.db`, newest-mtime first), schema
+  discovered at runtime - credential-shaped nodes (`{type:"oauth",access}`
+  / `{type:"key",key}`, material >= 16 chars) are only accepted when an
+  ancestor object ties them to the integration id as one of its exact
+  string field values. Scans are bounded (40 tables, 300 rows each),
+  transcript-shaped tables (`session|message|prompt|event|snapshot|blob|
+  part`) are only entered after the auth-shaped ones come up empty, and
+  the whole channel fails closed to `undefined` on any error. The oauth
+  session outranks a stored plain key (it is the one the CLI rotates); an
+  oauth node whose stored `expires` has passed is rejected as stale, so
+  an unrenewable session fails the chain into "no credential" and its
+  actionable remedy instead of a guaranteed-401 loop.
+
+Consequences:
+
+- In the faulted service context the plugin now resolves the live,
+  rotating Console session without any user action; key rotation follows
+  the CLI's own refresh writes (the store re-read on credential-class
+  rejection picks the new access token).
+- A legacy `auth.json` key that is the only resolvable source and gets
+  rejected as expired now surfaces its own remedy (marker wording joins
+  the 401 text; `jevUserError` classes it before the generic
+  create-a-new-key branch): delete the stale `opencode`/`opencode-go`
+  entries so the CLI store's session serves jev.
+- Test isolation note: bun caches `os.homedir()` at process start, so
+  run-time `$HOME` mutation cannot isolate store reads - credential-
+  touching test files pin `XDG_DATA_HOME` at a per-process nonexistent
+  data dir instead.
+
 ## Provider resolution: registry-derived deployments, not baked tables
 
 Early support for non-Console System One deployments sketched a plugin-side

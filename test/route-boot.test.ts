@@ -15,6 +15,10 @@ import { afterAll, describe, expect, test } from "bun:test"
 
 process.env.JEV_ENDPOINT = "http://127.0.0.1:1/"
 process.env.OPENCODE_BIN = "/bin/false"
+// one store-family pin: with the subprocess neutralized, the db-backed
+// channel compensates - keep it away from the operator's real store here
+// (bun caches homedir(), so the XDG path pin is the effective one)
+process.env.XDG_DATA_HOME = `/tmp/jev-nostore-${process.pid}`
 
 const AUTO = { providerID: "opencode-system-one", id: "auto" }
 

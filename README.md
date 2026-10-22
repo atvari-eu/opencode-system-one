@@ -949,11 +949,25 @@ is never logged or persisted; `JEV_ENDPOINT` skips the registry):
    the key/credential as expired/revoked/invalid. (The Console's 422
    "upstream unavailable" responses are a deployment outage, not a
    credential signal.)
+
+   The store reads through two channels, first usable wins: the CLI
+   subprocess, and - when that is unavailable in the running context (a
+   sandboxed service process refusing nested execs is the observed fail
+   mode: every candidate bin answers with an empty stdout and a nonzero
+   exit) - a direct read-only read of the CLI's db-backed credential
+   store, the same live session the CLI refreshes on its own rejections.
+   The db channel is schema-tolerant (matches credential-shaped nodes
+   tied to the integration id, never logs values, prefers the OAuth
+   session over a stored plain key, and skips an oauth entry whose
+   stored expiry has passed instead of serving a guaranteed 401).
 3. Legacy opencode auth store (`~/.local/share/opencode/auth.json`) - the
    entry matching the resolved provider id (`."opencode".key`,
    `."opencode-go".key`, or the provider's own id for hand-planted keys);
    V1 installs and hand-planted keys; the V2 CLI no longer updates this
-   file.
+   file. When this is the only resolvable source and the endpoint rejects
+   the key as expired, the surfaced remedy names the shadowing (the live
+   Console session sits in the CLI store above it) instead of the generic
+   replace-the-key text.
 
 - `JEV_MODEL` (default: `jev-1.13-free`; the plugin's `model` option wins
   over this env, which wins over the default)

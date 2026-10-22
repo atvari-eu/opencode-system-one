@@ -1415,6 +1415,15 @@ export function jevUserError(message: unknown): JevUserError | undefined {
   if (/no credential/i.test(text)) {
     return { title: "jev: no credential - run `opencode auth login` to sign in to the Console" }
   }
+  // The legacy auth.json key shadowing the live Console session (marker
+  // text rides the 401 message from the judge, judge-side) - checked before
+  // the generic expired-key class so the remedy names the actual fix.
+  if (/jev: 401\b/.test(text) && /legacy auth\.json store entry/.test(text)) {
+    return {
+      title:
+        "jev: the stored auth.json key expired (401) - delete the stale opencode/opencode-go entries in ~/.local/share/opencode/auth.json so the live Console session serves jev",
+    }
+  }
   if (/jev: 401\b/.test(text) && /api key has expired|key has expired|will not renew/i.test(text)) {
     return {
       title:
@@ -1914,6 +1923,126 @@ export function parseAuthExport(json: unknown, integrationID = "opencode"): stri
     if (v?.type === "oauth" && typeof v.access === "string" && v.access) return v.access
   }
   return undefined
+}
+
+/** Internal candidate keeping the selection order (oauth before key). */
+interface StoredCandidate {
+  type: "key" | "oauth"
+  material: string
+  preference: number
+}
+
+const STORED_MATERIAL_MIN = 16
+const STORED_JSON_MAX = 65_536
+
+/** One credential-shaped node: {type:"oauth", access} or {type:"key", key},
+ * material at least a plausible token's length. An oauth node whose stored
+ * expires (when present) has passed is rejected as stale - a rotated-out
+ * token would 401 and re-read into the same entry, so it fails the chain
+ * into "no credential" and its actionable remedy instead. */
+function storedMaterialNode(node: unknown): StoredCandidate | undefined {
+  if (node === null || typeof node !== "object") return undefined
+  const obj = node as Record<string, unknown>
+  if (obj.type === "oauth") {
+    const access = obj.access
+    if (typeof access !== "string" || access.length < STORED_MATERIAL_MIN) return undefined
+    if ("expires" in obj) {
+      const expires = Number(obj.expires)
+      if (Number.isFinite(expires) && expires <= Date.now()) return undefined
+    }
+    return { type: "oauth", material: access, preference: 0 }
+  }
+  if (obj.type === "key") {
+    const key = obj.key
+    if (typeof key !== "string" || key.length < STORED_MATERIAL_MIN) return undefined
+    return { type: "key", material: key, preference: 1 }
+  }
+  return undefined
+}
+
+/** Collects credential nodes within a bounded descent below an id-bearing
+ * object; JSON strings encountered on the way are unpacked first. */
+function storedUnderAnchor(node: unknown, hops: number, out: StoredCandidate[]): void {
+  let obj: unknown = node
+  if (typeof obj === "string" && obj.length <= STORED_JSON_MAX) {
+    try {
+      const parsed = JSON.parse(obj)
+      if (parsed && typeof parsed === "object") obj = parsed
+    } catch {
+      // plain string - not a value blob
+    }
+  }
+  const direct = storedMaterialNode(obj)
+  if (direct) out.push(direct)
+  if (hops <= 0 || obj === null || typeof obj !== "object") return
+  for (const value of Object.values(obj as Record<string, unknown>)) {
+    storedUnderAnchor(value, hops - 1, out)
+  }
+}
+
+/** Walks a db row (or any store value) looking for objects that carry the
+ * integration id as one of their exact string field values - the only tie
+ * considered trustworthy - and stops at the first usable anchor's
+ * candidates. Explicitly inactive entries (active false/0) are skipped. */
+function storedCandidates(
+  node: unknown,
+  integrationID: string,
+  depth: number,
+  out: StoredCandidate[],
+): void {
+  if (node === null || typeof node !== "object" || depth > 4 || out.length >= 24) return
+  const obj = node as Record<string, unknown>
+  const anchored = Object.values(obj).includes(integrationID)
+  if (anchored) {
+    const active = obj.active ?? obj.isActive
+    if (active === false || active === 0) return
+    const locals: StoredCandidate[] = []
+    storedUnderAnchor(obj, 2, locals)
+    locals.sort((a, b) => a.preference - b.preference)
+    out.push(...locals)
+    return
+  }
+  for (const value of Object.values(obj)) {
+    if (typeof value === "string" && value.length <= STORED_JSON_MAX) {
+      try {
+        const parsed = JSON.parse(value)
+        if (parsed && typeof parsed === "object") {
+          storedCandidates(parsed, integrationID, depth + 1, out)
+          continue
+        }
+      } catch {
+        // plain string - not a value blob
+      }
+    }
+    storedCandidates(value, integrationID, depth + 1, out)
+  }
+}
+
+/**
+ * Extracts a credential from an auth-store value , the
+ * db-backed row shapes `opencode auth export` renders into integration
+ * entries: an object must carry the integration id as one of its exact
+ * string field values , and within a bounded descent below
+ * that anchor a credential-shaped node selects - the active CLI session's
+ * oauth access token wins over a plain key entry. Any other shape, a
+ * foreign integration or a stale-dated oauth entry yields undefined;
+ * malformed input never throws. The material is returned to the caller,
+ * never logged.
+ */
+export function extractStoredCredential(
+  json: unknown,
+  integrationID: string,
+): { type: "key" | "oauth"; material: string } | undefined {
+  const out: StoredCandidate[] = []
+  try {
+    storedCandidates(json, integrationID, 0, out)
+  } catch {
+    return undefined
+  }
+  out.sort((a, b) => a.preference - b.preference)
+  const first = out[0]
+  if (!first) return undefined
+  return { type: first.type, material: first.material }
 }
 
 /**

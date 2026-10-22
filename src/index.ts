@@ -71,6 +71,7 @@
 import { Model, Plugin, Provider } from "@opencode/plugin"
 import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS, messageChars, collectCalls } from "./compaction"
 import { runFind } from "./find"
+import { readStoreDbCredential, storeDbCandidates } from "./store-db"
 import {
   EFFORT_ORDER,
   JEVS_ERROR_MARK,
@@ -208,18 +209,24 @@ interface ToolContext {
 //      explicit URLs) - explicit override. The TYPESAFE key is the
 //      deployment-agnostic override and must pair with the endpoint the
 //      operator points at.
-//   2. The OpenCode CLI's credential store (read once per process via
-//      `opencode auth export`): a console API key or the active Console
-//      OAuth session for the single "opencode" Console integration, or -
-//      for host-registered providers - the provider's own logged-in
-//      integration entry. Skipped outright when JEV_ENDPOINT points
-//      elsewhere, so an exported key never pairs with a foreign endpoint.
-//      Cached, and invalidated on credential-class rejections (401, or a
-//      worn-credential diagnostic - see logic.credentialRejected) so a
-//      refreshed key is re-read exactly once per call before failing.
+//   2. The OpenCode CLI's credential store (read once per process, cached
+//      and invalidated on worn credentials): a console API key or the
+//      active Console OAuth session for the single "opencode" Console
+//      integration, or - for host-registered providers - the provider's
+//      own logged-in integration entry. Two channels, first usable wins:
+//      the `opencode auth export` subprocess, and - when the subprocess is
+//      unavailable in the running context (e.g. a sandboxed service process
+//      refuses nested execs) - a direct read-only read of the CLI's
+//      db-backed store, the same live session the CLI refreshes on its own
+//      rejections (src/store-db.ts; never substitutes for env pairing: a
+//      JEV_ENDPOINT override still skips this entire source).
 //   3. Legacy opencode auth store (auth.json, entry matching the resolved
 //      provider id / integration) - V1 installs and hand-planted keys;
-//      the V2 CLI no longer updates it.
+//      the V2 CLI no longer updates it. When such a key is the only one
+//      resolvable and the endpoint rejects it as expired, the surfaced
+//      remedy names the shadowing (the live Console session sits in the
+//      CLI store, unreachable only because an opaque layer failed) instead
+//      of the generic replace-the-key text.
 // ---------------------------------------------------------------------------
 
 interface Credential {
@@ -248,6 +255,11 @@ async function loadCliStoreCredential(integration: string): Promise<Credential |
   const cached = CLI_CREDENTIALS[integration]
   if (cached) return cached
   if (CLI_CREDENTIALS_DEAD[integration]) return undefined
+  // Channel 1: the CLI's own store export. Candidate binaries are tried in
+  // order and none short-circuits the loop: different installed builds can
+  // read different store shows, and one binary refusing (a wrapped build
+  // refusing nested execs) must not hide the credential another would
+  // serve.
   for (const bin of [process.env.OPENCODE_BIN, "opencode", "opencode2"]) {
     if (!bin) continue
     try {
@@ -258,9 +270,21 @@ async function loadCliStoreCredential(integration: string): Promise<Credential |
         CLI_CREDENTIALS[integration] = { key, source: "cli-store", integration }
         return CLI_CREDENTIALS[integration]
       }
-      break // the CLI ran, but holds no usable credential for this integration
+      // the CLI ran, but yields no usable entry for this integration -
+      // keep looking in the next binary's store
     } catch {
-      // missing binary or unusable output - try the next binary name
+      // missing binary, unusable output, or an execution refused by the
+      // context (empty stdout with an exit code) - try the next candidate
+    }
+  }
+  // Channel 2: the db-backed credential store, read directly. Same source
+  // `auth export` reads ; used when the subprocess is unavailable in
+  // this context.
+  for (const path of storeDbCandidates()) {
+    const found = readStoreDbCredential(path, integration)
+    if (found) {
+      CLI_CREDENTIALS[integration] = { key: found.material, source: "cli-store", integration }
+      return CLI_CREDENTIALS[integration]
     }
   }
   CLI_CREDENTIALS_DEAD[integration] = true
@@ -565,7 +589,18 @@ async function jevJudgeInner(
   }
 
   if (!response.ok) {
-    throw new Error(jevAuthError(response.status, detailOf(text)))
+    const detail = detailOf(text)
+    let message = jevAuthError(response.status, detail)
+    // A legacy-store key rejected as expired shadows the live Console
+    // session (the session lives in the CLI store; the call ran with the
+    // legacy tail because the store channels failed). The marker text
+    // adjusts the surfaced remedy to the actual fix instead of "create a
+    // new key".
+    if (cred.source === "auth-json") {
+      message +=
+        " (the key is the legacy auth.json store entry - delete its stale opencode/opencode-go entries so the CLI store's Console session serves jev)"
+    }
+    throw new Error(message)
   }
 
   const json = JSON.parse(text) as JevReply
@@ -752,7 +787,17 @@ async function pingDeploy(cred: Credential | undefined, model: string, signal: A
   const response = await jevRequest(cred, PING_QUESTIONS, PING_STATE, signal, model)
   const text = await response.text()
   if (!response.ok) {
-    throw new Error(jevAuthError(response.status, detailOf(text)))
+    // Same legacy-shadow marker as the judged-call path: the ping's
+    // surfaced fault must carry the actionable remedy, not "create a new
+    // key", when all that stood between jev and the live session was the
+    // legacy auth.json tail.
+    const detail = detailOf(text)
+    let message = jevAuthError(response.status, detail)
+    if (cred?.source === "auth-json") {
+      message +=
+        " (the key is the legacy auth.json store entry - delete its stale opencode/opencode-go entries so the CLI store's Console session serves jev)"
+    }
+    throw new Error(message)
   }
   const json = JSON.parse(text) as JevReply
   // Fail closed: a malformed or missing answer is an operational failure,
