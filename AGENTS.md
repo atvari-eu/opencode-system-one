@@ -103,7 +103,9 @@ behavior change instead of duplicating them here.
   for URLs; skipped wholesale while JEV_ENDPOINT is set). The init ping
   (one noul question) verifies the model; faults fail every judged call
   closed via the cachedJudge gate and surface `[jev-config-error]`
-  (once per config change) / `[jev-error]` (once per session per kind)
+  (once per config change) / `[jev-error]` (per failed call; the same
+  title per session repeats at most once per 60 s window - a surfaced
+  row wakes a turn, so an outage must not re-trigger itself)
   toast rows. Don't invent service-specific endpoints beyond the
   documented `/systemone` convention (README "Provider", DESIGN.md
   "Provider resolution").

@@ -1326,8 +1326,29 @@ export default Plugin.define({
     // failure text, flattened to a one-liner (surfaceTitle). The bundled
     // TUI plugin renders those rows as top-corner error toasts, exactly like
     // host-made error popups.
+    // A posted "[jev-error]" row wakes a turn (the done-check notice rides the
+    // same channel), so a failure surfaced by an idle-triggered probe could
+    // feed itself: turn ends -> idle -> judged call fails -> toast row -> wake
+    // turn -> turn ends -> idle -> ... With one outage failing EVERY call
+    // together (expired Console key 401-ing each judged call) that never
+    // terminates. Every surfaced row therefore rides a short per-(session,
+    // title) cooldown: a live outage stays visible - one row per window - but
+    // a surfacing-induced wake can no longer re-trigger its own next row
+    // inside the window. In-memory on purpose: a plugin reload stands down.
+    const SURFACED_COOLDOWN_MS = 60_000
+    const surfacedAt = new Map<string, number>()
+
     const surfaceJev = async (message: unknown, sessionID?: string): Promise<void> => {
       const title = surfaceTitle(message) || "jev: judgment failed - no diagnostic message"
+      const lastSurfaced = surfacedAt.get(`${sessionID ?? ""}|${title}`)
+      if (lastSurfaced !== undefined && Date.now() - lastSurfaced < SURFACED_COOLDOWN_MS) {
+        console.log(`[jev] surfaced: cooldown-suppressed (${title})`)
+        return
+      }
+      surfacedAt.set(`${sessionID ?? ""}|${title}`, Date.now())
+      // Same unbounded-growth guard the old surfacedRows gate carried: one
+      // process sees many sessions over a long session; reload resets it.
+      if (surfacedAt.size > 1000) surfacedAt.clear()
       try {
         await (ctx as any).session?.synthetic?.({
           ...(sessionID ? { sessionID } : {}),
@@ -3259,10 +3280,14 @@ export default Plugin.define({
       const handleIdle = async (sessionID: string): Promise<void> => {
         if (probing.has(sessionID)) return
         probing.add(sessionID)
+        // Hoisted so the catch below can stand a failed probe down: the
+        // marker is the only gate between idle events and this handler.
+        const key = `done-check/${String(sessionID)}`
+        let tail: ReturnType<typeof doneTranscript> | undefined
+        let userCount = 0
         try {
           const messages = contextRows(await (ctx as any).session.context({ sessionID }))
-          const userCount = userRowCount(messages)
-          const key = `done-check/${String(sessionID)}`
+          userCount = userRowCount(messages)
           let seen: any
           try {
             seen = await (ctx as any).storage.get(key)
@@ -3271,7 +3296,7 @@ export default Plugin.define({
           // The agent's reply to a notice changes the tail hash, so the hash
           // gate alone cannot stop the loop - the user-message count can.
           if (doneCheckStandDown(seen, userCount)) return
-          const tail = doneTranscript(messages)
+          tail = doneTranscript(messages)
           if (seen?.hash === tail.hash) return
           const { reply } = await cachedJudge([DONE_QUESTION], tail.text, AbortSignal.timeout(8_000), sessionID)
           const done = reply.answers?.done?.noul
@@ -3301,6 +3326,21 @@ export default Plugin.define({
             console.log(`[jev] done-check: ${sessionID} p=${fmt(done)} - ${tail.loop ? "loop" : "incomplete"} notice posted`)
           }
         } catch (err: any) {
+          // A failed probe stands down exactly like a posted notice. Without
+          // a marker here, one outage failing every judged call (expired
+          // Console key 401-ing each probe) re-probed on every idle event,
+          // surfaced a row per failure, and each row woke a turn whose end
+          // fired the next idle - an unbounded loop after the task was done.
+          // userRowCount excludes our own rows, so the marker still re-arms
+          // the moment a real user message arrives; storing the tail hash
+          // additionally lets an unchanged tail (own rows are filtered out
+          // of the tail) fail closed silently on later idles.
+          try {
+            await (ctx as any).storage.set(key, {
+              ...(tail ? { hash: tail.hash } : {}),
+              userCountAtNotice: userCount,
+            })
+          } catch {}
           await surfaceJev(err?.message, sessionID)
           console.error(`[jev] done-check: skipped (${String(err?.message ?? err)})`)
         } finally {
@@ -3562,8 +3602,18 @@ export default Plugin.define({
         } else {
           let registered = false
           const compactionInflight = new Set<string>()
+          // A dead deployment fails every idle pass identically: without a
+          // backoff, a surfaced failure row woke a turn, the turn ended in
+          // another idle event and the watcher re-triggered compaction at
+          // once - wake-every-idle while the credential outage lasted. The
+          // backoff keeps the retry intent (the next idle after the window
+          // still retriggers) without the self-feeding wake loop.
+          const IDLE_FAIL_BACKOFF_MS = 120_000
+          const IDLE_FAIL_UNTIL = new Map<string, number>()
           const handleIdleCompaction = async (sessionID: string): Promise<void> => {
             if (compactionInflight.has(sessionID)) return
+            const failUntil = IDLE_FAIL_UNTIL.get(sessionID)
+            if (failUntil !== undefined && Date.now() < failUntil) return
             compactionInflight.add(sessionID)
             try {
               // Absolute target wins; else derive from the session model's window.
@@ -3604,7 +3654,9 @@ export default Plugin.define({
               await ensureOffEntry(sessionID, messages)
               await (ctx as any).session.compact?.({ sessionID })
               IDLE_POSTED.set(sessionID, Date.now())
+              IDLE_FAIL_UNTIL.delete(sessionID)
             } catch (err: any) {
+              IDLE_FAIL_UNTIL.set(sessionID, Date.now() + IDLE_FAIL_BACKOFF_MS)
               await surfaceJev(err?.message, sessionID)
               console.error(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
             } finally {

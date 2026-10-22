@@ -108,24 +108,26 @@ feature closed until the plugin restarts with a working config. A changed
 fault (new fingerprint) surfaces one `[jev-config-error]` toast once per
 config change; the per-call rows below carry everything else.
 
-Every failed jev call surfaces as its own `[jev-error] …` timeline row,
+Every failed jev call surfaces its own `[jev-error] …` timeline row,
 rendered by the bundled TUI half (`./tui` export) as a top-corner error
-popup exactly like OpenCode's own failures. No dedupe - one failing call,
-one toast: a dead credential or stalled endpoint stays visible on every
-call it breaks instead of announcing itself once per session. Actionable
-classes (no credential, 401 key rejection - with expired-API-key diagnostics
-getting their own remedy: create a new key at the provider's console, since
-`opencode auth login` cannot renew an API key - 402 insufficient funds, 403
-endpoint gate, wrong model at the deployment, free-tier restriction - "only
-from within OpenCode") keep their stable remedy title; anything else
-(timeouts, 5xx, refused connections, opaque diagnostics) toasts the failure
-text itself, flattened to one line and length-capped. Routing and effort
+popup exactly like OpenCode's own failures. Actionable classes (no
+credential, 401 key rejection - with expired-API-key diagnostics getting
+their own remedy: create a new key at the provider's console, since
+`opencode auth login` cannot renew an API key - 402 insufficient funds,
+403 endpoint gate, wrong model at the deployment, free-tier restriction -
+"only from within OpenCode") keep their stable remedy title; anything
+else (timeouts, 5xx, refused connections, opaque diagnostics) toasts the
+failure text itself, flattened to one line and length-capped. The same
+title for the same session repeats at most once per 60 s cooldown
+window: a surfaced row wakes a turn, and an idle-triggered probe failing
+on a dead credential must never toast fast enough to re-trigger itself
+(the outage stays visible - one row per window - without the wake loop).
+Routing and effort
 judge failures surface the same way instead of staying console-only.
 Screening failures on local tools surface in this channel too instead of
 inlining into the tool output; fetched web content keeps the fail-closed
-inline annotation. During a full outage the toasts repeat with every
-judged call - by design: the surface amplifies with the damage instead of
-hiding it behind a dedupe gate.
+inline annotation. The cooldown only throttles an identical repeat of the
+same title - distinct failures still surface per call.
 
 ## Install
 

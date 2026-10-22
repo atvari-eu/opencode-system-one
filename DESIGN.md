@@ -685,7 +685,7 @@ deployment's fingerprint (sha256 of endpoint|model) differs from the last
 one recorded in storage: once per config change, across restarts, because
 a persistent misconfiguration needs exactly one heads-up, not one per
 session. The **per-call layer** (`[jev-error]` rows, the established path)
-fires on every failed jev call with no dedupe: actionable classes keep
+fires on every failed jev call. Actionable classes keep
 their stable remedy titles (`jevUserError`), everything else - timeouts,
 5xx, refused connections, opaque diagnostics - surfaces the raw failure
 text flattened to a one-liner (`surfaceTitle`), and routing/effort judge
@@ -706,6 +706,17 @@ repeated prompts anyway, so hiding the cause made every prompt
 unexplainable, and per-call toasts make the noise track the damage
 one-to-one instead. If toast volume ever needs taming again, start from
 the config layer's fingerprint-gate lesson, not a time-based cooldown.
+
+The 60-second cooldown then came back in a narrower role, and for a
+different reason: a posted `[jev-error]` row wakes a turn, so an
+idle-triggered probe (done-check, idle-compaction) that fails on a dead
+deployment feeds itself - turn ends, idle fires, judged call fails, row
+posts, row wakes a turn whose end is the next idle. Cadence keyed to
+damage cannot stop that: the damage recurs per wake. The cooldown keys
+on (session, row title) and only keeps the same failure from re-surfacing
+inside one wake cycle; the outage still toasts per window, and the loop
+sources themselves stand down (done-check stores its stand-down marker
+on probe failure, idle-compaction backs off 120 s per failure).
 
 Screen-failure presentation changed in the same commit family: a failed
 screen on a local tool (shell, reads, edits, MCP) no longer prefixes and
