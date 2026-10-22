@@ -8,7 +8,7 @@ behavior change instead of duplicating them here.
 ## Commands
 
 - `bun` is not on PATH: run tests as `nix shell nixpkgs#bun -c bun test`
-  (94 tests, 5 files, ~60 ms at the time of writing). That is the entire
+  (354 tests, 19 files, ~7 s). That is the entire
   check — there is no tsc, linter, formatter, codegen, or CI config to hunt
   for, and no build step (OpenCode loads `src/index.ts` directly).
 - One file: `nix shell nixpkgs#bun -c bun test ./test/route.test.ts`. The

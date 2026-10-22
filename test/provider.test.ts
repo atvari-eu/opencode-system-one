@@ -1,6 +1,6 @@
 // Provider deployment tests: provider option parsing, the registry-based
 // endpoint derivation, credential chains, failure classification, init-fault
-// composition and the surfacing gates. Pure logic, no plugin host, no network.
+// composition and the surfacing titles. Pure logic, no plugin host, no network.
 
 import { describe, expect, test } from "bun:test"
 import {
@@ -15,7 +15,7 @@ import {
   parseProviderOption,
   providerInfoBaseURL,
   resolveProviderBaseURL,
-  sessionSurfaceKey,
+  surfaceTitle,
   systemoneRoute,
   type ProviderOption,
 } from "../src/logic"
@@ -308,7 +308,7 @@ describe("deployFaultText", () => {
     })
   })
 
-  test("outage and unknown faults stay console-only (no row class)", () => {
+  test("outage and unknown faults have no polished title (surfaceTitle falls back to the raw text)", () => {
     expect(jevUserError(fault("outage", "gateway timeout").surface)).toBeUndefined()
     expect(jevUserError(fault("unknown", "weird body").surface)).toBeUndefined()
   })
@@ -324,15 +324,29 @@ describe("deployFaultText", () => {
   })
 })
 
-describe("surfacing gates", () => {
-  test("sessionSurfaceKey includes session, error kind and deployment fingerprint", () => {
-    expect(sessionSurfaceKey(undefined, "k", "fp")).toBe("-|k|fp")
-    const same = sessionSurfaceKey("ses_1", "k", "fp1")
-    expect(sessionSurfaceKey("ses_1", "k", "fp1")).toBe(same)
-    // config change resets, new session resets, new kind resets
-    expect(sessionSurfaceKey("ses_1", "k", "fp2")).not.toBe(same)
-    expect(sessionSurfaceKey("ses_2", "k", "fp1")).not.toBe(same)
-    expect(sessionSurfaceKey("ses_1", "other", "fp1")).not.toBe(same)
+describe("surfacing", () => {
+  test("surfaceTitle keeps the polished title for actionable classes", () => {
+    expect(surfaceTitle("jev: 401 - credential rejected")).toBe(
+      "jev: credential rejected (401) - expired session? run `opencode auth login` again",
+    )
+    expect(surfaceTitle("screen unavailable for shell: jev: 401 - credential rejected")).toContain("401")
+  })
+
+  test("surfaceTitle falls back to the flattened raw text otherwise", () => {
+    expect(surfaceTitle("jev: upstream 500 - gateway timeout")).toBe("jev: upstream 500 - gateway timeout")
+    expect(surfaceTitle("screen unavailable for webfetch:\n\tjev: upstream unavailable - answering slow")).toBe(
+      "screen unavailable for webfetch: jev: upstream unavailable - answering slow",
+    )
+    expect(surfaceTitle("")).toBe("")
+    expect(surfaceTitle(undefined)).toBe("")
+  })
+
+  test("surfaceTitle caps long diagnostics with the tail kept", () => {
+    const long = `jev: upstream 500 - ${"x".repeat(400)} END`
+    const title = surfaceTitle(long)
+    expect(title.length).toBeLessThanOrEqual(300) // head + elision marker + tail
+    expect(title).toContain("END")
+    expect(title).toContain("chars]…")
   })
 
   test("inlineScreenFailure: fetched web tools only", () => {

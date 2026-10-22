@@ -2,8 +2,9 @@
 // synthetic rows into the same top-corner error toasts OpenCode shows for
 // its own failures, and its "[jev-config-error] …" init-fault rows into a
 // once-per-config-change toast (same mark-rows channel, own layer). The
-// server posts at most one row per session per error kind (see src/index.ts
-// surfaceJev), so toast spam stays bounded.
+// server posts one row per failed jev call (see src/index.ts surfaceJev) -
+// every failure toasts, on purpose; the config layer is the only cadence
+// that keeps a dedupe gate.
 //
 // Also composes the screen-verdict panel (src/screen-panel.tsx, solid JSX -
 // the TUI loader compiles TSX with babel-preset-solid; the dynamic import
@@ -89,9 +90,8 @@ export default {
     const cleanups: Array<() => void | Promise<void>> = []
     // -- error toasts --
     // Two layers, both synthetic-row marks from the server half:
-    //   [jev-error]        one per session per error kind per deployment
-    //                      config (server-side surfaceJev gate) - the
-    //                      regular, session-scoped failure surface
+    //   [jev-error]        one row per failed jev call, no dedupe (the
+    //                      regular, per-call failure surface)
     //   [jev-config-error] posted by the init deployment check only when the
     //                      broken deployment (endpoint+model fingerprint)
     //                      changed since the last report - heads up once

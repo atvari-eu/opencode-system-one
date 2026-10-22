@@ -106,19 +106,24 @@ ping-checked against the resolved endpoint once, and any fault (unregistered
 provider, unknown model, missing/wrong credential, outage) fails every judged
 feature closed until the plugin restarts with a working config. A changed
 fault (new fingerprint) surfaces one `[jev-config-error]` toast once per
-config change; per-session learning stays with the regular rows below.
+config change; the per-call rows below carry everything else.
 
-User-actionable failures - no credential, 401 key rejection, 402 insufficient
-funds, 403 endpoint gate, wrong model at the deployment, free-tier restriction
-("only from within OpenCode") - surface as `[jev-error] …` timeline rows
-rendered by the bundled TUI half (`./tui` export) as top-corner error popups,
-exactly like OpenCode's own failures: at most one row per session per failure
-class per deployment config, so repeated tool failures never toast-spam and a
-new session (or config change) informs once again. Screening failures on
-local tools surface the same way instead of inlining anything into the tool
-output; fetched web content keeps the fail-closed inline annotation. Pure
-transport noise (5xx, refused connections, opaque diagnostics) stays
-console-only.
+Every failed jev call surfaces as its own `[jev-error] …` timeline row,
+rendered by the bundled TUI half (`./tui` export) as a top-corner error
+popup exactly like OpenCode's own failures. No dedupe - one failing call,
+one toast: a dead credential or stalled endpoint stays visible on every
+call it breaks instead of announcing itself once per session. Actionable
+classes (no credential, 401 key rejection, 402 insufficient funds, 403
+endpoint gate, wrong model at the deployment, free-tier restriction - "only
+from within OpenCode") keep their stable remedy title; anything else
+(timeouts, 5xx, refused connections, opaque diagnostics) toasts the failure
+text itself, flattened to one line and length-capped. Routing and effort
+judge failures surface the same way instead of staying console-only.
+Screening failures on local tools surface in this channel too instead of
+inlining into the tool output; fetched web content keeps the fail-closed
+inline annotation. During a full outage the toasts repeat with every
+judged call - by design: the surface amplifies with the damage instead of
+hiding it behind a dedupe gate.
 
 ## Install
 

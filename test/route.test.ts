@@ -237,6 +237,20 @@ describe("routeTurn: legacy effort flow (model routing off)", () => {
     })
     expect(outcome.switchTo).toBeUndefined()
     expect(outcome.logs.some((l: string) => l.includes("uninterpretable"))).toBe(true)
+    // An answers-carrying but unusable reply is not an API fault - only a
+    // failed call (throw, no-answer body) surfaces one.
+    expect(outcome.apiFaults).toBeUndefined()
+  })
+
+  test("effort judge failure keeps the level and carries the API fault", async () => {
+    const outcome = await turn(config, {
+      current: { providerID: "acme", modelID: "base", variant: "medium" },
+      judge: async () => {
+        throw new Error("jev: 401 - credential rejected")
+      },
+    })
+    expect(outcome.errors.some((line: string) => line.includes("effort: judge failed"))).toBe(true)
+    expect(outcome.apiFaults).toEqual(["jev: 401 - credential rejected"])
   })
 })
 
@@ -319,7 +333,7 @@ describe("routeTurn: pair mode (effort + model)", () => {
     expect(outcome.errors.some((l: string) => l.includes("reverting to acme/base"))).toBe(true)
   })
 
-  test("judge failure at base never switches", async () => {
+  test("judge failure at base never switches and carries the API fault", async () => {
     const outcome = await turn(PAIR_CONFIG, {
       judge: async () => {
         throw new Error("endpoint down")
@@ -327,6 +341,7 @@ describe("routeTurn: pair mode (effort + model)", () => {
     })
     expect(outcome.switchTo).toBeUndefined()
     expect(outcome.recordPin).toBeUndefined()
+    expect(outcome.apiFaults).toEqual(["endpoint down"])
   })
 
   test("judge failure without an own switch never switches", async () => {
@@ -336,8 +351,18 @@ describe("routeTurn: pair mode (effort + model)", () => {
         throw new Error("endpoint down")
       },
     })
-    // The foreign pick stands down before jev is even reached.
+    // The foreign pick stands down before jev is even reached - no judge call,
+    // no API fault.
     expect(outcome.mode).toBe("stand")
+    expect(outcome.apiFaults).toBeUndefined()
+  })
+
+  test("a reply without answers is an API fault that reverts to base", async () => {
+    const outcome = await turn(PAIR_CONFIG, {
+      judge: async () => ({}),
+    })
+    expect(outcome.errors.some((line: string) => line.includes("malformed response"))).toBe(true)
+    expect(outcome.apiFaults).toEqual(["[jev] route: malformed response (no answers)"])
   })
 
   test("uninterpretable pair answers are failures, reverting an own switch", async () => {

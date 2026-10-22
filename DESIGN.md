@@ -580,18 +580,28 @@ Fault surfacing is layered to match how the operator experiences it. The
 deployment's fingerprint (sha256 of endpoint|model) differs from the last
 one recorded in storage: once per config change, across restarts, because
 a persistent misconfiguration needs exactly one heads-up, not one per
-session. The **session layer** (`[jev-error]` rows, the established
-path) fires per judged failure whose class a user can act on, deduped per
-session per error kind per deployment fingerprint (`sessionSurfaceKey`) -
-a new session or a config change re-informs, an ongoing breakage does not
-toast-spam a run of failing screens. The per-call failure text itself is
-composed once (`deployFaultText`): the config row reads the message (host,
-model, remedy), every judged call throws the per-call surface so existing
+session. The **per-call layer** (`[jev-error]` rows, the established path)
+fires on every failed jev call with no dedupe: actionable classes keep
+their stable remedy titles (`jevUserError`), everything else - timeouts,
+5xx, refused connections, opaque diagnostics - surfaces the raw failure
+text flattened to a one-liner (`surfaceTitle`), and routing/effort judge
+failures join the same channel through `RouteOutcome.apiFaults` instead of
+staying console-only. The per-call failure text itself is composed once
+(`deployFaultText`): the config row reads the message (host, model,
+remedy), every judged call throws the per-call surface so existing
 call-site catch paths surface the identical failure a live outage would.
-The migration from the old 60-second per-message cooldown to
-session-scoped dedupe was deliberate: cadence keyed to sessions/configs is
-what the operator reasoning about "is it still broken?" needs; time-based
-cooldowns hide and re-reveal the same fault unpredictably.
+
+Surfacing cadence history: the per-call layer tiered down from a 60-second
+per-message cooldown to session-scoped dedupe (once per session per error
+kind per deployment fingerprint, user-actionable classes only) to the
+current no-dedupe per-call surface. The session notch was deliberate -
+cadence keyed to sessions/configs is what the operator reasoning about
+"is it still broken?" needs - but a live credential outage flipped the
+verdict: with approvals' `onFail: "ask"` the failures materialize as
+repeated prompts anyway, so hiding the cause made every prompt
+unexplainable, and per-call toasts make the noise track the damage
+one-to-one instead. If toast volume ever needs taming again, start from
+the config layer's fingerprint-gate lesson, not a time-based cooldown.
 
 Screen-failure presentation changed in the same commit family: a failed
 screen on a local tool (shell, reads, edits, MCP) no longer prefixes and

@@ -63,8 +63,7 @@
 // against the resolved endpoint once. A fault (unresolved provider, unknown
 // model, no credential, outage) fails all judged features closed, surfaces
 // one "[jev-config-error]" row per config change (TUI: toast) and lets
-// individual call sites surface "[jev-error]" rows at most once per session
-// per error kind.
+// individual call sites surface "[jev-error]" rows on every failed call.
 //
 // Fail-closed absent configuration: a missing key or failed call never
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
@@ -80,7 +79,7 @@ import {
   credentialRejected,
   deployFaultText,
   jevAuthError,
-  jevUserError,
+  surfaceTitle,
   approvalGate,
   approvalStatsBucket,
   approvalQuestions,
@@ -124,7 +123,6 @@ import {
   systemoneRoute,
   secretPath,
   secretPathAction,
-  sessionSurfaceKey,
   approvalDefaultContext,
   approvalFailureCause,
   approvalSandboxNote,
@@ -1008,9 +1006,8 @@ export default Plugin.define({
     // judged call fails closed instantly with the fault's wording
     // (cachedJudge gate). Surfacing cadence: one "[jev-config-error]" row
     // per config change (persistent fingerprint in storage, the TUI renders
-    // it as a toast), and per-call faults surface "[jev-error]" rows at
-    // most once per session per error kind via the standard call-site
-    // catch paths.
+    // it as a toast), and per-call faults surface "[jev-error]" rows on
+    // every failed call via the standard call-site catch paths.
     await resolveDeploymentEndpoint(ctx)
     const deployCheck = await checkDeployState()
     DEPLOY_FINGERPRINT = deployCheck.fingerprint
@@ -1186,38 +1183,22 @@ export default Plugin.define({
     const approvalsSandboxNote = approvalSandboxNote(approvalsObj.sandbox)
     const location = (ctx as any).location?.directory ?? ""
 
-    // User-relevant jev failures post one "[jev-error] …" synthetic row per
-    // session per error kind per deployment config (sessionSurfaceKey): a new
-    // session or a changed deployment config resets the gate, so each session
-    // learns about a failing feature at most once per kind. The bundled TUI
-    // plugin renders those rows as top-corner error toasts, exactly like
-    // host-made error popups; non-user-relevant failures stay console-only.
-    const surfacedRows = new Set<string>()
+    // Every failed jev call posts a "[jev-error] …" synthetic row - there is
+    // no once-per-session gate: each failing call deserves its toast, so a
+    // dead credential is visible on every failing call instead of hiding
+    // behind a deduped first row. Known actionable classes surface their
+    // stable remedy title (jevUserError); anything else keeps the raw
+    // failure text, flattened to a one-liner (surfaceTitle). The bundled
+    // TUI plugin renders those rows as top-corner error toasts, exactly like
+    // host-made error popups.
     const surfaceJev = async (message: unknown, sessionID?: string): Promise<void> => {
-      const error = jevUserError(message)
-      if (!error) return
-      // The error-row scope follows the deployment the call actually rode:
-      // a session pin (/jev-models) gets its own fingerprint, so switching
-      // models re-arms the once-per-kind gate instead of hiding a new
-      // deployment's first fault behind the old scope.
-      let fingerprint = DEPLOY_FINGERPRINT
-      if (sessionID) {
-        try {
-          fingerprint = fingerprintOfModel(effectiveJevModel(await pinOf(sessionID), resolveModel()))
-        } catch {
-          fingerprint = DEPLOY_FINGERPRINT
-        }
-      }
-      const key = sessionSurfaceKey(sessionID, error.title, fingerprint)
-      if (surfacedRows.has(key)) return
-      if (surfacedRows.size > 1000) surfacedRows.clear()
-      surfacedRows.add(key)
+      const title = surfaceTitle(message) || "jev: judgment failed - no diagnostic message"
       try {
         await (ctx as any).session?.synthetic?.({
           ...(sessionID ? { sessionID } : {}),
-          text: `${JEVS_ERROR_MARK}${error.title}`,
+          text: `${JEVS_ERROR_MARK}${title}`,
         })
-        console.log(`[jev] surfaced: ${error.title}`)
+        console.log(`[jev] surfaced: ${title}`)
       } catch (surfaceError: any) {
         console.error(`[jev] surface: synthetic post failed (${String(surfaceError?.message ?? surfaceError)})`)
       }
@@ -1885,6 +1866,7 @@ export default Plugin.define({
           }
 
           for (const line of outcome?.errors ?? []) console.error(line)
+          for (const fault of outcome?.apiFaults ?? []) await surfaceJev(fault, event?.sessionID)
           const mode: string = outcome?.mode ?? "off"
           const key = String(event.sessionID)
           if (mode === "stand") {

@@ -508,6 +508,11 @@ export interface RouteOutcome {
   mode: "off" | "stand" | "rearm" | "effort" | "model" | "pair"
   logs: string[]
   errors: string[]
+  /** Raw jev API-call failure texts behind this outcome - judge throws and
+   * malformed reply bodies. The host surfaces each one (an error toast per
+   * failed call; see index.ts surfaceJev), while the errors array stays the
+   * operator-facing console line with the route's own context appended. */
+  apiFaults?: string[]
   /** Present when the mode is "stand": the label the user picked (dedupe key). */
   pickedLabel?: string
   /** Set when this judged turn also re-armed a previously stood-down auto. */
@@ -528,6 +533,9 @@ const routeStateText = (lead: string, scrub: (t: string) => string, input: Route
 export async function routeTurn(config: RouteConfig, input: RouteInput): Promise<RouteOutcome> {
   const logs: string[] = []
   const errors: string[] = []
+  /** Carries raw jev API-call failures into every returned outcome: the
+   * host surfaces each one individually. */
+  const faults: string[] = []
   const scrub = input.scrub ?? ((t: string) => t)
   const currentRef = {
     providerID: input.current.providerID,
@@ -573,8 +581,9 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
     try {
       reply = await input.judge([question], state, AbortSignal.timeout(8_000))
     } catch (err: any) {
+      faults.push(String(err?.message ?? err))
       errors.push(`[jev] effort: judge failed (${String(err?.message ?? err)}) - keeping ${currentRef.variant}`)
-      return { mode: "effort", logs, errors }
+      return { mode: "effort", logs, errors, ...(faults.length > 0 ? { apiFaults: [...faults] } : {}) }
     }
     const answer: any = reply?.answers?.effort
     const choice = typeof answer?.choice === "string" ? answer.choice.trim().toLowerCase() : ""
@@ -617,19 +626,21 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
   const autoMode = !!input.autoEntry && baseKey === candidateKey(input.autoEntry)
 
   const failToBase = (message: string): RouteOutcome => {
+    const inherited = faults.length > 0 ? { apiFaults: [...faults] } : {}
     const ours = last ? pinMatches(last, input.pin) : false
-    if (!ours) return { mode: "model", logs, errors: [...errors, message], ...(rearmed ? { rearm: true } : {}) }
+    if (!ours) return { mode: "model", logs, errors: [...errors, message], ...(rearmed ? { rearm: true } : {}), ...inherited }
     // Keeping current also covers the auto entry: when the session rides the
     // auto loop (base is system-one/auto), a revert would switch back to the
     // pseudo-model mid-loop, which is not runnable - so the current selection
     // stays and the adapter decides whether a fallback applies.
     if (currentKey === baseKey || autoMode)
-      return { mode: "model", logs, errors: [...errors, message], ...(rearmed ? { rearm: true } : {}) }
+      return { mode: "model", logs, errors: [...errors, message], ...(rearmed ? { rearm: true } : {}), ...inherited }
     return {
       mode: "model",
       logs,
       errors: [...errors, `${message} - reverting to ${baseKey}`],
       ...(rearmed ? { rearm: true } : {}),
+      ...inherited,
       switchTo: normalizeRef({ providerID: base.providerID, modelID: base.modelID, ...(base.variant ? { variant: base.variant } : {}) }),
       recordPin: {
         to: toRef({ providerID: base.providerID, modelID: base.modelID, ...(base.variant ? { variant: base.variant } : {}) }),
@@ -697,9 +708,13 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
   try {
     reply = await input.judge([question], routeStateText(lead, scrub, input), AbortSignal.timeout(8_000))
   } catch (err: any) {
+    faults.push(String(err?.message ?? err))
     return failToBase(`[jev] route: judge failed (${String(err?.message ?? err)})`)
   }
-  if (!reply?.answers || typeof reply.answers !== "object") return failToBase("[jev] route: malformed response (no answers)")
+  if (!reply?.answers || typeof reply.answers !== "object") {
+    faults.push("[jev] route: malformed response (no answers)")
+    return failToBase("[jev] route: malformed response (no answers)")
+  }
 
   const resolved = resolveRouteAnswer(reply.answers.route, options)
   if ("error" in resolved) return failToBase(`[jev] route: ${resolved.error}`)
@@ -1379,10 +1394,13 @@ export interface JevUserError {
 }
 
 /**
- * True for the failure classes a user can act on (Configure Screen One): missing
- * credential (no login), 401 key/session rejection, 402 funds, 403 endpoint gate
- * (free tier only inside OpenCode), 422 malformed request from the endpoint.
- * Transport noise, plain 5xx and tool-level failures stay console-only.
+ * Maps the failure classes a user can act on (Configure Screen One) onto
+ * actionable one-liner titles: missing credential (no login), 401
+ * key/session rejection, 402 funds, 403 endpoint gate (free tier only inside
+ * OpenCode), 422 malformed request from the endpoint. Unmatched messages
+ * return undefined - the caller falls back to the sanitized raw text, since
+ * every failed jev call surfaces (the caller-side gate is gone; this only
+ * polishes known classes).
  */
 export function jevUserError(message: unknown): JevUserError | undefined {
   const text = typeof message === "string" ? message : String(message ?? "")
@@ -1413,16 +1431,22 @@ export function jevUserError(message: unknown): JevUserError | undefined {
   return undefined
 }
 
-/** Dedupe key for surfaced error rows: one toast per session per error kind
- * per deployment config - a config change (new endpoint/model fingerprint)
- * resets the gate so the next session (or a mid-session config flip) informs
- * the operator again. */
-export function sessionSurfaceKey(
-  sessionID: string | undefined,
-  kind: string,
-  fingerprint: string,
-): string {
-  return `${sessionID ?? "-"}|${kind}|${fingerprint}`
+/** The toast text for one failed jev call. Known actionable classes get
+ * their stable remedy title; anything else (transport noise, 5xx, opaque
+ * diagnostics) surfaces the raw failure message, flattened to a one-liner -
+ * every failure now toasts, so unknown classes must stay readable instead
+ * of being withheld. Whitespace collapses to single spaces and the body
+ * caps at SURFACE_TITLE_MAX characters (middle elided, tail kept). */
+export const SURFACE_TITLE_MAX = 240
+
+export function surfaceTitle(message: unknown): string {
+  const known = jevUserError(message)?.title
+  if (known) return known
+  return elideMiddle(
+    String(message ?? "").replace(/\s+/g, " ").trim(),
+    SURFACE_TITLE_MAX,
+    60,
+  )
 }
 
 /* True when a failed screen may rewrite the tool's own result text with the
