@@ -10,6 +10,12 @@
 // and fail closed with the deployment's own fault - never the older "no
 // endpoint resolved" one.
 //
+// The decision-catalog discovery (fetched once per process at init) is
+// shaped as its own fetch class: models.dev requests answer with a canned
+// catalog body and are counted separately (DISCOVERIES), so the ping-level
+// assertions below keep their original meaning - no deployment traffic at
+// init, exactly one ping at the first judged call.
+//
 // Two credential scenarios, both deterministic:
 //  - no credential anywhere: the judged surface is the "no credential" fault
 //    (the chain's own remedy), and the ping goes out without auth
@@ -23,6 +29,10 @@ import { join } from "node:path"
 import plugin from "../src/index"
 
 const FETCHES: Array<{ url: string; auth: string | undefined }> = []
+// Decision-catalog discovery fetches (models.dev), counted separately from
+// deployment traffic: discovery is an init-time helper call, not a judged
+// ping, and must never show up in the ping assertions below.
+const DISCOVERIES: Array<{ url: string }> = []
 const SANDLE_ENV: Array<string> = []
 const SCRATCH: string[] = []
 
@@ -149,6 +159,7 @@ async function runScenario(
 ): Promise<{ thrown: string; fetches: typeof FETCHES }> {
   const home = mkdtempSync(join(tmpdir(), "jev-late-test-"))
   SCRATCH.push(home)
+  const fetchesAtEntry = FETCHES.length
   pinEnv({
     PATH: "",
     HOME: home,
@@ -165,8 +176,16 @@ async function runScenario(
   const host = fakeHost(entry, absentAtInit)
   const prevFetch = globalThis.fetch
   globalThis.fetch = (async (url: any, init: any) => {
+    const target = String(url)
+    if (target.startsWith("https://models.dev/")) {
+      DISCOVERIES.push({ url: target })
+      return new Response(JSON.stringify({ providers: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }
     FETCHES.push({
-      url: String(url),
+      url: target,
       auth: (init?.headers as any)?.Authorization,
     })
     return new Response(JSON.stringify({ detail: "Missing API key" }), {
@@ -182,7 +201,8 @@ async function runScenario(
     await setup(host.ctx)
     if (absentAtInit) {
       expect(host.state.registryGetCalls.length).toBeGreaterThan(0)
-      expect(FETCHES.length).toBe(0)
+      expect(FETCHES.length).toBe(fetchesAtEntry)
+      expect(DISCOVERIES.length).toBeGreaterThan(0)
     }
     if (absentAtInit) host.state.flipPhase()
 

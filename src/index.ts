@@ -88,6 +88,7 @@ import {
   classifyJevFailure,
   clampThreshold,
   contextRows,
+  DECISION_CATALOG_URL,
   deploymentFingerprint,
   inlineScreenFailure,
   lookupPermission,
@@ -112,6 +113,7 @@ import {
   parseCandidates,
   parseGates,
   parseIdleAuto,
+  parseDecisionIndex,
   parseProviderOption,
   parseRouteSources,
   parseScreenAnnotation,
@@ -143,7 +145,7 @@ import {
   unwrapEnvelope,
   userRowCount,
 } from "./logic"
-import { type Candidate, type CredentialChain, type DeploymentFault, type ProviderOption } from "./logic"
+import { type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type ProviderOption } from "./logic"
 import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
 import { makeJevRpc, type JevModelsInfo, type JevSetResult } from "./rpc"
 import { execFile } from "node:child_process"
@@ -625,10 +627,64 @@ function providerBaseURL(ctx: any, id: string): Promise<string | undefined> {
   return resolveProviderBaseURL(ctx, id)
 }
 
+// Decision-model discovery (models.dev catalog slice at type=decision):
+// fetched once per process at init. Consumers: the endpoint resolution below
+// (per-provider System One route) and the /jev-models picker candidates
+// (the deployment provider's catalog slice). A storage snapshot answers per
+// process when models.dev is unreachable; an empty index (no fetch and no
+// snapshot) leaves resolution on the baked last resorts and the picker on
+// its minimal fallback - and every resolution that ships is still
+// ping-verified before any judged call rides it.
+let DECISION_INDEX: Record<string, DecisionProviderEntry> = {}
+let DECISION_SOURCE: "live" | "snapshot" | "none" | undefined = undefined
+const DECISION_SNAPSHOT_KEY = "jev-decision-catalog"
+
+async function fetchDecisionIndex(ctx: any): Promise<void> {
+  try {
+    const response = await fetch(DECISION_CATALOG_URL, { signal: AbortSignal.timeout(10_000) })
+    if (!response.ok) throw new Error(`models.dev answered ${response.status}`)
+    const index = parseDecisionIndex(await response.json())
+    if (Object.keys(index).length === 0) throw new Error("empty or unrecognized catalog body")
+    DECISION_INDEX = index
+    DECISION_SOURCE = "live"
+    try {
+      await (ctx as any).storage?.set?.(DECISION_SNAPSHOT_KEY, {
+        at: new Date().toISOString(),
+        providers: index,
+      })
+    } catch {}
+    console.log(`[jev] discovery: decision catalog live (${Object.keys(index).length} providers)`)
+  } catch (err) {
+    const live = String((err as Error)?.message ?? err)
+    try {
+      const snapshot = await (ctx as any).storage?.get?.(DECISION_SNAPSHOT_KEY)
+      const index = parseDecisionIndex(snapshot)
+      if (Object.keys(index).length > 0) {
+        DECISION_INDEX = index
+        DECISION_SOURCE = "snapshot"
+        const at = typeof (snapshot as any)?.at === "string" ? (snapshot as any).at : "unknown time"
+        console.log(
+          `[jev] discovery: decision catalog live fetch failed (${live}); serving the storage snapshot from ${at} (${Object.keys(index).length} providers)`,
+        )
+        return
+      }
+    } catch {}
+    DECISION_SOURCE = "none"
+    console.log(
+      `[jev] discovery: decision catalog unavailable (${live}) - no snapshot; baked last resorts and the picker fallback apply`,
+    )
+  }
+}
+
 /** Resolves the selected provider option to endpoint + credential chain.
  * Order: JEV_ENDPOINT env (endpoint override, registry not consulted) >
- * Console profiles (baked OpenCode product route) > custom URL (as given) >
- * host-registered id (registry). An unresolved host id leaves the endpoint
+ * custom URL (as given) > host-registered id (OpenCode provider registry,
+ * then the models.dev decision catalog's System One api for registry gaps) >
+ * Console profiles (decision catalog, then the baked OpenCode product route
+ * as the documented last resort). The decision catalog is fetched once per
+ * process, after the JEV_ENDPOINT and URL branches (those pin the endpoint
+ * and need no catalog); a snapshot in plugin storage answers
+ * when models.dev is unreachable. An unresolved host id leaves the endpoint
  * undefined so the deployment check fails closed with the remedy. */
 async function resolveDeploymentEndpoint(ctx: any): Promise<void> {
   RESOLVED_CHAIN = credentialChain(OPTIONS_PROVIDER)
@@ -636,26 +692,60 @@ async function resolveDeploymentEndpoint(ctx: any): Promise<void> {
     RESOLVED_ENDPOINT = process.env.JEV_ENDPOINT
     return
   }
-  if (!OPTIONS_PROVIDER || OPTIONS_PROVIDER.kind === "console") {
-    RESOLVED_ENDPOINT = CONSOLE_SYSTEMONE
-    return
-  }
-  if (OPTIONS_PROVIDER.kind === "custom") {
+  if (OPTIONS_PROVIDER?.kind === "custom") {
     RESOLVED_ENDPOINT = OPTIONS_PROVIDER.endpoint
     return
   }
-  const baseURL = await providerBaseURL(ctx, OPTIONS_PROVIDER.id)
-  if (baseURL) {
-    RESOLVED_ENDPOINT = systemoneRoute(baseURL)
+  await fetchDecisionIndex(ctx)
+  if (OPTIONS_PROVIDER?.kind === "host") {
+    const baseURL = await providerBaseURL(ctx, OPTIONS_PROVIDER.id)
+    if (baseURL) {
+      RESOLVED_ENDPOINT = systemoneRoute(baseURL)
+      console.log(
+        `[jev] provider: ${OPTIONS_PROVIDER.id} resolved from the provider registry - ${RESOLVED_ENDPOINT}`,
+      )
+      return
+    }
+    const catalogEndpoint = decisionEndpointFor(OPTIONS_PROVIDER.id)
+    if (catalogEndpoint) {
+      RESOLVED_ENDPOINT = catalogEndpoint
+      console.log(
+        `[jev] provider: ${OPTIONS_PROVIDER.id} resolved from the models.dev decision catalog - ${RESOLVED_ENDPOINT}`,
+      )
+      return
+    }
+    RESOLVED_ENDPOINT = undefined
     console.log(
-      `[jev] provider: ${OPTIONS_PROVIDER.id} resolved from the provider registry - ${RESOLVED_ENDPOINT}`,
+      `[jev] provider: cannot resolve an endpoint for ${JSON.stringify(OPTIONS_PROVIDER.id)} - judged calls fail closed and re-check after boot until it resolves or JEV_ENDPOINT is set`,
     )
     return
   }
-  RESOLVED_ENDPOINT = undefined
+  // Console profiles ("opencode"/"opencode-go", and the no-option default):
+  // the catalog is the registry of record for deployments, and its
+  // model-level System One api is the live source here (the Console chat
+  // baseURL does not serve System One itself, verified live, so the host
+  // registry has nothing to read for them); the baked product route is the
+  // last resort when discovery answered nothing.
+  const consoleId = OPTIONS_PROVIDER?.kind === "console" ? OPTIONS_PROVIDER.id : "opencode"
+  const catalogEndpoint = decisionEndpointFor(consoleId)
+  if (catalogEndpoint) {
+    RESOLVED_ENDPOINT = catalogEndpoint
+    console.log(
+      `[jev] provider: ${consoleId} resolved from the models.dev decision catalog - ${RESOLVED_ENDPOINT}`,
+    )
+    return
+  }
+  RESOLVED_ENDPOINT = CONSOLE_SYSTEMONE
   console.log(
-    `[jev] provider: cannot resolve an endpoint for ${JSON.stringify(OPTIONS_PROVIDER.id)} - judged calls fail closed and re-check after boot until it resolves or JEV_ENDPOINT is set`,
+    `[jev] provider: the decision catalog answered nothing for ${consoleId} - keeping the baked Console System One route (last resort)`,
   )
+}
+
+/** The System One endpoint a provider's decision-catalog entry names, or
+ * undefined when discovery answered nothing for that id. */
+function decisionEndpointFor(providerId: string): string | undefined {
+  const api = DECISION_INDEX[providerId]?.api
+  return api ? systemoneRoute(api) : undefined
 }
 
 async function pingDeploy(cred: Credential | undefined, model: string, signal: AbortSignal): Promise<void> {
@@ -1219,8 +1309,13 @@ export default Plugin.define({
       LATE_RESOLVE_INFLIGHT = (async () => {
         try {
           const baseURL = await resolveProviderBaseURL(ctx, OPTIONS_PROVIDER.id)
-          if (!baseURL) return false
-          RESOLVED_ENDPOINT = systemoneRoute(baseURL)
+          // Registry first; the decision catalog fills registry gaps even on
+          // the late path (the init fetch already filled the in-memory index).
+          const endpoint = baseURL
+            ? systemoneRoute(baseURL)
+            : decisionEndpointFor(OPTIONS_PROVIDER.id)
+          if (!endpoint) return false
+          RESOLVED_ENDPOINT = endpoint
           console.log(
             `[jev] provider: ${OPTIONS_PROVIDER.id} resolved after boot - ${RESOLVED_ENDPOINT}`,
           )
@@ -1311,12 +1406,28 @@ export default Plugin.define({
     // -- picker: /jev-models support (TUI half drives; the server verifies) --
     //
     // The picker command lives in the TUI half (src/tui.ts); this side owns
-    // the truth: candidate list (plugin option "models", default the known
-    // Console models), the storage pin, and the verified verdict per
-    // (endpoint, model). Only a model that passed the same ping as the init
-    // check sticks, so a typo dies in the dialog, not on the next judged
-    // call. Precedence: a session pin wins over the options' "model".
-    const PICK_MODELS = normalizePickerModels(o.models)
+    // the truth: candidate list (the decision catalog's slice for the
+    // deployment provider at init, a "models" option replacing it outright,
+    // minimal offline default when discovery answered nothing), the storage
+    // pin, and the verified verdict per (endpoint, model). Only a model that
+    // passed the same ping as the init check sticks, so a typo dies in the
+    // dialog, not on the next judged call. Precedence: a session pin wins
+    // over the options' "model".
+    // The catalog identity of the deployment: Console profiles key on their
+    // id (the catalog has no "opencode-go" record - its fallback is the
+    // minimal default), host ids key on their own id, custom URLs have no
+    // catalog identity at all (option or fallback only).
+    const catalogId = OPTIONS_PROVIDER
+      ? OPTIONS_PROVIDER.kind === "console"
+        ? OPTIONS_PROVIDER.id
+        : OPTIONS_PROVIDER.kind === "host"
+          ? OPTIONS_PROVIDER.id
+          : undefined
+      : "opencode"
+    const PICK_MODELS = normalizePickerModels(
+      o.models,
+      catalogId ? DECISION_INDEX[catalogId]?.models : undefined,
+    )
 
     const setModelPin = async (sessionID: string, modelID: string): Promise<JevSetResult> => {
       const sid = typeof sessionID === "string" ? sessionID.trim() : ""
@@ -3515,7 +3626,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} picker(${PICK_MODELS.length}) (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${modelAuto ? (modelCandidates.length > 0 || routeSourcesTag ? `on(${modelCandidates.length}${routeSourcesTag ? "+" + routeSourcesTag : ""})` : "on(no candidates)") : "off"}${autoFallback ? "+fallback" : ""} done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} picker(${PICK_MODELS.length}${DECISION_SOURCE ? ":" + DECISION_SOURCE : ""}) (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the

@@ -1396,11 +1396,13 @@ export interface JevUserError {
 /**
  * Maps the failure classes a user can act on (Configure Screen One) onto
  * actionable one-liner titles: missing credential (no login), 401
- * key/session rejection, 402 funds, 403 endpoint gate (free tier only inside
- * OpenCode), 422 malformed request from the endpoint. Unmatched messages
- * return undefined - the caller falls back to the sanitized raw text, since
- * every failed jev call surfaces (the caller-side gate is gone; this only
- * polishes known classes).
+ * key/session rejection - with expired-API-key diagnostics getting their own
+ * replace-the-key remedy (`opencode auth login` cannot renew an API key) -,
+ * 402 funds, 403 endpoint gate (free tier only inside OpenCode), 422
+ * malformed request from the endpoint. Unmatched messages return undefined
+ * - the caller falls back to the sanitized raw text, since every failed jev
+ * call surfaces (the caller-side gate is gone; this only polishes known
+ * classes).
  */
 export function jevUserError(message: unknown): JevUserError | undefined {
   const text = typeof message === "string" ? message : String(message ?? "")
@@ -1412,6 +1414,12 @@ export function jevUserError(message: unknown): JevUserError | undefined {
   }
   if (/no credential/i.test(text)) {
     return { title: "jev: no credential - run `opencode auth login` to sign in to the Console" }
+  }
+  if (/jev: 401\b/.test(text) && /api key has expired|key has expired|will not renew/i.test(text)) {
+    return {
+      title:
+        "jev: the Console API key expired (401) - create a new one in the OpenCode Console and replace it in your store (`opencode auth login` will not renew API keys)",
+    }
   }
   if (/jev: 401\b/i.test(text)) {
     return { title: "jev: credential rejected (401) - expired session? run `opencode auth login` again" }
@@ -1488,23 +1496,31 @@ export function footerAutoMarker(
 // ---------------------------------------------------------------------------
 // /jev-models: per-session System One judgment-model picks
 //
-// The picker's candidate list is static (no System One deployment exposes a
-// listing route) and validated against the deployment with the same ping the
+// The picker's candidate list is discovered from the models.dev decision
+// catalog (no System One deployment exposes a listing route; the catalog's
+// type=decision slice does - see the discovery section below). Every
+// candidate is still validated against the deployment with the same ping the
 // init check uses; the pick itself is a per-session record in plugin storage
 // consulted ahead of the configured chain. Pure logic here; index.ts owns
-// storage, pings and the RPC surface, src/tui.ts the command and dialog.
+// storage, fetching, pings and the RPC surface, src/tui.ts the command and
+// dialog.
 // ---------------------------------------------------------------------------
 
-// Known System One models at the OpenCode Console deployment: jev-1.13 bills
-// Console credits, "-free" is the default no-cost tier.
+// Last-resort picker candidates for boots where neither the decision catalog
+// nor its storage snapshot answers: the long-established OpenCode Console
+// models. jev-1.13 bills Console credits, "-free" is the default no-cost tier.
 export const PICKER_DEFAULT_MODELS = ["jev-1.13-free", "jev-1.13"]
 
 /** Candidate ids for the /jev-models picker: a "models" plugin option replaces
- * the known list with operator-chosen ids (custom deployments); strings are
- * trimmed and deduped in order, and an invalid or empty option keeps the
- * known defaults. */
-export function normalizePickerModels(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [...PICKER_DEFAULT_MODELS]
+ * the discovery list with operator-chosen ids (custom deployments); strings
+ * are trimmed and deduped in order, and an invalid or empty option keeps the
+ * fallback list (the deployment provider's decision-catalog slice, or the
+ * minimal offline default when discovery answered nothing). */
+export function normalizePickerModels(
+  raw: unknown,
+  fallback: readonly string[] = PICKER_DEFAULT_MODELS,
+): string[] {
+  if (!Array.isArray(raw)) return [...fallback]
   const out: string[] = []
   for (const entry of raw) {
     if (typeof entry !== "string") continue
@@ -1512,7 +1528,7 @@ export function normalizePickerModels(raw: unknown): string[] {
     if (!id) continue
     if (!out.includes(id)) out.push(id)
   }
-  return out.length > 0 ? out : [...PICKER_DEFAULT_MODELS]
+  return out.length > 0 ? out : [...fallback]
 }
 
 /** Precedence for one judged call: a session pin (a /jev-models pick) wins
@@ -1577,6 +1593,61 @@ export function settleUnverifiedJevSession(draft: JevLabelDraft, sessionID: stri
   if (draft.sessions === undefined || draft.sessions[sessionID] === undefined) {
     draft.sessions = { ...(draft.sessions ?? {}), [sessionID]: "" }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Decision-model discovery: the models.dev catalog slice at type=decision
+//
+// System One deployments expose no listing route, but the models.dev provider
+// catalog answers one for them: catalog.json filtered server-side to
+// type=decision lists every provider serving decision models, each provider
+// record carrying the model ids it serves and each model record naming the
+// deployment's System One api base (nested at provider.api - the
+// provider-level api field is the provider's chat base, verified live not to
+// serve the System One route itself, so the nested field is the only one
+// read). That one endpoint powers both endpoint resolution and picker
+// candidates. Failure semantics are honest: an unknown type filter answers
+// 400, so a passive contract change can never be mistaken for an empty
+// catalog, and records without the explicit type:"decision" marker drop, so
+// a slice that ever mixes stays decision-only. Pure parsing here; index.ts
+// owns the fetch, the storage snapshot and the resolution order.
+// ---------------------------------------------------------------------------
+
+export const DECISION_CATALOG_URL = "https://models.dev/catalog.json?type=decision"
+
+/** The deployment-relevant view of one provider catalog record: the decision
+ * model ids it serves (record order preserved) and the System One api base
+ * those models name (the first decision model's nested provider.api). */
+export interface DecisionProviderEntry {
+  models: string[]
+  api?: string
+}
+
+/** Flattens a models.dev decision-catalog body ({"providers": {...}}, or a
+ * provider-keyed root, or a storage snapshot {"at", "providers"}) into
+ * per-provider entries. Unknown shapes yield {} - never a guess. */
+export function parseDecisionIndex(json: unknown): Record<string, DecisionProviderEntry> {
+  const providers = (json as any)?.providers ?? json
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return {}
+  const out: Record<string, DecisionProviderEntry> = {}
+  for (const [providerId, rawProvider] of Object.entries(providers as Record<string, unknown>)) {
+    if (!rawProvider || typeof rawProvider !== "object") continue
+    const models = (rawProvider as any).models
+    if (!models || typeof models !== "object" || Array.isArray(models)) continue
+    const ids: string[] = []
+    let api: string | undefined = undefined
+    for (const [modelId, rawModel] of Object.entries(models as Record<string, unknown>)) {
+      if (!rawModel || typeof rawModel !== "object") continue
+      if ((rawModel as any).type !== "decision") continue
+      ids.push(modelId)
+      if (api === undefined && typeof (rawModel as any).provider?.api === "string") {
+        const url = ((rawModel as any).provider.api as string).trim()
+        if (url !== "") api = url
+      }
+    }
+    if (ids.length > 0) out[providerId] = { models: ids, api }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -1795,7 +1866,7 @@ export function deployFaultText(
     case "credential":
       return {
         kind,
-        message: `credential rejected for ${host} - expired or wrong-deployment key (key and endpoint must pair)`,
+        message: `credential rejected for ${host} - the key is expired or wrong for this deployment (keys pair with their deployment; expired keys need a new one from the provider's console)`,
         surface: `jev: 401 - ${detail || "credential rejected (wrong deployment: key and endpoint must pair)"}`,
       }
     case "funds":

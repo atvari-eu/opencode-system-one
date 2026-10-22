@@ -513,23 +513,28 @@ moved baseURL) must propagate without touching the plugin again - the
 plugin's job is judgment, not a second config of record.
 
 The design now derives everything from live sources, in resolution order:
-`JEV_ENDPOINT` env (explicit override; skips the registry entirely), the
-Console profiles (`opencode`/`opencode-go`, which keep the OpenCode System
-One *product* route - verified live that the Console chat baseURL does not
-also serve `/systemone`, so there is nothing in the registry to read for
-them), custom metric-less http(s) URLs (operator-typed endpoint; plain
-http only for loopback hosts, so a key cannot travel unencrypted over the
-open network by accident), and - the default workhorse - any other id,
-resolved through the OpenCode provider registry read routes
-(`provider.get`/`provider.list` on the plugin's client context,
-feature-detected) onto `settings.baseURL`, then joined with the System One
-route suffix (`/systemone`, appended unless the base already ends in it).
+`JEV_ENDPOINT` env (explicit override; skips the registry entirely), custom
+metric-less http(s) URLs (operator-typed endpoint; plain http only for
+loopback hosts, so a key cannot travel unencrypted over the open network by
+accident), host-registered ids resolved through the OpenCode provider
+registry read routes (`provider.get`/`provider.list` on the plugin's client
+context, feature-detected) onto `settings.baseURL`, then joined with the
+System One route suffix (`/systemone`, appended unless the base already
+ends in it) - with the models.dev decision catalog (below) filling registry
+gaps - and the Console profiles (`opencode`/`opencode-go`), resolved from
+the decision catalog's per-model System One base (the Console chat baseURL
+is verified live not to serve System One, so the host registry has nothing
+to read for them; the baked product route stays as the last resort for the
+rare boot where the catalog and its snapshot are both unavailable).
 The suffix is a documented convention of the System One interface, backed
 by two verified server-side sources (a direct provider host and a
 Console-managed connection proxy both expose `baseURL + /systemone`); a
 deployment that does not follow it is not guessed around - the init ping
 reports its own diagnostic and the plugin fails closed with the fault
-instead.
+instead. The catalog-derived base composes with the same route suffix, and
+its result is ping-verified exactly like a registry-resolved one - the
+catalog names where System One answers, but only a live ping proves the
+deployment still serves the configured model.
 
 Both registry reads carry their own defenses, learned the hard way:
 `provider.get` takes `{ providerID }` on 2.0.x hosts but earlier builds took
@@ -559,6 +564,47 @@ integration, not just the Console's; explicit URLs carry no id, so only
 the deployment-agnostic env key applies, and a Console key can never
 silently pair with a foreign endpoint. When `JEV_ENDPOINT` is set the CLI
 store is skipped for every chain (existing pairing rule).
+
+## Decision-model discovery: the models.dev catalog slice, not static lists
+
+The picker opened with a two-id constant (the long-established Console
+models). System One deployments expose no listing route, but models.dev
+turns out to serve exactly that listing for them: the provider catalog
+filters server-side at `catalog.json?type=decision` - ~45 KB listing every
+provider that serves decision models, each model record naming the System
+One api base it is served at (`provider.api`), and unknown type filters
+answer 400 instead of silently serving the unfiltered catalog, so a passive
+contract change cannot be mistaken for an empty catalog. The canonical
+`models.json?type=decision` (5 KB) was probed as the lighter alternative
+and deliberately not taken: only the provider-keyed slice links model ids
+to deployments, and one 45 KB fetch also named the ENDPOINT - the same
+document every endpoint previously needed a baked constant for.
+
+The piece that demoted the constant is the shape trick: the System One
+base nests per model record (`provider.api`), while the provider-level
+`api` field is the provider's *chat* base - verified live
+(opencode: `…/inference/openai/v1` vs `…/inference/systemone/v1`), the
+exact reason the Console chat baseURL can never serve System One. Reading
+only the nested field makes the record a machine-readable version of the
+old comment "the chat baseURL does not serve System One"; composing it
+with the documented `/systemone` suffix yields precisely the formerly
+baked Console endpoint (pinned by test), so `CONSOLE_SYSTEMONE` demotes to
+the documented last resort - a passive fallback now, not a source of
+truth. The registry-first order stays intact: host ids read the OpenCode
+provider registry before the catalog is consulted at all, and the late
+boot-resolution retry keeps that order.
+
+Fetch discipline: once per process at init with a 10s timeout, mirrored
+into plugin storage; a failed fetch serves the storage snapshot (any age,
+because every candidate and endpoint is ping-verified before a judged call
+rides it - a stale catalog can only ever produce a verified-failed pick,
+never a silently wrong one), and zero sources leave the picker on its
+minimal offline default while console endpoints fall to the baked route.
+Ingest is guarded on two axes: records must carry the explicit
+`type:"decision"` marker (a slice that ever mixes cannot leak a chat model
+into the picker), and the parser only reads the wrapped provider/model
+shapes a 200-and-JSON response can produce - anything else parses to an
+empty index and the fallback chain applies.
 
 ## Init deployment check: ping the model, fail closed, two toast layers
 

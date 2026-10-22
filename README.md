@@ -113,7 +113,9 @@ rendered by the bundled TUI half (`./tui` export) as a top-corner error
 popup exactly like OpenCode's own failures. No dedupe - one failing call,
 one toast: a dead credential or stalled endpoint stays visible on every
 call it breaks instead of announcing itself once per session. Actionable
-classes (no credential, 401 key rejection, 402 insufficient funds, 403
+classes (no credential, 401 key rejection - with expired-API-key diagnostics
+getting their own remedy: create a new key at the provider's console, since
+`opencode auth login` cannot renew an API key - 402 insufficient funds, 403
 endpoint gate, wrong model at the deployment, free-tier restriction - "only
 from within OpenCode") keep their stable remedy title; anything else
 (timeouts, 5xx, refused connections, opaque diagnostics) toasts the failure
@@ -844,21 +846,26 @@ against. Three forms, all resolved once at plugin start:
 - **`"opencode"`** (default) - the OpenCode Console pay-as-you-go System One
   deployment. Models: `jev-1.13` (bills Console credits) and `jev-1.13-free`
   (zero-cost, restricted by the Console to OpenCode clients). The endpoint
-  is OpenCode's System One product route; the Console chat baseURL does not
-  serve System One itself.
-- **`"opencode-go"`** - the OpenCode Go subscription deployment;endpoint
-  unchanged, credential chain switches to `OPENCODE_GO_API_KEY` env and the
-  legacy store's `."opencode-go".key` entry.
+  is read from the models.dev decision catalog (below), which names the
+  System One base per model record; a baked fallback of the same product
+  route covers the rare boot where the catalog and its snapshot are both
+  unreachable. The Console chat baseURL does not serve System One itself.
+- **`"opencode-go"`** - the OpenCode Go subscription deployment; the catalog
+  lists no Go profile, so the same baked route applies last-resort.
+  Credential chain switches to `OPENCODE_GO_API_KEY` env and the legacy
+  store's `."opencode-go".key` entry.
 - **Any other id** - a provider registered in your OpenCode config,
   including local `providers.<id>` blocks in `opencode.json(c)`. At
   startup the plugin reads the OpenCode provider registry and derives the
   deployment endpoint from the provider's configured `settings.baseURL`,
   joined with the System One route: `<baseURL>/systemone`, appended unless
-  the base already ends in `/systemone`. Change the provider config and the
-  next plugin start follows it - no plugin option to keep in sync. On some
-  2.0.x hosts locally configured providers register shortly after plugin
-  setup; if the id is missing then, judged calls re-check shortly after
-  boot before failing closed. Credential chain:
+  the base already ends in `/systemone`. When the registry answers nothing
+  for the id, the models.dev decision catalog fills the gap the same way
+  (the provider-recorded System One base + route). Change the provider
+  config and the next plugin start follows it - no plugin option to keep
+  in sync. On some 2.0.x hosts locally configured providers register
+  shortly after plugin setup; if the id is missing then, judged calls
+  re-check shortly after boot before failing closed. Credential chain:
   `TYPESAFE_API_KEY` env → the CLI credential store entry for that
   integration (`opencode auth login` picks the key the registry resolves
   with) → a legacy `auth.json` entry of the same id.
@@ -895,6 +902,24 @@ so judged calls run on the same deployment:
   endpoint directly; keys pair via `TYPESAFE_API_KEY` env only.
 - `JEV_ENDPOINT` env still overrides everything endpoint-related (and then
   skips the registry entirely).
+
+**Decision discovery** backs both the endpoint above and the `/jev-models`
+picker. The models.dev provider catalog filters server-side with
+`catalog.json?type=decision`: every provider serving decision/System One
+models, each model record carrying the System One api base it is served at
+(nested per model - the provider-level `api` field is the provider's chat
+base and is never read). The slice is fetched once per plugin start (~45
+KB), mirrored into plugin storage, and a network failure at startup serves
+that snapshot instead; when even the snapshot is missing, the picker keeps
+a minimal offline default (the Console models above) and endpoints fall to
+the baked routes. Picker candidates for the resolved deployment are the
+provider's catalog slice, in record order; a `"models"` plugin option
+replaces them outright (custom deployments), and every pick is still
+ping-verified before it sticks. An unknown type filter answers 400 rather
+than silently serving the unfiltered catalog, and the parser only accepts
+records explicitly marked `type: "decision"` - a passive contract change
+can never leak a chat model into the picker or misread the catalog as
+simply empty.
 
 Anything else is a fault: unregistered provider, unreachable endpoint or an
 unverifiable model fail all judged features closed with the deployment's own
