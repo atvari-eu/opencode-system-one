@@ -255,23 +255,83 @@ asked, so it carries extra invariants beyond fail-open:
   came out of it: one probe per session in flight (concurrent copies all
   read the marker as absent and each would post), and setup returns a
   cleanup that hands back the idle subscriptions (a reload must not stack
-  old probes beside fresh ones).
+  old probes beside fresh ones). Later ceilings bound the remaining cost:
+  `awaitingUserInput` stands down when the turn ended by asking the human
+  a question (a stop for input, not a silent stop), and `DONE_NUDGE_CAP`
+  caps total nudges per session (see "Context hygiene").
 
 ## Screen-all: scoping lifted from webfetch-only
 
 Screening generalized from a webfetch-only hook to any tool result
-(`"screen": { "tools": "all" }`), with three deliberate asymmetries:
+(`"screen": { "tools": "all" }`), with deliberate asymmetries:
 
-- **Fail-closed redaction stays webfetch-scoped** (`screenRedacts`):
-  withholding a *fetched web page* wholesale is low-cost (re-read it if
-  wrong), but withholding a local tool's output (a build log, a grep hit)
-  can delete exactly the signal the agent needed. Other tools are
-  annotated only.
+- **Fail-closed redaction covers every screened tool** (`screenWithholds`):
+  `mode: "redact"` withholds an unsafe result wholesale for webfetch *and*
+  local tools. This was originally webfetch-scoped (withholding a build log
+  can delete the signal the agent needed), then widened deliberately: a local
+  tool result can carry injected instructions just as a fetched page can, and
+  an operator asking for fail-closed screening should get it everywhere. The
+  result is replaced by a note naming the verdict and the override;
+  `mode: "annotate"` keeps the content and labels it instead.
 - **Self-skip set**: `{ jev_decide, jev_judge_many, jev_find }` - their
   outputs are verdicts about already-judged content; screening them would
   recurse and double-cost every judgment.
 - **Generalized cache key**: `{ tool, url, sampled content hash }` instead
   of url-only, so two tools hitting the same URL are distinct entries.
+
+## Context hygiene: transcript writes track anomalies, not calls
+
+Screening every tool used to make the transcript grow with the *number of
+tool calls*: the default `annotation: "notice"` posted a `[jev-screen] …`
+synthetic row for every result, including passes. That is the wrong scaling
+law - a passing screen carries no information the model can act on, and the
+rows sit in the transcript until the next compaction.
+
+The rule now is: **synthetic rows are for things the model must act on;
+UI-only signals go over the plugin's RPC event channel** (`jev-config`'s
+`screen` event, declared in `src/rpc.ts`). The TUI half subscribes, keeps the
+last 50 verdicts in durable storage, and toasts anomalies and failures. The
+transcript sees:
+
+- a passing verdict: **nothing** (no row, no prefix) in every annotation mode;
+- a flagged/unsafe verdict: one row (`notice`) or one inline prefix
+  (`inline`) - anomalies only;
+- withheld content: the inline fail-closed note plus one row;
+- a failed screen: an RPC error event (the inline note stays for fetched web
+  content; hosts without an event surface keep the surfaced row);
+- a failed judged call: the RPC `error` event, event-first, with the
+  `[jev-error]` row as the fallback for hosts without event support;
+- an init config fault: buffered past the RPC registration, delivered over
+  the `config` event (the `[jev-config-error]` row is the fallback);
+- scrub hits: a counts-only `scrub` event (prompt vs tool + hit count; never
+  the matched text) - previously console-log-only;
+- approval resolutions: an `approval` event carrying action, outcome, and a
+  short resource; the TUI toasts deny/gate/fail and stays silent for the
+  delegated allow/ask path;
+- explicit commands, approval hints, and capped done-check nudges, all
+  bounded by design.
+
+Hosts without `registration.events.emit` degrade to the old row for
+anomalies/failures only; passes are never re-materialized as rows. The TUI
+subscription is authoritative when established, so rows and events never
+double-record the same verdict.
+
+The auto done-check gets the same treatment in miniature: it is the one
+feature whose *purpose* is to write a waking row, so it cannot be free.
+Instead it is hard-bounded - `awaitingUserInput` stands down when the newest
+assistant message ends with a question (the observed false positive: a turn
+that asked the user to choose), and `DONE_NUDGE_CAP` (3) limits total nudges
+per session, with the counter persisted alongside the stand-down marker.
+Worst case is now a constant number of extra exchanges per session,
+independent of model chattiness or threshold drift. Its judged tail also
+mirrors the host's `toLLMMessage` drops (`NON_CONVERSATION_KINDS`:
+`model-switched`, `agent-switched`, `idle`) - those are timeline rows, not
+conversation, and a run of them must not consume the 24-message window or
+serialize their JSON into the state. (`toLLMMessage` itself is internal to
+the host bundle and not callable from a plugin; the drop set is the
+reproduction, not a call.) A variant-only `model-switched` row becomes an
+`effort` control part in the host's LLM stream, which carries no text, so
+dropping it from a text tail is faithful.
 
 ## Score criteria: the deployment shapes score questions
 
@@ -740,4 +800,7 @@ truncates the tool's own output - the failure is its own surfaced row, and
 the tool result stays intact; the inline fail-closed annotation remains
 for fetched web content only (`inlineScreenFailure` in logic.ts), where a
 failed screen means possibly-injected content is about to enter context.
+That surfaced row then moved to the `screen` RPC event (see "Context
+hygiene"): the diagnostic toasts in the TUI without a transcript row, and
+only hosts without an event surface still write the row.
 

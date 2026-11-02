@@ -17,13 +17,15 @@ compaction can be decided by System One instead of a lossy summary
 - **screen** - tool results are judged (junk? prompt injection?) before they
   enter context: `webfetch` by default, every tool with
   `"screen": { "tools": "all" }`. An unsafe verdict **replaces** the
-  content fail-closed (default `mode: "redact"`) — fetched web pages note
-  why they were withheld and how to override; local tool output is never
-  withheld, only annotated. Set `"mode": "annotate"` to keep all content.
-  The verdict lands in a separate `[jev-screen]` timeline row by default
-  (`"annotation": "notice"` — result text stays clean; the model learns of
-  a verdict late). Set `"annotation": "inline"` to prefix the result
-  instead, so the model sees the verdict where it reads the content (plus
+  content fail-closed (default `mode: "redact"`) for **every screened tool** -
+  the result becomes a note naming why it was withheld and how to override.
+  Set `"mode": "annotate"` to keep all content. Passing verdicts never write
+  to the transcript (no row, no prefix) in either annotation mode: the
+  verdict is UI-only, shown in the TUI verdict panel (`/jev-screen-history`),
+  so screening every tool costs no context on clean content. The annotation
+  knob therefore only decides where *anomalies* land: `"annotation":
+  "notice"` (default) posts a standalone `[jev-screen]` row, `"inline"`
+  prefixes the result so the model sees the verdict where it reads it (plus
   `⚠ do-not-rely` over threshold). Screened state is regex-scrubbed and
   sampled to 12 kB; both paths share the judgment cache (same content
   costs nothing on repeat). The plugin's own judgment tools are never
@@ -37,7 +39,10 @@ compaction can be decided by System One instead of a lossy summary
   known secret formats in **tool inputs** and **user prompts**: PEM private
   keys, `sk-…` API keys, GitHub tokens (`ghp_`/`github_pat_`), AWS `AKIA…`,
   Slack `xox…`, GitLab `glpat-…`, age keys, `npm_…`, bearer tokens, JWTs.
-  Replaced with `[REDACTED:<label>]`.
+  Replaced with `[REDACTED:<label>]`. The hit count and location (prompt or
+  tool name) are announced over the RPC `scrub` event and toasted in the
+  TUI - the matched text never rides the event and nothing is added to the
+  transcript.
 - **tools** - `jev_decide`: one request = one state + typed questions
   (noul/choice/score — score questions carry their ordered levels as
   `criteria`, a 2-10 item array); `jev_judge_many`: one judgment per item, launched in
@@ -66,9 +71,10 @@ compaction can be decided by System One instead of a lossy summary
   the base model on judge failure, and a manual pick always wins. See
   [Auto model routing](#auto-model-routing).
 - **done-check** (opt-in) - after each turn goes idle, the completion probe
-  of `/jev-done-check` runs on its own; it posts one notice per user
-  message only when completion looks unlikely, and reports a repeating
-  (looping) tail as such. See [Auto done-check](#auto-done-check).
+  of `/jev-done-check` runs on its own; it posts at most one notice per user
+  message and at most three per session, stands down when the turn ended by
+  asking you a question, and reports a repeating (looping) tail as such. See
+  [Auto done-check](#auto-done-check).
 - **find** (opt-in) - `jev_find`, a jev-backed semantic code-search cascade:
   lexical prefilter → path judgments → windowed passage judgments, ranked
   hits with line ranges. See [jev_find](#jev_find).
@@ -120,14 +126,18 @@ else (timeouts, 5xx, refused connections, opaque diagnostics) toasts the
 failure text itself, flattened to one line and length-capped. The same
 title for the same session repeats at most once per 60 s cooldown
 window: a surfaced row wakes a turn, and an idle-triggered probe failing
-on a dead credential must never toast fast enough to re-trigger itself
-(the outage stays visible - one row per window - without the wake loop).
-Routing and effort
+on a dead credential must never toast fast enough to re-trigger itself.
+Failures are **event-first**: the TUI toasts them over the plugin's RPC
+`error` event without a transcript row; hosts without an event surface
+keep the `[jev-error]` row. The init config fault is buffered through setup
+and delivered the same way over the `config` event (once per config change;
+the `[jev-config-error]` row is the fallback). Routing and effort
 judge failures surface the same way instead of staying console-only.
-Screening failures on local tools surface in this channel too instead of
-inlining into the tool output; fetched web content keeps the fail-closed
-inline annotation. The cooldown only throttles an identical repeat of the
-same title - distinct failures still surface per call.
+Screening failures on local tools ride the TUI event channel too instead of
+inlining into the tool output (hosts without the event surface keep the
+surfaced row); fetched web content keeps the fail-closed inline annotation.
+The cooldown only throttles an identical repeat of the same title - distinct
+failures still surface per call.
 
 ## Install
 
@@ -208,7 +218,7 @@ meanings never share one ambiguous key:
     {
       "package": "github:atvari-eu/opencode-system-one",
       "options": {
-        "screen": { "enabled": true, "annotation": "notice", "tools": "all" },
+        "screen": { "enabled": true, "annotation": "notice", "tools": "all" }, // passes cost no context; redact withholds unsafe results for every tool
         "model": "jev-1.13", // optional; overrides JEV_MODEL and the default
         "scrub": { "enabled": true },
         "tools": true,       // jev_decide + jev_judge_many
@@ -416,6 +426,14 @@ notices you unprompted - rules that keep it polite:
   changes the tail hash, so the hash gate alone cannot stop a nudge loop.
   After a notice is posted, the checker stands down until a new user
   message arrives.
+- At most three notices per session: every notice wakes a turn, so the
+  probe has a hard ceiling independent of the transcript and the
+  threshold. The counter persists with the stand-down marker, so a
+  restart does not reset it.
+- Never after a question: when the newest assistant message ends by asking
+  you something, the turn stopped for an answer, not silently - the probe
+  stands down without posting. Own notices are ignored, so a notice can
+  never hide the question.
 - A notice never wakes a dead turn: when the session rests on the `Auto`
   entry and no real model is known to move it to, the notice is skipped
   (and logged) instead of waking a turn that would fail on the closed-port
@@ -434,8 +452,9 @@ notices you unprompted - rules that keep it polite:
   (default `0.35`): a prompt to continue the remaining work or list it.
   When jev says done, you hear nothing.
 - The judged tail is scrubbed (secret redaction) before leaving the
-  process, and a notification is posted, not a model turn - no read
-  receipt, no comment storm.
+  process. The notice is a synthetic row, not a turn edit: on current
+  hosts it joins the next model call (and wakes an idle session), which
+  is exactly why the per-user-message and per-session caps above exist.
 
 Options:
 
@@ -502,7 +521,11 @@ object value runs. One judged request asks three scored questions -
 `reversible`, `serves_task`, `harmful` - and their scores resolve against
 configurable bars into the same effects the permission flow already speaks:
 `allow` (auto-run), `ask` (prompt you), `deny` (refuse; the reason rides
-back to the model so it can pick a different approach). What each verdict
+back to the model so it can pick a different approach). Every resolution is
+also emitted over the RPC `approval` event (action, outcome, a short
+resource); the TUI toasts `deny`/`gate`/`fail` and stays silent for the
+delegated `allow`/`ask` paths. It is UI-only - nothing is added to the
+transcript. What each verdict
 enacts is your explicit delegation choice:
 
 - **Full delegation** (the default: `true`, `{}`, or an object that omits
@@ -1017,10 +1040,19 @@ pairing or free-tier gate. There is no provider degradation chain.
 - Cached entries store **answers + usage only**, never the state text
   (compaction judgments included).
 - Auto done-check runs only at session idle, judges a scrubbed transcript
-  tail, dedupes by tail hash, and posts at most one notice per change -
-  and only when completion looks unlikely (`notifyBelow`). The only other
-  notices the plugin posts on its own are screen verdicts and
-  routing stand-down/re-arm lines.
+  tail, dedupes by tail hash, posts at most one notice per change and per
+  user message, at most three per session, and never after a turn that
+  ended by asking you a question - and only when completion looks unlikely
+  (`notifyBelow`). The judged tail drops timeline-only rows
+  (`model-switched`, `agent-switched`, `idle`) the same way the host's
+  LLM conversion does, so switches cannot crowd out the conversation.
+- Screening is **context-free on clean content**: a passing verdict writes
+  nothing to the transcript (no row, no prefix) regardless of `tools` or
+  `annotation`; verdicts reach the TUI over the plugin's RPC event channel.
+  Failures, init config faults, scrub hits, and approval outcomes ride the
+  same channel (rows are the fallback for hosts without it). Only anomalies
+  (flagged/unsafe), withheld unsafe content, approval hints, explicit
+  commands, and the capped done-check nudges write to the transcript.
 - Compaction never rewrites user/assistant text and never applies partial
   decisions; any failure falls back to the untouched built-in flow.
 - User prompt text is never edited for instructions (scrub redaction
@@ -1029,6 +1061,8 @@ pairing or free-tier gate. There is no provider degradation chain.
   (`onGate` / `onApprove` / `onRefuse` / `onNoVerdict`), a judgment failure
   keeps the human prompt by default (`onFail`), and the deterministic gate
   list (destructive/secret patterns) is checked before any jev call.
+  Resolutions are also emitted as UI-only `approval` events (no transcript
+  row); denials, gate holds, and judgment failures toast.
 
 Architecture and decision-history notes for contributors live in
 [DESIGN.md](DESIGN.md).

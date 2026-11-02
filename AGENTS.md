@@ -8,7 +8,7 @@ behavior change instead of duplicating them here.
 ## Commands
 
 - `bun` is not on PATH: run tests as `nix shell nixpkgs#bun -c bun test`
-  (371 tests, 20 files, ~7 s). That is the entire
+  (412 tests, 21 files, ~7 s). That is the entire
   check — there is no tsc, linter, formatter, codegen, or CI config to hunt
   for, and no build step (OpenCode loads `src/index.ts` directly).
 - One file: `nix shell nixpkgs#bun -c bun test ./test/route.test.ts`. The
@@ -53,6 +53,20 @@ behavior change instead of duplicating them here.
   (the live Console session is shadowed), never "create a new key". Never
   log, print, or persist a key.
 - Cached judgments store answers + usage only, never the judged state text.
+- Context writes scale with **anomalies and explicit agent actions**, never
+  with tool calls: a passing screen writes nothing to the transcript (no
+  row, no inline prefix) in every `screen.tools` / `annotation` combination.
+  UI-only signals ride the `jev-config` RPC events instead: `screen` for
+  verdicts, `error` event-first for failed judged calls, `config` for the
+  buffered init fault, `scrub` for counts-only redaction hits, and
+  `approval` for permission resolutions. Rows are the fallback only when
+  the host has no event surface. Only
+  flagged/unsafe results, withheld unsafe content, approval hints, explicit
+  commands, and capped done-check nudges (`DONE_NUDGE_CAP` +
+  `awaitingUserInput`) may write. `screen.mode: "redact"` withholds unsafe
+  results for **every** screened tool, not just `webfetch`. The done-check
+  tail drops `NON_CONVERSATION_KINDS` (`model-switched`, `agent-switched`,
+  `idle`) like the host's `toLLMMessage`; do not reintroduce those JSON rows.
 - Secret redaction is deterministic regex — never a model call — and runs on
   every outbound state (screening, tool inputs, prompts, compaction).
 - `jev_judge_many` sends one request per item and aggregates in code; never
