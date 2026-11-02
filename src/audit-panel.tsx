@@ -39,11 +39,25 @@ const FILTER_KEYS = AUDIT_FILTERS
 
 const TIME_W = 8
 const KIND_W = 9
-const DECISION_W = 10
+const DECISION_W = 12
 const SUBJECT_W = 14
 
 function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim()
+}
+
+/** Single-cell status glyphs. No emoji: double-width glyphs break column alignment. */
+function toneGlyph(tone: AuditEntry["tone"]): string {
+  switch (tone) {
+    case "ok":
+      return "✓"
+    case "warn":
+      return "!"
+    case "error":
+      return "✗"
+    case "info":
+      return "?"
+  }
 }
 
 function cell(value: string, width: number): string {
@@ -77,7 +91,7 @@ function moreThanRow(entry: AuditEntry, width: number): boolean {
 
 function formatRow(entry: AuditEntry, width: number, selected: boolean, expanded: boolean): string {
   const marker = `${selected ? "›" : " "}${moreThanRow(entry, width) ? (expanded ? "▾" : "▸") : " "}`
-  let line = `${marker} ${cell(timeOf(entry), TIME_W)} ${cell(entry.kind, KIND_W)} ${cell(decisionOf(entry), DECISION_W)}`
+  let line = `${marker} ${cell(timeOf(entry), TIME_W)} ${cell(entry.kind, KIND_W)} ${cell(`${toneGlyph(entry.tone)} ${decisionOf(entry)}`, DECISION_W)}`
   if (showSubject(width)) line += ` ${cell(subjectOf(entry), SUBJECT_W)}`
   return `${line} ${oneLine(detailOf(entry))}`
 }
@@ -97,7 +111,7 @@ function detailBlock(entry: AuditEntry): string {
 function panelText(entries: readonly AuditEntry[], filter: AuditKind | "all"): string {
   const lines = [`jev audit — ${entries.length} ${filter === "all" ? "entries" : filter + " entries"}`]
   for (const entry of entries) {
-    lines.push(`${timeOf(entry)} ${entry.kind} ${decisionOf(entry)} ${subjectOf(entry)}`.trimEnd())
+    lines.push(`${toneGlyph(entry.tone)} ${timeOf(entry)} ${entry.kind} ${decisionOf(entry)} ${subjectOf(entry)}`.trimEnd())
     lines.push(`  ${detailBlock(entry).replace(/\n/g, "\n  ")}`)
   }
   return lines.join("\n")

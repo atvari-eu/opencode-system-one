@@ -336,13 +336,15 @@ toggles the panel: events render newest first as
 `TIME / KIND / DECISION / SUBJECT / DETAIL` rows with one selected row
 (`j/k` select, `g/G` jump, `enter`/`space` expand, `y` copy the row, `c` copy
 the filtered table, `esc/q` close, `f` fullscreen, `a/s/e/p/r/x` filter). The
-panel pins the top while new events arrive unless the reader has scrolled
-away; expanded details render below the row so columns stay aligned. Filter,
-selection, and expanded-row state live in the panel's host-owned
-`jev-audit-view` memory store, so the keymap layer and the JSX tree observe
-the same reactive runtime. The ring is TUI-side, so entries start when the TUI
-is running; the config fault is replayed through `configFault`. The retired
-`/jev-screen-history` view is now `/jev-audit` with the `s` filter.
+decision cell prefixes a one-cell tone glyph (`✓` ok, `!` warn, `✗` error,
+`?` info); emoji are avoided because double-width glyphs break column
+alignment. The panel pins the top while new events arrive unless the reader
+has scrolled away; expanded details render below the row so columns stay
+aligned. Filter, selection, and expanded-row state live in the panel's
+host-owned `jev-audit-view` memory store, so the keymap layer and the JSX tree
+observe the same reactive runtime. The ring is TUI-side, so entries start when
+the TUI is running; the config fault is replayed through `configFault`. The
+retired `/jev-screen-history` view is now `/jev-audit` with the `s` filter.
 
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.
