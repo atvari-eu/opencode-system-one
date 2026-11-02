@@ -67,7 +67,9 @@ function Panel(props: {
   // Plain reads inside JSX keep reactivity in the host's Solid runtime.
   const view = (): ViewStore => props.view?.[0] ?? { filter: "all", expanded: {} }
   const all = (): AuditEntry[] => props.store?.[0]?.items ?? []
-  const entries = (): AuditEntry[] => filterAudit(all(), view().filter ?? "all")
+  // Newest first: the ring appends chronologically, but a log is most useful
+  // with the latest event at the top.
+  const entries = (): AuditEntry[] => filterAudit(all(), view().filter ?? "all").reverse()
   const total = (): number => all().length
   const filterLabel = (): string => {
     const current = view().filter ?? "all"
@@ -184,24 +186,30 @@ function Panel(props: {
   }))
 
   const muted = () => props.context?.theme?.text?.muted
-  const active = () => props.context?.theme?.text?.base
   const width = () => props.panel.width ?? 80
   return (
     <box flexDirection="column" flexGrow={1} height="100%" minHeight={0} paddingLeft={1} paddingRight={1} selectable={false}>
       <box flexShrink={0} flexDirection="row" gap={1} marginBottom={1}>
-        <text flexShrink={0} selectable={false}>{`jev audit — ${total()} entries · `}</text>
+        <text flexShrink={0} selectable={false}>{`jev audit — ${total()} entries · filter: ${filterLabel()} ·`}</text>
         {FILTER_KEYS.map((item) => (
           <text
             flexShrink={0}
             selectable={false}
-            fg={view().filter === item.kind ? active() : muted()}
+            fg={muted()}
             onMouseUp={() => setFilter(item.kind)}
           >
-            {`${item.key} ${item.label}`}
+            {`${view().filter === item.kind ? "▸" : " "}${item.key} ${item.label}`}
           </text>
         ))}
       </box>
-      <scrollbox ref={(value: ScrollBoxRenderable) => (list = value)} flexGrow={1} minHeight={0} selectable={false}>
+      <scrollbox
+        ref={(value: ScrollBoxRenderable) => (list = value)}
+        flexGrow={1}
+        minHeight={0}
+        stickyScroll
+        stickyStart="top"
+        selectable={false}
+      >
         {() => {
           const rows = entries()
           if (rows.length === 0) return <text selectable={false}>{"no events yet"}</text>
