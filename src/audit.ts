@@ -83,7 +83,7 @@ export function auditEntryOf(
             : ""
           : ""
       const scores = `junk=${fixed(data.junk)} injection=${fixed(data.injection)} secret=${fixed(data.secret)}`
-      detail = [callText && callText !== label ? callText : "", scores].filter(Boolean).join(" · ")
+      detail = [callText ? `Screened output of: ${callText}` : "", scores].filter(Boolean).join(" · ")
       summary = `${verdict}: ${label} — ${scores}`
       decision = verdict
       subject = label

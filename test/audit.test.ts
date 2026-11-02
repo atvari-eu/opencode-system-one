@@ -43,14 +43,15 @@ describe("auditEntryOf", () => {
     expect(auditEntryOf("screen", { label: "read", verdict: "unsafe" })?.tone).toBe("error")
     expect(auditEntryOf("screen", { label: "read", verdict: "error" })?.tone).toBe("error")
 
-    // A URL label already identifies the call; do not repeat it in DETAIL.
+    // The prefix makes clear the verdict is for the tool's output, not the call itself.
     const web = auditEntryOf("screen", {
       label: "https://example.test/a",
       verdict: "pass",
       call: "https://example.test/a",
       junk: 0,
     }, at)
-    expect(web?.detail?.startsWith("junk=")).toBe(true)
+    expect(web?.detail).toContain("Screened output of: https://example.test/a")
+    expect(web?.detail).toContain("junk=0.00")
 
     const flagged = auditEntryOf("screen", {
       label: "webfetch",

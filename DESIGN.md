@@ -344,13 +344,15 @@ double-width glyphs break column alignment. Filter, selection, and
 expanded-row state live in the panel's host-owned `jev-audit-view` memory
 store, so the keymap layer and the JSX tree observe the same reactive runtime;
 opening the panel clears a previous selection. Screen audit rows carry the
-tool-call descriptor that triggered the screen (command, URL, or path:
-redacted, capped, and never the screened result text), mirroring approvals'
-action/resource. Flagged and unsafe screens additionally carry a redacted,
-capped result preview shown in the expanded row; passing screens stay
-content-free. The ring is TUI-side, so entries start when the TUI is running;
-the config fault is replayed through `configFault`. The retired
-`/jev-screen-history` view is now `/jev-audit` with the `s` filter.
+tool-call descriptor that triggered the screen as
+`Screened output of: <call>` (command, URL, or path: redacted and capped),
+making clear the verdict applies to the tool's output, not the call itself;
+approvals likewise carry action/resource. Flagged and unsafe screens
+additionally carry a redacted, capped result preview shown in the expanded
+row; passing screens stay content-free. The ring is TUI-side, so entries start
+when the TUI is running; the config fault is replayed through `configFault`.
+The retired `/jev-screen-history` view is now `/jev-audit` with the `s`
+filter.
 
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.

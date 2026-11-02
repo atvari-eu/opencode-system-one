@@ -76,9 +76,10 @@ compaction can be decided by System One instead of a lossy summary
   while nothing is selected; selecting a row stops auto-scroll. Long or
   multi-line events are cropped to one row; click a row to select and expand
   it (the filter chips in the header are clickable too). Screen rows keep the
-  redacted, capped tool call that triggered them (command, URL, or path), and
-  flagged/unsafe rows add a redacted, capped result preview; passing screens
-  store no content. All answer without loading a skill.
+  redacted, capped tool call that triggered them, shown as
+  `Screened output of: <call>` (command, URL, or path), and flagged/unsafe
+  rows add a redacted, capped result preview; passing screens store no content.
+  All answer without loading a skill.
 - **route** (opt-in) - before each turn, jev picks which model runs the turn
   and/or how much reasoning effort it gets, in one judgment, applied through
   the same switch mechanism as the UI's model/effort picker. Fail closed to
