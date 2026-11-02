@@ -582,6 +582,24 @@ inside the same budget), the fetch-only `curl` fast path and the widened
 stdout-only builtin whitelist; `jevTimeout` was deliberately left at its
 default - budgets stay put, payloads got smaller.
 
+Read-only breadth and the built-in tool allows (2026-11).
+`approvals.readonlyAllow` originally covered shell chains only. It now also
+covers the actions that can only read by definition (`read`, `grep`, `glob`) -
+no local state can change - and the shell analysis gained
+repository-inspecting git (`status`/`log`/`diff`/`show`, rejecting `--output`
+and `--ext-diff`; `branch` stays judged because `git branch <name>` creates).
+Reads stay routed through the plugin rather than being allowed host-side: the
+secret-path gate runs before the fast path and is the only thing that catches
+`read .env` / `read ~/.ssh/id_rsa`. Separately, five actions are allowed by
+default - `webfetch`, `websearch`, `skill`, `subagent`, `question` - because
+their risk lives in the result, not the request: fetched and skill content is
+screened, a subagent re-permissions its own calls against its agent policy,
+and a question has no side effect. The defaults are a rule prefix, so an
+operator entry (last match wins) puts any of them back under judgment; a bare
+`* * ask` entry restores the pre-2026-11 posture exactly. Known limit carried
+over, not introduced: the host sends `grep`'s resource as the regex and
+`glob`'s as the pattern, so the secret-path gate cannot see a grep search root.
+
 ## Credential self-heal: re-read on worn-key diagnostics
 
 Long sessions can ride a stale CLI-store credential: the plugin (and the

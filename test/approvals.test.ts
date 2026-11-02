@@ -5,16 +5,19 @@
 import { describe, expect, test } from "bun:test"
 import {
   APPROVAL_DESTRUCTIVE,
+  DEFAULT_ALLOW_ACTIONS,
   approvalDefaultContext,
   approvalFailureCause,
   approvalGate,
   approvalQuestions,
+  approvalRules,
   approvalSandboxNote,
   approvalStatsBand,
   approvalStatsBucket,
   chainPermissionEffect,
   globMatches,
   harmfulQuestion,
+  isReadOnlyRequest,
   isReadOnlyShellCommand,
   lookupPermission,
   matchesPatterns,
@@ -143,8 +146,39 @@ describe("isReadOnlyShellCommand", () => {
     expect(isReadOnlyShellCommand("grep foo > out.txt")).toBe(false)
     expect(isReadOnlyShellCommand("grep foo 2>&1 | wc -l")).toBe(false)
     expect(isReadOnlyShellCommand("cat a && tail b && wc c")).toBe(true)
-    expect(isReadOnlyShellCommand("cat a && git status")).toBe(false)
+    expect(isReadOnlyShellCommand("cat a && git commit -m x")).toBe(false)
     expect(isReadOnlyShellCommand("rm -rf dist")).toBe(false)
+  })
+
+  test("git inspection is read-only; writes, branch creation and ext-diff are not", () => {
+    expect(isReadOnlyShellCommand("git status --short")).toBe(true)
+    expect(isReadOnlyShellCommand("git log --oneline -5")).toBe(true)
+    expect(isReadOnlyShellCommand("git diff --stat")).toBe(true)
+    expect(isReadOnlyShellCommand("git show HEAD --stat")).toBe(true)
+    expect(isReadOnlyShellCommand("cat a && git status")).toBe(true)
+    // --output writes a file; --ext-diff runs a configured external program
+    expect(isReadOnlyShellCommand("git log --output=log.txt")).toBe(false)
+    expect(isReadOnlyShellCommand("git diff --output out.patch")).toBe(false)
+    expect(isReadOnlyShellCommand("git diff --ext-diff")).toBe(false)
+    expect(isReadOnlyShellCommand("git commit -m x")).toBe(false)
+    // `git branch <name>` creates; -d deletes
+    expect(isReadOnlyShellCommand("git branch new-branch")).toBe(false)
+    expect(isReadOnlyShellCommand("git branch -d old")).toBe(false)
+    // a -c prefix can load a pager/alias, so it stays judged
+    expect(isReadOnlyShellCommand("git -c core.pager=less log")).toBe(false)
+  })
+
+  test("non-shell read-only actions skip the judgment under readonlyAllow", () => {
+    expect(isReadOnlyRequest("read", ["/workspace/src/a.ts"])).toBe(true)
+    expect(isReadOnlyRequest("grep", ["TODO|FIXME"])).toBe(true)
+    expect(isReadOnlyRequest("glob", ["src/**/*.ts"])).toBe(true)
+    // anything that can change state stays on the judged path
+    expect(isReadOnlyRequest("edit", ["/workspace/src/a.ts"])).toBe(false)
+    expect(isReadOnlyRequest("write", ["/workspace/src/a.ts"])).toBe(false)
+    expect(isReadOnlyRequest("webfetch", ["https://x.dev"])).toBe(false)
+    // shell is decided by the command, not the action name
+    expect(isReadOnlyRequest("shell", ["git log --oneline"])).toBe(true)
+    expect(isReadOnlyRequest("shell", ["git push origin main"])).toBe(false)
   })
 
   test("the widened stdout-only builtin list skips judged calls", () => {

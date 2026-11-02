@@ -2433,19 +2433,48 @@ export function curlReadOnly(segment: string): boolean {
   return !CURL_MUTATING.test(segment)
 }
 
+/** `git` inspection that only reads the repository. `branch` is deliberately
+ * absent: `git branch <name>` creates one and -d/-m mutate, so it stays on
+ * the judged path. Two flags turn an otherwise-read command into a write or
+ * an arbitrary program run: `--output` writes a file, `--ext-diff` executes
+ * the configured external diff driver. A `git -c` prefix (which can load a
+ * pager or alias) does not match the anchored subcommand pattern and falls
+ * back to the judge too. */
+const GIT_READ_ONLY = /^\s*git\s+(?:status|log|diff|show)\b/
+const GIT_MUTATING_FLAG = /(?:^|\s)--output(?:=|\s|$)|(?:^|\s)--ext-diff(?:=|\s|$)/
+
+export function gitReadOnly(segment: string): boolean {
+  return GIT_READ_ONLY.test(segment) && !GIT_MUTATING_FLAG.test(segment)
+}
+
 /** `find` segments stay read-only only while they actually only print:
  * -delete and the -exec family mutate or run. */
 const FIND_MUTATING = /(?<!\S)-(?:delete|exec(?:dir)?|ok(?:dir)?)\b/
 
 /** One shell segment is read-only when it is a READ_ONLY_SHELL builtin
- * (minus mutating find flags) or a fetch-only curl. */
+ * (minus mutating find flags), a fetch-only curl, or a repository-inspecting
+ * git command. */
 export function readOnlyShellSegment(segment: string): boolean {
   if (/^\s*find\b/.test(segment) && FIND_MUTATING.test(segment)) return false
-  return READ_ONLY_SHELL.test(segment) || curlReadOnly(segment)
+  return READ_ONLY_SHELL.test(segment) || curlReadOnly(segment) || gitReadOnly(segment)
 }
 
 export function isReadOnlyShellCommand(resource: string): boolean {
   return shellChainSegments(resource).every((segment) => !segment.includes(">") && readOnlyShellSegment(segment))
+}
+
+/** Permission actions that can only read: no local state can change, so
+ * approvals.readonlyAllow skips the judgment for them exactly as it does for
+ * read-only shell chains. Reads stay routed THROUGH the plugin for a reason -
+ * the secret-path gate runs before this check and is what catches `read .env`
+ * or `read ~/.ssh/id_rsa`; a host-side `read * allow` would never reach it.
+ * Note the host sends `grep`'s resource as the regex and `glob`'s as the
+ * pattern, not a path, so the secret-path gate cannot see a grep search root. */
+export const READ_ONLY_ACTIONS: ReadonlySet<string> = new Set(["read", "grep", "glob"])
+
+export function isReadOnlyRequest(action: string, resources: readonly string[]): boolean {
+  if (isShellAction(action)) return resources.every(isReadOnlyShellCommand)
+  return READ_ONLY_ACTIONS.has(action)
 }
 
 /** The two deterministic-gate toggles (approvals.gates): `secrets` gates
@@ -2595,6 +2624,29 @@ export function lookupPermission(
     if (resources.some((resource) => globMatches(resource, rule.resource))) matched = rule
   }
   return matched
+}
+
+/** Actions whose risk lives in their RESULT, not in the request: fetched and
+ * skill content is screened, a subagent's own tool calls are permissioned
+ * again by the child agent's policy, and a question has no side effect at
+ * all. Judging the request itself only adds a round trip and the chance of an
+ * off-task refusal. */
+export const DEFAULT_ALLOW_ACTIONS: readonly string[] = ["webfetch", "websearch", "skill", "subagent", "question"]
+
+/** The built-in allow prefix for those actions. It is prepended to
+ * `approvals.permissions`, so a later entry (last match wins) puts any of
+ * them back under judgment (`effect: "ask"`), refuses it, or narrows the
+ * resource - e.g. `{ action: "webfetch", resource: "https://internal/*",
+ * effect: "ask" }`. */
+export const DEFAULT_ALLOW_RULES: readonly PermissionRule[] = DEFAULT_ALLOW_ACTIONS.map((action) => ({
+  action,
+  resource: "*",
+  effect: "allow" as const,
+}))
+
+/** Effective ruleset: built-in defaults first, operator rules last. */
+export function approvalRules(raw: unknown): PermissionRule[] {
+  return [...DEFAULT_ALLOW_RULES, ...parsePermissions(raw)]
 }
 
 // Per-entry context passed to the judge: like a permission rule minus the

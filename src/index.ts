@@ -95,7 +95,6 @@ import {
   lookupPermission,
   normalizePickerModels,
   normalizeWorkspacePath,
-  parsePermissions,
   parseApprovalsPolicy,
   parseMinConfidence,
   taskFromMessages,
@@ -132,9 +131,10 @@ import {
   secretPathAction,
   approvalDefaultContext,
   approvalFailureCause,
+  approvalRules,
   approvalSandboxNote,
   elideMiddle,
-  isReadOnlyShellCommand,
+  isReadOnlyRequest,
   shellChainSegments,
   suggestedApprovalStats,
   rankSourcePopular,
@@ -1314,7 +1314,10 @@ export default Plugin.define({
     // matched request never reaches jev: `allow` and `deny` are enacted
     // directly, `ask` stays exactly as configured (plain prompt, no verdict,
     // no annotation). Real configured denies outrank everything already.
-    const approvalsRules = parsePermissions(approvalsObj.permissions)
+    // Built-in tool defaults first, then operator rules: last match wins, so
+    // any entry in approvals.permissions can put a default-allowed action
+    // back under judgment.
+    const approvalsRules = approvalRules(approvalsObj.permissions)
     // Deterministic gate toggles (approvals.gates): defaults are
     // secrets=true (secret-path gate on) and readonlyBypass=true (read-only
     // shell commands skip the destructive-string check).
@@ -2469,10 +2472,12 @@ export default Plugin.define({
             // every shell segment is structurally read-only allows before
             // any judgment - the pipeline class (grep | head | wc | …) that
             // made up the largest ask+fail share in the recorded stats, and
-            // what non-read-only pipe segments fall back to jev for. Gates
-            // already ran above, so secret paths and destructive chains
-            // hold exactly as they would without the option.
-            if (approvalsReadonlyAllow && isShellAction(action) && resources.every(isReadOnlyShellCommand)) {
+            // what non-read-only pipe segments fall back to jev for. The
+            // same applies to actions that can only read by definition
+            // (read/grep/glob): no local state can change. Gates already ran
+            // above, so secret paths and destructive chains hold exactly as
+            // they would without the option.
+            if (approvalsReadonlyAllow && isReadOnlyRequest(action, resources)) {
               event.effect = "allow"
               console.log(`[jev] approval: read-only fast-path ${action} ${resources.join(" && ").slice(0, 120)}`)
               await recordApprovalStat(action, resources, { outcome: "allow" }, event?.sessionID)
