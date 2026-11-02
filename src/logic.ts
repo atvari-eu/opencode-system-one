@@ -2009,7 +2009,7 @@ export function deployFaultText(
     case "no-credential":
       return {
         kind,
-        message: `no credential for ${host} - set the provider env key (see the provider's chain in README: TYPESAFE_API_KEY / OPENCODE_API_KEY / OPENCODE_GO_API_KEY) or run \`opencode auth login\``,
+        message: `no credential for ${host} - set the provider env key (see the credential chain in docs/provider.md: TYPESAFE_API_KEY / OPENCODE_API_KEY / OPENCODE_GO_API_KEY) or run \`opencode auth login\``,
         surface: "jev: no credential for this deployment - set the provider env key or run `opencode auth login`",
       }
     case "no-endpoint":

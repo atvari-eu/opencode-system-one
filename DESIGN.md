@@ -1,8 +1,8 @@
 # Design notes
 
 Architecture context and decision history for contributors. Rider-facing
-behavior lives in [README.md](README.md); this file documents why the plugin
-is built the way it is.
+behavior lives in [README.md](README.md) and [docs/](docs/); this file
+documents why the plugin is built the way it is.
 
 ## Tool registration
 
@@ -17,8 +17,9 @@ is built the way it is.
 ## Description budget
 
 The tool descriptions are a request-schema surface: they run on every
-request, so each is budgeted at ~300 tokens. Expansion belongs in the README
-(portable guidance) or in skills for other agents - never in the schema. The
+request, so each is budgeted at ~300 tokens. Expansion belongs in the docs
+([README.md](README.md), [docs/](docs/)) or in skills for other agents -
+never in the schema. The
 same rule keeps injected prompt text out of the architecture (see Routing
 notes).
 

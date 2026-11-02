@@ -1,9 +1,10 @@
 # AGENTS.md
 
 Guidance for coding agents working in this repo. Architecture rationale and
-decision history live in [DESIGN.md](DESIGN.md); rider-facing behavior and
-every option table in [README.md](README.md) — update those two with any
-behavior change instead of duplicating them here.
+decision history live in [DESIGN.md](DESIGN.md); rider-facing overview and
+option tables live in [README.md](README.md) with per-feature detail pages in
+[docs/](docs/) — update those with any behavior change instead of duplicating
+them here.
 
 ## Commands
 
@@ -78,7 +79,7 @@ behavior change instead of duplicating them here.
 - `jev_judge_many` sends one request per item and aggregates in code; never
   batch several states into one giant request.
 - Tool descriptions ride every request: budget each at ~300 tokens; expansion
-  belongs in README or skills, not the schema.
+  belongs in the plugin docs (README/docs/) or skills, not the schema.
 - User prompt text is never edited for instructions (scrub redaction aside).
   Prompt-append notes were tried and removed three times — don't re-add them
   (DESIGN.md "Prompt-notes" has the history); description-led guidance is the
@@ -146,5 +147,5 @@ behavior change instead of duplicating them here.
   title per session repeats at most once per 60 s window - a surfaced
   row wakes a turn, so an outage must not re-trigger itself)
   toast rows. Don't invent service-specific endpoints beyond the
-  documented `/systemone` convention (README "Provider", DESIGN.md
+  documented `/systemone` convention (docs/provider.md, DESIGN.md
   "Provider resolution").

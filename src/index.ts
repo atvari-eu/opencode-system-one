@@ -2798,7 +2798,7 @@ export default Plugin.define({
     // -- tools: typed judgment calls with cache + aggregation --
     // Tool descriptions are the plugin's judgment-moment enforcement surface
     // and run on every request: keep each description under ~300 tokens and
-    // put expansion (guidance, caveats) into the README or skills instead,
+    // put expansion (guidance, caveats) into the docs or skills instead,
     // so the load-bearing imperatives keep their weight in model attention.
     if (toolsEnabled) {
       await (ctx as any).tool.transform((editor: any) => {
