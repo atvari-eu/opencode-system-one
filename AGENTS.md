@@ -117,6 +117,11 @@ behavior change instead of duplicating them here.
   resolved by Bun at runtime and cannot see the TUI-provided runtime, so
   keep these imports static. All three failure modes took
   `/jev-screen-history` and the footer markers down.
+- OpenTUI text nodes must be children of `<text>`, never a `<box>`: the
+  renderer throws `Orphan text error: "…" must have a <text> as a parent`.
+  An empty-string fallback like `<box>{""}</box>` is enough to crash the
+  panel - return `null` for non-matching slot names and wrap every text row
+  in `<text>`.
 
 - The end-user CLI binary may be `opencode2` (localhost wrapper) rather than
   `opencode`; the credential loader tries `OPENCODE_BIN` → `opencode` →

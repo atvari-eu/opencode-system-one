@@ -38,7 +38,7 @@ function Row(props: { item: ScreenVerdictItem; index: number }): JSX.Element {
     .filter(Boolean)
     .join(" ")
   const text = `${time}  ${VERDICT_PREFIX[props.item.verdict] ?? props.item.verdict}  ${props.item.label}${counts ? " — " + counts : ""}${props.item.note ? " — " + props.item.note : ""}`
-  return <box key={props.index}>{text}</box>
+  return <text key={props.index}>{text}</text>
 }
 
 function Panel(props: { store: readonly [Store, unknown] }): JSX.Element {
@@ -48,9 +48,9 @@ function Panel(props: { store: readonly [Store, unknown] }): JSX.Element {
   return (
     <box flexDirection="column" paddingLeft={1} paddingRight={1}>
       <box marginBottom={1}>
-        {`jev screening — last ${items.length}/${SCREEN_VERDICT_CAP} verdicts`}
+        <text>{`jev screening — last ${items.length}/${SCREEN_VERDICT_CAP} verdicts`}</text>
       </box>
-      {items.length === 0 ? <box>{"no verdicts yet"}</box> : items.map((item, i) => <Row item={item} index={i} />)}
+      {items.length === 0 ? <text>{"no verdicts yet"}</text> : items.map((item, i) => <Row item={item} index={i} />)}
     </box>
   )
 }
@@ -65,7 +65,7 @@ export default {
     const unslot = context.ui.slot({
       append: "session.panel",
       render: (input: PanelInput) =>
-        input?.name === "jev-screen" ? <Panel store={store} /> : <box>{""}</box>,
+        input?.name === "jev-screen" ? <Panel store={store} /> : null,
     })
     return async () => {
       unslot()
