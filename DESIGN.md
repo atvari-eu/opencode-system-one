@@ -863,6 +863,16 @@ bookkeeping misfired. The hysteresis itself holds because v2's
 the stored history; the idle estimate therefore resets on a successful pass
 while earlier messages stay on disk.
 
+Shape trap (2026-11): `session.context` rows are the flat v2 timeline shape
+(`type`/`text`, assistant parts tagged `text`/`reasoning`/`tool` with input and
+output nested under `state`), while the compaction primitives consume the
+hook's LLM shape (`role`, parts tagged `tool-call`/`tool-result`). The idle
+watcher fed the raw rows to `messageChars`/`collectCalls`, so it counted only
+assistant text (a 129K-token session estimated ~3.7K), never crossed its
+target, and would have found zero tool calls even if it had. `contextMessages`
+normalizes both shapes now; the resting-point lookup still reads the raw rows
+because its `model-switched` seats are dropped by normalization.
+
 Screen-failure presentation changed in the same commit family: a failed
 screen on a local tool (shell, reads, edits, MCP) no longer prefixes and
 truncates the tool's own output - the failure is its own surfaced row, and

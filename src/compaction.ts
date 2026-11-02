@@ -50,6 +50,8 @@
 //     compaction model's price table - the jev call itself bills on the jev
 //     model, so that cost line is a documented approximation
 
+import { NON_CONVERSATION_KINDS } from "./logic"
+
 // ---------------------------------------------------------------------------
 // Types (structural - matches @opencode/ai message parts at runtime)
 // ---------------------------------------------------------------------------
@@ -240,6 +242,95 @@ function messageText(message: LLMMessage): string {
     else if (part.type === "media") texts.push(`[attachment ${part.filename ?? "omitted"}]`)
   }
   return texts.join("\n")
+}
+
+/**
+ * Normalizes `session.context` rows into the LLMMessage shape the compaction
+ * primitives consume. v2 returns flat timeline rows (`type`, `text`; assistant
+ * `content` parts tagged `text`/`reasoning`/`tool` with the input and output
+ * nested under `state`), while the compaction hook hands over LLM rows
+ * (`role`, parts tagged `text`/`tool-call`/`tool-result`). Accepting both keeps
+ * one estimate/candidate implementation for the idle watcher and the hook -
+ * reading raw timeline rows with the LLM-shape helpers silently undercounts
+ * context (tool output is most of a transcript) and finds no tool calls at all.
+ * Non-conversation rows (model/agent switches, idle markers) are dropped.
+ */
+export function contextMessages(rows: ReadonlyArray<any>): LLMMessage[] {
+  const out: LLMMessage[] = []
+  for (const row of rows ?? []) {
+    if (!row || typeof row !== "object") continue
+    // Already the hook's shape.
+    if (typeof row.role === "string" && Array.isArray(row.content)) {
+      if (NON_CONVERSATION_KINDS.has(row.role)) continue
+      out.push({
+        ...(typeof row.id === "string" ? { id: row.id } : {}),
+        role: row.role,
+        content: row.content,
+      })
+      continue
+    }
+    const kind = String(row.type ?? row.role ?? "")
+    if (NON_CONVERSATION_KINDS.has(kind)) continue
+    if (kind === "user" || kind === "synthetic") {
+      out.push({
+        ...(typeof row.id === "string" ? { id: row.id } : {}),
+        role: "user",
+        content: [{ type: "text", text: String(row.text ?? "") }],
+      })
+      continue
+    }
+    if (kind === "assistant") {
+      const content: any[] = []
+      for (const part of Array.isArray(row.content) ? row.content : []) {
+        if (!part || typeof part !== "object") continue
+        if (part.type === "text") {
+          content.push({ type: "text", text: String(part.text ?? "") })
+          continue
+        }
+        // Reasoning is not replayed to the next model; counting it would
+        // inflate the estimate by text the request never carries.
+        if (part.type !== "tool") continue
+        const state: any = part.state ?? {}
+        const id = typeof part.id === "string" ? part.id : undefined
+        content.push({
+          type: "tool-call",
+          ...(id ? { id } : {}),
+          name: String(part.name ?? "tool"),
+          input: state.input ?? {},
+        })
+        if (state.status === "completed") {
+          content.push({
+            type: "tool-result",
+            ...(id ? { id } : {}),
+            result: { type: "content", value: Array.isArray(state.content) ? state.content : [] },
+          })
+        } else if (state.status === "error") {
+          content.push({
+            type: "tool-result",
+            ...(id ? { id } : {}),
+            // resultTextOf JSON-stringifies error values, so keep the object.
+            result: { type: "error", value: state.error ?? state.content ?? "" },
+          })
+        }
+      }
+      out.push({
+        ...(typeof row.id === "string" ? { id: row.id } : {}),
+        role: "assistant",
+        content,
+      })
+      continue
+    }
+    // A system row (or an unknown conversational kind) still occupies the
+    // context; keep its text so the estimate does not drop it.
+    if (typeof row.text === "string" && row.text.trim() !== "") {
+      out.push({
+        ...(typeof row.id === "string" ? { id: row.id } : {}),
+        role: kind === "system" ? "system" : "user",
+        content: [{ type: "text", text: row.text }],
+      })
+    }
+  }
+  return out
 }
 
 /** Characters of text, tool input and tool output one message holds. */

@@ -2,7 +2,15 @@
 // rendered summary or the judged state; user/assistant replay is untouched.
 
 import { describe, expect, test } from "bun:test"
-import { renderSummary, collectCalls, renderCallReport, runCompaction, DEFAULTS } from "../src/compaction"
+import {
+  renderSummary,
+  collectCalls,
+  renderCallReport,
+  runCompaction,
+  contextMessages,
+  messageChars,
+  DEFAULTS,
+} from "../src/compaction"
 import { IDLE_SKIP_GROWTH_MIN, idleCompactionDue, parseIdleAuto } from "../src/logic"
 
 const message = (role: "user" | "assistant" | "system", text: string): any => ({
@@ -259,3 +267,83 @@ describe("idleCompactionDue", () => {
   })
 })
 
+
+describe("contextMessages", () => {
+  // v2 `session.context` rows are the flat timeline shape, not the compaction
+  // hook's LLM rows: reading them with messageChars/collectCalls directly
+  // counts only assistant text and finds zero tool calls.
+  const rows = [
+    { id: "m1", type: "user", text: "hello world" },
+    {
+      id: "m2",
+      type: "assistant",
+      content: [
+        { type: "text", text: "checking" },
+        {
+          type: "tool",
+          id: "t1",
+          name: "bash",
+          state: {
+            status: "completed",
+            input: { cmd: "ls -la" },
+            content: [{ type: "text", text: "file-a\nfile-b" }],
+          },
+        },
+      ],
+    },
+    { id: "m3", type: "model-switched", model: { providerID: "p", id: "m" } },
+    { id: "m4", type: "idle" },
+    { id: "m5", type: "synthetic", text: "[jev] notice" },
+  ]
+
+  test("normalizes flat rows into call/result messages for the compaction primitives", () => {
+    const messages = contextMessages(rows)
+    // Non-conversation rows are dropped; every other row survives.
+    expect(messages.map((m) => m.id)).toEqual(["m1", "m2", "m5"])
+
+    const calls = collectCalls(messages, 0)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      name: "bash",
+      input: { cmd: "ls -la" },
+      resultText: "file-a\nfile-b",
+      isError: false,
+    })
+
+    // The estimate includes user text, assistant text, the tool input and the
+    // tool result - the parts the raw-row read silently skipped.
+    const normalized = messageChars(messages[1]!)
+    const raw = messageChars(rows[1] as any)
+    expect(normalized).toBeGreaterThan(raw)
+    expect(normalized).toBe("checking".length + JSON.stringify({ cmd: "ls -la" }).length + "file-a\nfile-b".length)
+  })
+
+  test("error tool states keep the error object for the result text", () => {
+    const messages = contextMessages([
+      {
+        type: "assistant",
+        content: [
+          {
+            type: "tool",
+            id: "t1",
+            name: "bash",
+            state: { status: "error", input: { cmd: "false" }, error: { message: "exit 1" } },
+          },
+        ],
+      },
+    ])
+    const calls = collectCalls(messages, 0)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.isError).toBe(true)
+    expect(calls[0]?.resultText).toContain("exit 1")
+  })
+
+  test("rows already in the hook's shape pass through unchanged", () => {
+    const messages = contextMessages([
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "system", content: [{ type: "text", text: "catalog" }] },
+    ])
+    expect(messages[0]).toMatchObject({ role: "user", content: [{ type: "text", text: "hi" }] })
+    expect(messages[1]?.role).toBe("system")
+  })
+})

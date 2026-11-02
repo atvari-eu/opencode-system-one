@@ -70,7 +70,13 @@
 // counts as a successful judgment; it surfaces as an error/unavailable marker.
 
 import { Model, Plugin, Provider } from "@opencode/plugin"
-import { runCompaction, DEFAULTS as COMPACTION_DEFAULTS, messageChars, collectCalls } from "./compaction"
+import {
+  runCompaction,
+  DEFAULTS as COMPACTION_DEFAULTS,
+  messageChars,
+  collectCalls,
+  contextMessages,
+} from "./compaction"
 import { runFind } from "./find"
 import { readStoreDbCredential, storeDbCandidates } from "./store-db"
 import {
@@ -3907,7 +3913,12 @@ export default Plugin.define({
                 target = Math.floor(idleAuto.share * (await windowOf(model)))
               }
               if (target <= 0) return
-              const messages: any[] = contextRows(await (ctx as any).session.context({ sessionID }))
+              const rows: any[] = contextRows(await (ctx as any).session.context({ sessionID }))
+              if (rows.length === 0) return
+              // The estimate and the candidate scan need the LLM shape; the
+              // resting-point lookup below still reads the raw timeline rows
+              // (its `model-switched` seats are dropped by normalization).
+              const messages = contextMessages(rows)
               if (messages.length === 0) return
               const chars = messages.reduce(
                 (sum: number, message: any) => sum + messageChars(message),
@@ -3953,7 +3964,7 @@ export default Plugin.define({
               // having just parked the session at the entry, that call would
               // ride the pseudo-model and fail. Same cure as the done-check
               // wake.
-              await ensureOffEntry(sessionID, messages)
+              await ensureOffEntry(sessionID, rows)
               // Mark BEFORE the request: the compaction hook runs inside it,
               // and only a marker that is already there lets the hook tell an
               // idle-origin pass from a native one (skip semantics, no
