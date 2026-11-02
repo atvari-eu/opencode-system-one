@@ -991,6 +991,45 @@ export function doneCheckStandDown(
   return typeof seen?.userCountAtNotice === "number" && userCount <= seen.userCountAtNotice
 }
 
+/** Hard ceiling on auto done-check nudges per session. A nudge is a synthetic
+ * row that wakes a model turn, so the probe must not be able to spend context
+ * repeatedly on a chatty model or a stale threshold; once the cap is reached
+ * the session stops being probed entirely (the marker persists in storage, so
+ * a restart does not reset it). */
+export const DONE_NUDGE_CAP = 3
+
+export function doneNudgeCapReached(
+  seen: { nudges?: number } | null | undefined,
+  cap: number = DONE_NUDGE_CAP,
+): boolean {
+  return typeof seen?.nudges === "number" && seen.nudges >= cap
+}
+
+/** True when the newest real transcript row is an assistant message that
+ * ends by asking the user something. Such a turn stopped for an answer, not
+ * silently: the done-check stands down instead of waking a turn to "continue
+ * the remaining work". Own notices are skipped, so a notice after a question
+ * cannot hide the question. */
+export function awaitingUserInput(messages: any[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const text = messageText(messages[i]).trim()
+    if (!text || isOwnNoticeRow(text)) continue
+    if (messageKind(messages[i]) !== "assistant") return false
+    const lines = text.split("\n").map((line) => line.trim()).filter((line) => line !== "")
+    const last = lines[lines.length - 1] ?? ""
+    return /\?\s*$/.test(last)
+  }
+  return false
+}
+
+/** Timeline row types the host never turns into conversational LLM text:
+ * `agent-switched`/`idle` convert to nothing, and a `model-switched` row
+ * becomes at most a structured `effort` control part (no text) when only the
+ * variant changed. The done-check reads timeline rows (`session.context`), so
+ * it applies the same drop rule the host's `toLLMMessage` does - otherwise
+ * switch/idle JSON eats the message window and pollutes the judgment. */
+export const NON_CONVERSATION_KINDS = new Set(["agent-switched", "model-switched", "idle"])
+
 export function doneTranscript(
   messages: any[],
   options?: { maxMessages?: number; perMessageChars?: number; totalChars?: number },
@@ -999,6 +1038,7 @@ export function doneTranscript(
   const perMessageChars = options?.perMessageChars ?? 500
   const totalChars = options?.totalChars ?? 12000
   const lines = messages
+    .filter((m: any) => !NON_CONVERSATION_KINDS.has(messageKind(m)))
     .slice(-maxMessages)
     .map((m: any) => messageText(m).slice(0, perMessageChars))
     .filter((line: string) => !isOwnNoticeRow(line))

@@ -100,6 +100,9 @@ import {
   parseMinConfidence,
   taskFromMessages,
   doneCheckStandDown,
+  doneNudgeCapReached,
+  DONE_NUDGE_CAP,
+  awaitingUserInput,
   describeModelRows,
   doneTranscript,
   doneVerdict,
@@ -3374,6 +3377,12 @@ export default Plugin.define({
     // A run of identical rows in the tail is a detected loop - the notice
     // then says so instead of re-asking for "the remaining work".
     //
+    // Two hard ceilings keep the probe from becoming a context leak:
+    // `awaitingUserInput` stands down when the turn ended with a question to
+    // the human (that is a stop for input, not a silent stop), and
+    // `DONE_NUDGE_CAP` limits what a chatty model or a stale threshold can
+    // spend on wakes per session.
+    //
     // Duplicate end-of-turn events (and subscriptions stacked by a plugin
     // reload - setup returns a cleanup now) must not probe concurrently:
     // concurrent probes all read the marker as absent and each posts a
@@ -3389,6 +3398,7 @@ export default Plugin.define({
         const key = `done-check/${String(sessionID)}`
         let tail: ReturnType<typeof doneTranscript> | undefined
         let userCount = 0
+        let nudges = 0
         try {
           const messages = contextRows(await (ctx as any).session.context({ sessionID }))
           userCount = userRowCount(messages)
@@ -3396,16 +3406,36 @@ export default Plugin.define({
           try {
             seen = await (ctx as any).storage.get(key)
           } catch {}
+          nudges = typeof seen?.nudges === "number" ? seen.nudges : 0
           // Stand-down: a notice already went out for this user message.
           // The agent's reply to a notice changes the tail hash, so the hash
           // gate alone cannot stop the loop - the user-message count can.
           if (doneCheckStandDown(seen, userCount)) return
+          if (doneNudgeCapReached(seen)) {
+            console.log(
+              `[jev] done-check: ${sessionID} nudge cap reached (${nudges}) - no further probes this session`,
+            )
+            return
+          }
+          if (awaitingUserInput(messages)) {
+            console.log(`[jev] done-check: ${sessionID} waiting on a user answer - probe stood down`)
+            return
+          }
           tail = doneTranscript(messages)
+          // Nothing conversational after filtering (only switch/idle rows):
+          // judging an empty state would be meaningless.
+          if (tail.text.trim() === "") return
           if (seen?.hash === tail.hash) return
           const { reply } = await cachedJudge([DONE_QUESTION], tail.text, AbortSignal.timeout(8_000), sessionID)
           const done = reply.answers?.done?.noul
           try {
-            await (ctx as any).storage.set(key, { hash: tail.hash })
+            await (ctx as any).storage.set(key, {
+              hash: tail.hash,
+              ...(nudges > 0 ? { nudges } : {}),
+              ...(typeof seen?.userCountAtNotice === "number"
+                ? { userCountAtNotice: seen.userCountAtNotice }
+                : {}),
+            })
           } catch {}
           if (shouldNotifyIncomplete(done, notifyBelow)) {
             // The notice wakes a turn this plugin never sees admitted - get
@@ -3423,11 +3453,18 @@ export default Plugin.define({
               ? `[jev-done-check] loop detected (p(complete)=${fmt(done)}): the tail repeats identical messages - the remaining work is likely not actionable by replying again. Interrupt or send a new instruction.`
               : `[jev-done-check] p(complete)=${fmt(done)} → likely INCOMPLETE - do not silently stop: continue the remaining work or list it for the user`
             await (ctx as any).session.synthetic({ sessionID, text })
-            // Stand-down marker: no further notice until a new user message.
+            // Stand-down marker: no further notice until a new user message,
+            // and at most DONE_NUDGE_CAP notices for the whole session.
             try {
-              await (ctx as any).storage.set(key, { hash: tail.hash, userCountAtNotice: userCount })
+              await (ctx as any).storage.set(key, {
+                hash: tail.hash,
+                userCountAtNotice: userCount,
+                nudges: nudges + 1,
+              })
             } catch {}
-            console.log(`[jev] done-check: ${sessionID} p=${fmt(done)} - ${tail.loop ? "loop" : "incomplete"} notice posted`)
+            console.log(
+              `[jev] done-check: ${sessionID} p=${fmt(done)} - ${tail.loop ? "loop" : "incomplete"} notice posted (${nudges + 1}/${DONE_NUDGE_CAP})`,
+            )
           }
         } catch (err: any) {
           // A failed probe stands down exactly like a posted notice. Without
@@ -3443,6 +3480,7 @@ export default Plugin.define({
             await (ctx as any).storage.set(key, {
               ...(tail ? { hash: tail.hash } : {}),
               userCountAtNotice: userCount,
+              ...(nudges > 0 ? { nudges } : {}),
             })
           } catch {}
           await surfaceJev(err?.message, sessionID)

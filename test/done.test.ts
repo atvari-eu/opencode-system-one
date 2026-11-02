@@ -4,7 +4,10 @@
 import { describe, expect, test } from "bun:test"
 import {
   clampThreshold,
+  awaitingUserInput,
   doneCheckStandDown,
+  doneNudgeCapReached,
+  DONE_NUDGE_CAP,
   doneTranscript,
   doneVerdict,
   idleSessionID,
@@ -182,7 +185,44 @@ describe("userRowCount + doneCheckStandDown on flat v2 rows", () => {
     expect(tail.text).toContain("the visible reply")
     expect(tail.text).not.toContain("hidden deliberation")
     // an unknown row shape still degrades to its JSON - never to an empty tail
-    expect(doneTranscript([flatIdle]).text.length).toBeGreaterThan(0)
+    const flatUnknown = { id: "msg_x1", time: { created: 5 }, type: "mystery", payload: { a: 1 } }
+    expect(doneTranscript([flatUnknown]).text.length).toBeGreaterThan(0)
+  })
+
+  test("switch/idle timeline rows are dropped like the host's toLLMMessage", () => {
+    const modelSwitch = {
+      id: "msg_m1",
+      time: { created: 4 },
+      type: "model-switched",
+      model: { providerID: "opencode", id: "one" },
+      previous: { providerID: "opencode", id: "two" },
+    }
+    const agentSwitch = {
+      id: "msg_a2",
+      time: { created: 5 },
+      type: "agent-switched",
+      agent: "build",
+      previous: "plan",
+    }
+    const plain = doneTranscript([flatUser, flatAssistant])
+    const withTimeline = doneTranscript([flatUser, modelSwitch, flatAssistant, agentSwitch, flatIdle])
+    expect(withTimeline.hash).toBe(plain.hash)
+    expect(withTimeline.text).not.toContain("model-switched")
+    expect(withTimeline.text).not.toContain("agent-switched")
+    expect(withTimeline.text).not.toContain("idle")
+  })
+
+  test("switch rows never consume the conversational message window", () => {
+    const switches = Array.from({ length: 30 }, (_, i) => ({
+      id: `msg_s${i}`,
+      time: { created: i },
+      type: "model-switched",
+      model: { providerID: "opencode", id: "one" },
+      previous: { providerID: "opencode", id: "two" },
+    }))
+    const tail = doneTranscript([flatUser, ...switches, flatAssistant])
+    expect(tail.text).toContain("fix the loop")
+    expect(tail.text).toContain("the visible reply")
   })
 
   test("own synthetic notices stay excluded from text and hash on flat rows", () => {
@@ -221,6 +261,62 @@ describe("shouldNotifyIncomplete", () => {
     expect(shouldNotifyIncomplete(0.46, 0.45)).toBe(false)
     expect(shouldNotifyIncomplete(0.9, 0.45)).toBe(false)
     expect(shouldNotifyIncomplete(undefined, 0.45)).toBe(false)
+  })
+})
+
+describe("awaitingUserInput", () => {
+  test("an assistant turn ending in a question is waiting on the human", () => {
+    expect(awaitingUserInput([userRow("fix it"), assistantRow("Which file should I edit?")])).toBe(true)
+    expect(awaitingUserInput([userRow("fix it"), assistantRow("Done.\n\nShall I commit?")])).toBe(true)
+  })
+
+  test("statements and tool-shaped rows are not a question", () => {
+    expect(awaitingUserInput([userRow("fix it"), assistantRow("Done. Tests pass.")])).toBe(false)
+    expect(awaitingUserInput([userRow("fix it")])).toBe(false)
+    expect(awaitingUserInput([])).toBe(false)
+  })
+
+  test("own notices after the question do not hide it", () => {
+    expect(
+      awaitingUserInput([
+        userRow("fix it"),
+        assistantRow("Which one should I pick?"),
+        row("[jev-done-check] p(complete)=0.15 → likely INCOMPLETE"),
+      ]),
+    ).toBe(true)
+  })
+
+  test("a newer user row resets the check", () => {
+    expect(
+      awaitingUserInput([
+        assistantRow("Which one should I pick?"),
+        userRow("the second"),
+      ]),
+    ).toBe(false)
+  })
+
+  test("reads flat v2 assistant content parts", () => {
+    expect(
+      awaitingUserInput([
+        flatUser,
+        {
+          ...flatAssistant,
+          content: [{ type: "text", text: "Should I proceed?" }],
+        },
+      ]),
+    ).toBe(true)
+  })
+})
+
+describe("doneNudgeCapReached", () => {
+  test("caps nudges per session regardless of user turns", () => {
+    expect(DONE_NUDGE_CAP).toBe(3)
+    expect(doneNudgeCapReached(undefined)).toBe(false)
+    expect(doneNudgeCapReached({})).toBe(false)
+    expect(doneNudgeCapReached({ nudges: 2 })).toBe(false)
+    expect(doneNudgeCapReached({ nudges: 3 })).toBe(true)
+    expect(doneNudgeCapReached({ nudges: 4 })).toBe(true)
+    expect(doneNudgeCapReached({ nudges: 2 }, 2)).toBe(true)
   })
 })
 
