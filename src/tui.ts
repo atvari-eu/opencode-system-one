@@ -22,7 +22,7 @@
 // own `@opencode/plugin/tui` re-exports pull solid-js in. A structural shape
 // (id + setup, exactly what the runtime validates) avoids that dependency.
 import { JEVS_ERROR_MARK, JEV_CONFIG_ERROR_MARK, jevModelTag } from "./logic"
-import { jevRpcClientOf, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
+import { jevRpcClientOf, subscribeJevEvents, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
 
 interface ToastOptions {
   readonly title?: string
@@ -93,86 +93,108 @@ export default {
     //   error   failed judged call (one per 60 s window per title)
     //   config  init deployment fault, once per changed config
     //   scrub   secret-like tokens removed from a prompt/tool input (counts only)
+    //   approval permission resolution (deny/gate/fail toast; allow/ask quiet)
     // Legacy/fallback: the corresponding "[jev-…]" synthetic rows on hosts
-    // without the event surface. Rows are skipped when events are active so
-    // the same signal never toasts twice; "[jev-config-error]" rows also
-    // cover hosts whose init check ran before the RPC registration existed.
-    let rpcEventsActive = false
-    try {
-      const jev = await jevRpcClientOf(context)
-      const on = jev?.events?.on
-      if (typeof on === "function") {
-        rpcEventsActive = true
-        const stopError = on.call(jev.events, "error", (event: any) => {
-          const data = event?.data ?? {}
-          const message = typeof data.message === "string" ? data.message : ""
-          if (!message) return
-          context.ui.toast.show({
-            title: "jev",
-            message,
-            variant: "error",
-            duration: 10_000,
-            ...(typeof data.sessionID === "string" ? { sessionID: data.sessionID } : {}),
-          })
+    // without the event surface. Subscriptions are re-established on
+    // `server.connected` because ctx.client changes when the server restarts.
+    const shownConfig = context.storage.store<{ message: string }>("jev-config-fault-shown", {
+      initial: { message: "" },
+    })
+    // One config toast per fault message, across live events, the startup RPC
+    // replay, and legacy rows.
+    const showConfigFault = (message: unknown): void => {
+      const text = typeof message === "string" ? message.trim() : ""
+      if (!text) return
+      try {
+        if (shownConfig[0]?.message === text) return
+        shownConfig[1]((draft: { message: string }) => {
+          draft.message = text
         })
-        if (typeof stopError === "function") cleanups.push(stopError)
-        const stopConfig = on.call(jev.events, "config", (event: any) => {
-          const message = typeof event?.data?.message === "string" ? event.data.message : ""
-          if (!message) return
-          context.ui.toast.show({
-            title: "jev config",
-            message,
-            variant: "error",
-            duration: 20_000,
-          })
-        })
-        if (typeof stopConfig === "function") cleanups.push(stopConfig)
-        const stopScrub = on.call(jev.events, "scrub", (event: any) => {
-          const data = event?.data ?? {}
-          const hits = typeof data.hits === "number" ? data.hits : 0
-          if (hits <= 0) return
-          const where = data.kind === "prompt" ? "the prompt" : (data.tool ?? "a tool input")
-          context.ui.toast.show({
-            title: "jev scrub",
-            message: `removed ${hits} secret-like token(s) from ${where}`,
-            variant: "warning",
-            duration: 8_000,
-            ...(typeof data.sessionID === "string" ? { sessionID: data.sessionID } : {}),
-          })
-        })
-        if (typeof stopScrub === "function") cleanups.push(stopScrub)
-        const stopApproval = on.call(jev.events, "approval", (event: any) => {
-          const data = event?.data ?? {}
-          const outcome = typeof data.outcome === "string" ? data.outcome : ""
-          // Auto-allow/ask are the quiet, delegated path; refusals and
-          // judgment failures are the ones a human needs to see.
-          if (outcome !== "deny" && outcome !== "gate" && outcome !== "fail") return
-          const action = typeof data.action === "string" ? data.action : "permission"
-          const resource = typeof data.resource === "string" && data.resource ? ` ${data.resource}` : ""
-          context.ui.toast.show({
-            title: "jev approval",
-            message: `${outcome === "fail" ? "judgment failed" : outcome === "gate" ? "gated" : "denied"}: ${action}${resource}`,
-            variant: outcome === "fail" ? "warning" : "error",
-            duration: 10_000,
-            ...(typeof data.sessionID === "string" ? { sessionID: data.sessionID } : {}),
-          })
-        })
-        if (typeof stopApproval === "function") cleanups.push(stopApproval)
-      }
-    } catch {
-      rpcEventsActive = false
+      } catch {}
+      context.ui.toast.show({
+        title: "jev config",
+        message: text,
+        variant: "error",
+        duration: 20_000,
+      })
     }
+
+    const statusHandlers: Record<string, (data: any) => void> = {
+      error: (data) => {
+        const message = typeof data?.message === "string" ? data.message : ""
+        if (!message) return
+        context.ui.toast.show({
+          title: "jev",
+          message,
+          variant: "error",
+          duration: 10_000,
+          ...(typeof data?.sessionID === "string" ? { sessionID: data.sessionID } : {}),
+        })
+      },
+      config: (data) => showConfigFault(data?.message),
+      scrub: (data) => {
+        const hits = typeof data?.hits === "number" ? data.hits : 0
+        if (hits <= 0) return
+        const where = data.kind === "prompt" ? "the prompt" : (data.tool ?? "a tool input")
+        context.ui.toast.show({
+          title: "jev scrub",
+          message: `removed ${hits} secret-like token(s) from ${where}`,
+          variant: "warning",
+          duration: 8_000,
+          ...(typeof data?.sessionID === "string" ? { sessionID: data.sessionID } : {}),
+        })
+      },
+      approval: (data) => {
+        const outcome = typeof data?.outcome === "string" ? data.outcome : ""
+        // Auto-allow/ask are the quiet, delegated path; refusals and
+        // judgment failures are the ones a human needs to see.
+        if (outcome !== "deny" && outcome !== "gate" && outcome !== "fail") return
+        const action = typeof data.action === "string" ? data.action : "permission"
+        const resource = typeof data.resource === "string" && data.resource ? ` ${data.resource}` : ""
+        context.ui.toast.show({
+          title: "jev approval",
+          message: `${outcome === "fail" ? "judgment failed" : outcome === "gate" ? "gated" : "denied"}: ${action}${resource}`,
+          variant: outcome === "fail" ? "warning" : "error",
+          duration: 10_000,
+          ...(typeof data?.sessionID === "string" ? { sessionID: data.sessionID } : {}),
+        })
+      },
+    }
+
+    let rpcEventsActive = false
+    let stopStatusEvents: (() => void) | undefined
+    // Late-subscriber replay: the init fault is persisted server-side; this
+    // also covers a TUI that started after the live config event.
+    const refreshConfigFault = async (): Promise<void> => {
+      try {
+        const jev = await jevRpcClientOf(context)
+        const status = await jev?.configFault?.({})
+        if (status?.fault?.message) showConfigFault(status.fault.message)
+      } catch {}
+    }
+    const connectStatus = async (): Promise<void> => {
+      stopStatusEvents?.()
+      const sub = await subscribeJevEvents(context, statusHandlers)
+      stopStatusEvents = sub.dispose
+      rpcEventsActive = sub.active
+      await refreshConfigFault()
+    }
+    await connectStatus()
+    cleanups.push(() => stopStatusEvents?.())
+    // A server restart gives the TUI a new ctx.client; old subscriptions are
+    // stale. Re-attach on the reconnect event and replay the config fault.
+    try {
+      const stopServer = context.data.on("server.connected", () => {
+        void connectStatus()
+      })
+      cleanups.push(stopServer)
+    } catch {}
 
     const unlisten = context.data.on("session.synthetic", (event) => {
       const text = typeof event?.text === "string" ? event.text : ""
       if (text.startsWith(JEV_CONFIG_ERROR_MARK)) {
-        if (rpcEventsActive) return
-        context.ui.toast.show({
-          title: "jev config",
-          message: text.slice(JEV_CONFIG_ERROR_MARK.length),
-          variant: "error",
-          duration: 20_000,
-        })
+        // Dedupe against the event/RPC replay: one config toast per message.
+        showConfigFault(text.slice(JEV_CONFIG_ERROR_MARK.length))
         return
       }
       if (!text.startsWith(JEVS_ERROR_MARK)) return

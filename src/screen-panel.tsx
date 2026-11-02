@@ -15,7 +15,7 @@ import {
   screenEventItemOf,
   type ScreenVerdictItem,
 } from "./logic"
-import { jevRpcClientOf } from "./rpc"
+import { subscribeJevEvents } from "./rpc"
 
 interface PanelInput {
   readonly name: string
@@ -95,24 +95,29 @@ export default {
     }
 
     // Primary channel: the server half's transcript-free `screen` event.
-    // Establishing the subscription marks events as authoritative, so the
-    // synthetic fallback below never double-records the same verdict on
-    // hosts that emit both.
+    // Subscriptions are re-established on `server.connected`: ctx.client
+    // changes when the server restarts and old listeners go stale. The
+    // synthetic fallback below remains for hosts without the event surface.
     let rpcActive = false
-    let rpcUnlisten: (() => void) | undefined
-    try {
-      const jev = await jevRpcClientOf(context)
-      const on = jev?.events?.on
-      if (typeof on === "function") {
-        rpcActive = true
-        rpcUnlisten = on.call(jev.events, "screen", (event: any) => {
-          const item = screenEventItemOf(event?.data)
+    let stopScreenEvents: (() => void) | undefined
+    const connectScreen = async (): Promise<void> => {
+      stopScreenEvents?.()
+      const sub = await subscribeJevEvents(context, {
+        screen: (data) => {
+          const item = screenEventItemOf(data)
           if (item) record(item)
-        })
-      }
-    } catch {
-      rpcActive = false
+        },
+      })
+      stopScreenEvents = sub.dispose
+      rpcActive = sub.active
     }
+    await connectScreen()
+    let stopServer: (() => void) | undefined
+    try {
+      stopServer = context.data.on("server.connected", () => {
+        void connectScreen()
+      })
+    } catch {}
 
     // Legacy/fallback channel: synthetic rows (anomalies only in current
     // builds). Kept for hosts whose RPC surface has no events.
@@ -131,7 +136,8 @@ export default {
     })
 
     return async () => {
-      if (typeof rpcUnlisten === "function") rpcUnlisten()
+      if (typeof stopServer === "function") stopServer()
+      if (typeof stopScreenEvents === "function") stopScreenEvents()
       unlisten()
       unslot()
     }

@@ -19,6 +19,7 @@ describe("makeJevRpc", () => {
     expect(definition.methods.describe.output.required).toContain("models")
     expect(definition.methods.set.input.required).toEqual(["sessionID", "model"])
     expect(definition.methods.reset.input.required).toEqual(["sessionID"])
+    expect(definition.methods.configFault).toBeDefined()
   })
 
   test("declares the transcript-free screen event", async () => {
@@ -41,6 +42,7 @@ describe("makeJevRpc", () => {
   test("declares the config and scrub UI events", async () => {
     const definition: any = await makeJevRpc()
     expect(definition.events?.config?.schema?.required).toEqual(["message"])
+    expect(definition.events?.config?.schema?.properties?.fingerprint).toBeDefined()
     const scrub = definition.events?.scrub?.schema
     expect(scrub).toBeDefined()
     expect(scrub.required).toEqual(["kind", "hits"])

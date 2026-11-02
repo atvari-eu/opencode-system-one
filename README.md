@@ -131,7 +131,11 @@ Failures are **event-first**: the TUI toasts them over the plugin's RPC
 `error` event without a transcript row; hosts without an event surface
 keep the `[jev-error]` row. The init config fault is buffered through setup
 and delivered the same way over the `config` event (once per config change;
-the `[jev-config-error]` row is the fallback). Routing and effort
+the `[jev-config-error]` row is the fallback). The fault is also persisted,
+so a TUI/GUI that starts after the event replays it through the
+`configFault` RPC method; event subscriptions re-establish on
+`server.connected` because `ctx.client` changes across server restarts.
+Routing and effort
 judge failures surface the same way instead of staying console-only.
 Screening failures on local tools ride the TUI event channel too instead of
 inlining into the tool output (hosts without the event surface keep the

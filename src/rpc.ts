@@ -104,6 +104,21 @@ const methods = {
       additionalProperties: false,
     },
   },
+  configFault: {
+    input: { type: "object", properties: {}, additionalProperties: false },
+    output: {
+      type: "object",
+      properties: {
+        fault: {
+          type: "object",
+          properties: { fingerprint: STRING, message: STRING, at: STRING },
+          required: ["fingerprint", "message"],
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 }
 
 /** Events emitted by the server half. `screen` is the transcript-free UI
@@ -142,6 +157,7 @@ const events = {
       type: "object",
       properties: {
         message: STRING,
+        fingerprint: STRING,
       },
       required: ["message"],
       additionalProperties: false,
@@ -205,6 +221,53 @@ export async function jevRpcClientOf(context: any): Promise<any | undefined> {
     return client.rpc(definition)
   } catch {
     return undefined
+  }
+}
+
+export interface JevEventSubscription {
+  /** True when the host exposes the RPC event surface. */
+  active: boolean
+  dispose: () => void
+}
+
+/** TUI/GUI helper: subscribe to the jev-config events. Re-call it after
+ * `server.connected` - `ctx.client` changes when the server restarts and the
+ * old subscriptions go stale. Handler exceptions are swallowed so one bad
+ * payload never tears down the rest. */
+export async function subscribeJevEvents(
+  context: any,
+  handlers: Record<string, (data: any) => void>,
+): Promise<JevEventSubscription> {
+  const stops: Array<() => void> = []
+  try {
+    const jev = await jevRpcClientOf(context)
+    const on = jev?.events?.on
+    if (typeof on !== "function") return { active: false, dispose: () => {} }
+    for (const [name, handler] of Object.entries(handlers)) {
+      const stop = on.call(jev.events, name, (event: any) => {
+        try {
+          handler(event?.data)
+        } catch {}
+      })
+      if (typeof stop === "function") stops.push(stop)
+    }
+    return {
+      active: true,
+      dispose: () => {
+        for (const stop of stops) {
+          try {
+            stop()
+          } catch {}
+        }
+      },
+    }
+  } catch {
+    for (const stop of stops) {
+      try {
+        stop()
+      } catch {}
+    }
+    return { active: false, dispose: () => {} }
   }
 }
 

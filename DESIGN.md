@@ -316,6 +316,14 @@ anomalies/failures only; passes are never re-materialized as rows. The TUI
 subscription is authoritative when established, so rows and events never
 double-record the same verdict.
 
+Live events are not replayable, so the config fault is also persisted in
+plugin storage and replayed through the `configFault` RPC method: a TUI/GUI
+that starts after the `config` event still surfaces it, and the TUI dedupes
+by message in its own durable store. TUI and panel event subscriptions
+re-attach on `server.connected` (ctx.client changes across server restarts)
+rather than holding a stale listener; the synthetic fallback follows the new
+subscription's state.
+
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.
 Instead it is hard-bounded - `awaitingUserInput` stands down when the newest

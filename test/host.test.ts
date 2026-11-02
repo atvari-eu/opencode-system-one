@@ -43,6 +43,7 @@ function makeCtx(options: Record<string, any> = {}) {
   const kv = new Map<string, any>()
   const synthetic: Array<{ sessionID?: string; text: string }> = []
   const events: Array<{ name: string; data: any }> = []
+  const rpcMethods: any[] = []
   const hookKey = (domain: string, name: string) => `${domain}:${name}`
 
   const session: any = {
@@ -99,16 +100,19 @@ function makeCtx(options: Record<string, any> = {}) {
     provider: { transform: async (cb: HookFn) => cb(makeEditor(new Map())) },
     event: { subscribe: async function* () {} },
     rpc: {
-      register: async () => ({
-        events: {
-          emit: async (name: string, data: any) => {
-            events.push({ name, data })
+      register: async (_definition: unknown, methods: any) => {
+        rpcMethods.push(methods)
+        return {
+          events: {
+            emit: async (name: string, data: any) => {
+              events.push({ name, data })
+            },
           },
-        },
-      }),
+        }
+      },
     },
   }
-  return { ctx, hooks, commands, tools, kv, synthetic, events }
+  return { ctx, hooks, commands, tools, kv, synthetic, events, rpcMethods }
 }
 
 const APPROVALS_OPTIONS: Record<string, any> = {
@@ -309,9 +313,22 @@ describe("plugin runtime harness", () => {
     expect(config.length).toBe(1)
     expect(typeof config[0]?.data.message).toBe("string")
     expect(String(config[0]?.data.message).length).toBeGreaterThan(0)
+    expect(typeof config[0]?.data.fingerprint).toBe("string")
     expect(
       built.synthetic.filter((s) => s.text.startsWith("[jev-config-error]")),
     ).toEqual([])
+  })
+
+  test("config faults are persisted for late subscribers", async () => {
+    const plugin = await loadSetup()
+    const built = makeCtx({ screen: { enabled: false } })
+    await plugin.setup(built.ctx)
+    const methods = built.rpcMethods[0]
+    expect(methods?.configFault).toBeDefined()
+    const status = await methods.configFault({})
+    expect(status?.fault).toBeDefined()
+    expect(String(status.fault.message).length).toBeGreaterThan(0)
+    expect(typeof status.fault.fingerprint).toBe("string")
   })
 
   test("scrub hits surface as an event with counts only, never the matched text", async () => {

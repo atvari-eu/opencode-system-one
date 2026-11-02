@@ -8,7 +8,7 @@ behavior change instead of duplicating them here.
 ## Commands
 
 - `bun` is not on PATH: run tests as `nix shell nixpkgs#bun -c bun test`
-  (412 tests, 21 files, ~7 s). That is the entire
+  (413 tests, 21 files, ~7 s). That is the entire
   check — there is no tsc, linter, formatter, codegen, or CI config to hunt
   for, and no build step (OpenCode loads `src/index.ts` directly).
 - One file: `nix shell nixpkgs#bun -c bun test ./test/route.test.ts`. The
@@ -60,7 +60,9 @@ behavior change instead of duplicating them here.
   verdicts, `error` event-first for failed judged calls, `config` for the
   buffered init fault, `scrub` for counts-only redaction hits, and
   `approval` for permission resolutions. Rows are the fallback only when
-  the host has no event surface. Only
+  the host has no event surface. The init fault is persisted and replayed
+  through `configFault` for late subscribers; TUI/panel subscriptions
+  re-attach on `server.connected` (ctx.client changes across restarts). Only
   flagged/unsafe results, withheld unsafe content, approval hints, explicit
   commands, and capped done-check nudges (`DONE_NUDGE_CAP` +
   `awaitingUserInput`) may write. `screen.mode: "redact"` withholds unsafe

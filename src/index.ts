@@ -1170,27 +1170,32 @@ export default Plugin.define({
     )
     // Buffered init fault: the deployment check runs before the RPC
     // registration exists, so its message is delivered event-first below.
-    let pendingConfigFault: string | undefined = undefined
+    // The stored entry is also what late subscribers read via configFault().
+    let pendingConfigFault: { message: string; fingerprint: string } | undefined = undefined
     try {
+      const faultKey = "jev-init-fault"
       if (!deployCheck.ok) {
         const fault = deployCheck.fault
         console.log(`[jev] init: judged features fail closed - ${fault.message}`)
-        const faultKey = "jev-init-fault"
-        const prev = await (ctx as any).storage?.get?.(faultKey)
-        // Once per config change: re-toast only when the broken deployment
-        // differs from the last one reported (same fingerprint repeats stay
-        // silent across restarts; the per-session rows remain the regular
-        // cadence).
-        if ((prev as any)?.fingerprint !== fault.fingerprint) {
-          await (ctx as any).storage?.set?.(faultKey, {
-            fingerprint: fault.fingerprint,
-            kind: fault.kind,
-            at: new Date().toISOString(),
-          })
-          // Buffer for event-first delivery after the RPC registration; the
-          // row is only the fallback for hosts without the event surface.
-          pendingConfigFault = fault.message
+        const prev: any = await (ctx as any).storage?.get?.(faultKey)
+        // Keep the message persisted even when the fingerprint is unchanged,
+        // so a TUI that starts after this process can still read it. The live
+        // event fires only on a change (once per config change).
+        const changed = prev?.fingerprint !== fault.fingerprint || prev?.message !== fault.message
+        await (ctx as any).storage?.set?.(faultKey, {
+          fingerprint: fault.fingerprint,
+          kind: fault.kind,
+          message: fault.message,
+          at: new Date().toISOString(),
+        })
+        if (changed) {
+          pendingConfigFault = { message: fault.message, fingerprint: fault.fingerprint }
         }
+      } else {
+        // A fixed deployment must not leave a stale fault for late readers.
+        try {
+          await (ctx as any).storage?.remove?.(faultKey)
+        } catch {}
       }
     } catch (err) {
       // Surfacing must never take the plugin down; the fault stays console-only.
@@ -1614,6 +1619,24 @@ export default Plugin.define({
             set: async (input: any): Promise<JevSetResult> =>
               setModelPin(String(input?.sessionID ?? ""), String(input?.model ?? "")),
             reset: async (input: any): Promise<JevSetResult> => resetModelPin(String(input?.sessionID ?? "")),
+            // Late-subscriber replay: the init fault is persisted above, so a
+            // TUI/GUI that starts after the live `config` event can still
+            // surface it (and dedupe on its own side).
+            configFault: async (): Promise<any> => {
+              try {
+                const stored: any = await (ctx as any).storage?.get?.("jev-init-fault")
+                if (stored && typeof stored.message === "string" && stored.message) {
+                  return {
+                    fault: {
+                      fingerprint: String(stored.fingerprint ?? ""),
+                      message: stored.message,
+                      ...(typeof stored.at === "string" ? { at: stored.at } : {}),
+                    },
+                  }
+                }
+              } catch {}
+              return {}
+            },
           })
           console.log(
             `[jev] picker: jev-config rpc registered (${PICK_MODELS.length} candidates; /jev-models in the TUI)`,
@@ -1628,9 +1651,9 @@ export default Plugin.define({
     // Event-first (the TUI toasts it without a transcript row); the row stays
     // the fallback for hosts without RPC events.
     if (pendingConfigFault !== undefined) {
-      const message = pendingConfigFault
+      const { message, fingerprint } = pendingConfigFault
       pendingConfigFault = undefined
-      if (emitJevEvent("config", { message })) {
+      if (emitJevEvent("config", { message, fingerprint })) {
         console.log(`[jev] init: config fault surfaced (event) - ${message}`)
       } else {
         try {
