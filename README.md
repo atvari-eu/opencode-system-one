@@ -67,13 +67,16 @@ compaction can be decided by System One instead of a lossy summary
   `/jev-approval-stats` lists which command patterns trigger approvals and how
   they resolve, so recurring asks can become explicit permissions rules.
   `/jev-audit` opens the side panel with every UI-only event (screen verdicts,
-  errors, config faults, scrub hits, approvals), newest first in a
+  errors, config faults, scrub hits, approvals), oldest first in a
   `TIME / KIND / DECISION / SUBJECT / DETAIL` table (the decision cell carries
   a one-cell `✓/!/✗/?` cue, not emoji): `a/s/e/p/r/x` filter,
   `j/k` select, `g/G` top/bottom, `enter`/`space` expand, `y` copy the
-  selected row, `c` copy all, `esc/q` close. Long or multi-line events are
-  cropped to one row; click a row to select and expand it (the filter chips in
-  the header are clickable too). All answer without loading a skill.
+  selected row, `c` copy all, `d` deselect and resume following the newest,
+  `esc/q` close. The panel opens at the newest row and keeps following it
+  while nothing is selected; selecting a row stops auto-scroll. Long or
+  multi-line events are cropped to one row; click a row to select and expand
+  it (the filter chips in the header are clickable too). All answer without
+  loading a skill.
 - **route** (opt-in) - before each turn, jev picks which model runs the turn
   and/or how much reasoning effort it gets, in one judgment, applied through
   the same switch mechanism as the UI's model/effort picker. Fail closed to

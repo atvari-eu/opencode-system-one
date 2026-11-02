@@ -130,9 +130,8 @@ function Panel(props: {
   // Plain reads inside JSX keep reactivity in the host's Solid runtime.
   const view = (): ViewStore => props.view?.[0] ?? { filter: "all", expanded: {} }
   const all = (): AuditEntry[] => props.store?.[0]?.items ?? []
-  // Newest first: the ring appends chronologically, but a log is most useful
-  // with the latest event at the top.
-  const entries = (): AuditEntry[] => filterAudit(all(), view().filter ?? "all").reverse()
+  // Ascending: oldest at the top, newest at the bottom.
+  const entries = (): AuditEntry[] => filterAudit(all(), view().filter ?? "all")
   const total = (): number => all().length
   const filterLabel = (): string => {
     const current = view().filter ?? "all"
@@ -140,11 +139,12 @@ function Panel(props: {
   }
   const expanded = (id: string): boolean => Boolean(view().expanded?.[id])
   const selectedId = (): string | undefined => {
-    const rows = entries()
     const current = view().selected
-    return current && rows.some((entry) => entry.id === current) ? current : rows[0]?.id
+    if (!current) return undefined
+    return entries().some((entry) => entry.id === current) ? current : undefined
   }
   const selectedEntry = (): AuditEntry | undefined => entries().find((entry) => entry.id === selectedId())
+  const following = (): boolean => selectedId() === undefined
   const selectedBg = () => props.context?.theme?.background?.action?.primary?.focused
   const selectedFg = () =>
     props.context?.theme?.text?.action?.primary?.focused ?? props.context?.theme?.text?.base
@@ -167,7 +167,19 @@ function Panel(props: {
     const rows = entries()
     if (rows.length === 0) return
     const current = rows.findIndex((entry) => entry.id === selectedId())
-    selectAt((current < 0 ? 0 : current) + delta)
+    // With no selection the view is following the newest row at the bottom;
+    // the first move selects that row, later moves walk from there.
+    if (current < 0) {
+      selectAt(rows.length - 1)
+      return
+    }
+    selectAt(current + delta)
+  }
+  const deselect = (): void => {
+    props.view[1]((draft) => {
+      draft.selected = undefined
+    })
+    list?.scrollTo(Infinity)
   }
   const toggle = (id: string): void => {
     props.view[1]((draft) => {
@@ -190,12 +202,18 @@ function Panel(props: {
     if (entry) toggle(entry.id)
   }
   const setFilter = (kind: AuditKind | "all"): void => {
-    const rows = filterAudit(all(), kind)
     props.view[1]((draft) => {
       draft.filter = kind
-      draft.selected = rows.at(-1)?.id
     })
-    list?.scrollTo(0)
+    const stillVisible = selectedEntry()
+    if (stillVisible) {
+      list?.scrollChildIntoView?.(rowDomID(stillVisible.id))
+      return
+    }
+    props.view[1]((draft) => {
+      draft.selected = undefined
+    })
+    list?.scrollTo(Infinity)
   }
   const copy = (text: string, what: string): void => {
     let ok = false
@@ -220,10 +238,10 @@ function Panel(props: {
     }
   }
   const navigationHints = (): string => {
-    if ((props.panel.width ?? 0) < 82) {
-      return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} select · ${key("jev.audit.expand", "enter")} expand · ${key("jev.audit.copy-row", "y")} copy · esc/q close`
+    if ((props.panel.width ?? 0) < 88) {
+      return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} select · ${key("jev.audit.expand", "enter")} expand · ${key("jev.audit.copy-row", "y")} copy · ${key("jev.audit.deselect", "d")} follow · esc/q close`
     }
-    return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} select · ${key("jev.audit.top", "g")}/G top/bottom · ${key("jev.audit.expand", "enter")} expand · ${key("jev.audit.copy-row", "y")} copy · ${key("jev.audit.copy", "c")} copy all · ${key("jev.audit.fullscreen", "f")} fullscreen · esc/q close`
+    return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} select · ${key("jev.audit.top", "g")}/G top/bottom · ${key("jev.audit.expand", "enter")} expand · ${key("jev.audit.copy-row", "y")} copy · ${key("jev.audit.copy", "c")} copy all · ${key("jev.audit.deselect", "d")} follow · ${key("jev.audit.fullscreen", "f")} fullscreen · esc/q close`
   }
 
   props.context.keymap.layer(() => ({
@@ -261,7 +279,7 @@ function Panel(props: {
       },
       {
         id: "jev.audit.top",
-        title: "Audit newest",
+        title: "Audit oldest",
         bind: "g",
         run: () => {
           selectAt(0)
@@ -270,12 +288,18 @@ function Panel(props: {
       },
       {
         id: "jev.audit.bottom",
-        title: "Audit oldest",
+        title: "Audit newest",
         bind: "shift+g",
         run: () => {
           selectAt(entries().length - 1)
           list?.scrollTo(Infinity)
         },
+      },
+      {
+        id: "jev.audit.deselect",
+        title: "Deselect audit row and follow newest",
+        bind: "d",
+        run: deselect,
       },
       {
         id: "jev.audit.expand",
@@ -338,11 +362,14 @@ function Panel(props: {
       </box>
       <text flexShrink={0} selectable={false} fg={muted()}>{headerRow(width())}</text>
       <scrollbox
-        ref={(value: ScrollBoxRenderable) => (list = value)}
+        ref={(value: ScrollBoxRenderable) => {
+          list = value
+          if (following()) value.scrollTo(Infinity)
+        }}
         flexGrow={1}
         minHeight={0}
-        stickyScroll
-        stickyStart="top"
+        stickyScroll={following()}
+        stickyStart="bottom"
         focusable={false}
         selectable={false}
       >
@@ -381,7 +408,11 @@ function Panel(props: {
       </scrollbox>
       <box flexShrink={0} flexDirection="row" paddingTop={1}>
         <text flexGrow={1} minWidth={0} wrapMode="none" truncate selectable={false} fg={muted()}>
-          {entries().some((entry) => moreThanRow(entry, width())) ? "▸ click or enter to expand" : ""}
+          {following()
+            ? "following newest · click a row to select"
+            : entries().some((entry) => moreThanRow(entry, width()))
+              ? "▸ click or enter to expand"
+              : "selected"}
         </text>
         <text flexShrink={0} wrapMode="none" truncate selectable={false} fg={muted()}>
           {navigationHints()}

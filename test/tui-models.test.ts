@@ -81,6 +81,10 @@ function makeContext(overrides: { rpc?: boolean | object; dialog?: boolean }) {
           },
         ] as const
       },
+      memory: (_key: string, options: { initial: unknown }) => [
+        options.initial,
+        (mutation: (draft: unknown) => void) => mutation(options.initial),
+      ],
     },
     __commands: [] as any[],
   }

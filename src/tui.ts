@@ -160,6 +160,13 @@ export default {
       initial: { items: [] },
       key: "id",
     })
+    // Same memory entry audit-panel.tsx reads. Opening the panel clears a
+    // previous selection so it starts following the newest row.
+    const auditView = context.storage.memory<{
+      filter: AuditKind | "all"
+      expanded: Record<string, boolean>
+      selected?: string
+    }>("jev-audit-view", { initial: { filter: "all", expanded: {} } })
     const recordAudit = (kind: AuditKind, data: any): void => {
       const entry = auditEntryOf(kind, data)
       if (!entry) return
@@ -336,6 +343,9 @@ export default {
               context.ui.panel.close?.()
               return
             }
+            auditView[1]((draft) => {
+              draft.selected = undefined
+            })
             context.ui.panel.open("jev-audit")
           },
         },
