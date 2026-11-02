@@ -117,6 +117,7 @@ describe("renderCallReport", () => {
     )
     expect(report).toContain("1 of 2 judged tool calls dropped")
     expect(report).toContain("1 kept with a bounded head")
+    expect(report).toContain("1 pinned tool call left unjudged")
     // counts of removed item types, no inputs or per-call lines
     expect(report).toContain("Dropped tool types: bash 1.")
     expect(report).not.toContain("rm -rf")
@@ -129,11 +130,17 @@ describe("renderCallReport", () => {
     expect(report).not.toContain("[assistant]")
   })
 
-  test("report mode ignores calls without decisions", () => {
+  test("report counts pinned calls, not candidates missing a decision", () => {
     const undecided = mkCall("d", "execute", { path: "x" }, "result")
+    const pinned = mkCall("p", "read", { path: "y" }, "result", true)
+    // The old line counted non-pinned calls without a decision (always 0 in a
+    // successful pass) and missed pinned ones; an undecided non-pinned call
+    // must not offset the real pinned count.
     const report = renderCallReport([undecided], new Map())
     expect(report).toContain("0 of 0 judged tool calls dropped")
-    expect(report).toContain("1 newer/pinned tool calls are part of the verbatim recent context.")
+    expect(report).toContain("0 pinned tool calls left unjudged")
+    const withPinned = renderCallReport([undecided, pinned], new Map())
+    expect(withPinned).toContain("1 pinned tool call left unjudged")
   })
 
   test("runCompaction report mode appends the built-in summarizer hint", async () => {

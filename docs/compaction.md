@@ -7,12 +7,13 @@ Opt-in with `"compaction": { "enabled": true }`. Replaces OpenCode's lossy summa
 - User and assistant text is never rewritten; the first (checkpoint) message and the newest `preserveRecentMessages` are pinned untouched.
 - In `"mode": "replace"` (default) the plugin supplies the pruned transcript itself as the compaction summary, so no summarizer model call runs. `"summary": "report"` condenses it to a counts-only audit note; `"transcript"` replays the kept text verbatim with per-call verdicts.
 - In `"mode": "clean"` the decisions are applied to the messages and OpenCode's built-in summarizer then runs over the cleaned history.
+- OpenCode keeps its own recent window (`compaction.keep.tokens`, 15k by default) beside the summary. On OpenCode 2.2.5 the hook is handed the whole transcript before that window is split off, so calls inside it are judged but stay verbatim regardless - those judgments cost tokens without removing context.
 
 Fail-closed: a missing key, a jev failure, a malformed answer, or a history that cannot be fitted leaves compaction entirely to OpenCode's built-in summarizer on the unmodified transcript. Decisions are never half-applied.
 
 Running `/compact` again within a minute of a jev pass yields to the built-in summarizer (the jev summary ends with a reminder). `/jev-compact` (requires `enabled`) is the explicit jev-only ask: in `replace` mode the pruned summary applies with no summarizer call, in `clean` mode the kept message counts are announced before the summarizer, and "nothing stale", duplicate-pass, and failure cases abort visibly instead of silently rerouting.
 
-Privacy: judging needs to see the conversation, so enabling compaction sends the older transcript (scrubbed of known secret formats) to your Jev endpoint. Verdicts are cached; the state text is never persisted.
+Privacy: judging needs to see the conversation, so enabling compaction sends the transcript (scrubbed of known secret formats, with tool results replaced by short size notes) to your Jev endpoint. Verdicts are cached; the state text is never persisted.
 
 ## Options
 

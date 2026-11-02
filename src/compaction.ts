@@ -33,10 +33,14 @@
 //
 // OpenCode adaptation:
 //
-//   - `session.hook("compaction")` receives the older transcript that the
-//     built-in summarizer would see (core already excludes the newest
-//     `keep` tokens), as LLM messages: tool calls and results are parts of
-//     assistant messages, paired by part id
+//   - `session.hook("compaction")` receives the transcript being summarized,
+//     as LLM messages: tool calls and results are parts of assistant
+//     messages, paired by part id. On OpenCode 2.2.5 that is the whole stored
+//     conversation - the host appends its `compaction.keep.tokens` recent
+//     window after the hook runs, it does not trim the hook's messages. Calls
+//     in that recent window are therefore judged here too: their results stay
+//     verbatim regardless of the verdict, so those judgments cost tokens but
+//     never remove context
 //   - mode "replace" (default; the reference behavior): when pruning is
 //     large enough (reduction + summary-size guards), the hook SUPPLIES
 //     `event.result` - the pruned transcript rendered verbatim - so no
@@ -934,7 +938,7 @@ export function renderCallReport(
   decisions: ReadonlyMap<string, Decision>,
 ): string {
   const judged = calls.filter((call) => !call.pinned && decisions.has(call.key))
-  const judgedOnly = calls.filter((call) => !call.pinned && !decisions.has(call.key))
+  const pinned = calls.filter((call) => call.pinned).length
 
   let dropped = 0
   let keptHeads = 0
@@ -953,7 +957,7 @@ export function renderCallReport(
   const lines: string[] = [
     "Older history was removed by System One (Jev) compaction.",
     `- ${dropped} of ${judged.length} judged tool calls dropped (call+result); ${keptHeads} kept with a bounded head.`,
-    `- ${judgedOnly.length} newer/pinned tool calls are part of the verbatim recent context.`,
+    `- ${pinned} pinned tool call${pinned === 1 ? "" : "s"} left unjudged (the first and newest messages).`,
     "Older user/assistant text is not replayed; re-run a call if its result is needed again.",
   ]
   if (droppedKinds.size > 0) {
