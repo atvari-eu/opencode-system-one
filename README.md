@@ -75,8 +75,9 @@ compaction can be decided by System One instead of a lossy summary
   `esc/q` close. The panel opens at the newest row and keeps following it
   while nothing is selected; selecting a row stops auto-scroll. Long or
   multi-line events are cropped to one row; click a row to select and expand
-  it (the filter chips in the header are clickable too). All answer without
-  loading a skill.
+  it (the filter chips in the header are clickable too). Screen rows also keep
+  the redacted, capped tool call that triggered them (command, URL, or path),
+  never the screened result text. All answer without loading a skill.
 - **route** (opt-in) - before each turn, jev picks which model runs the turn
   and/or how much reasoning effort it gets, in one judgment, applied through
   the same switch mechanism as the UI's model/effort picker. Fail closed to

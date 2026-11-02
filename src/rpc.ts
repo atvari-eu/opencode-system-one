@@ -45,6 +45,9 @@ export interface JevScreenEvent {
   injection?: number
   secret?: number
   note?: string
+  /** The tool call that triggered the screen (command, URL, path), capped and
+   * redacted server-side. Never the screened result text. */
+  call?: string
 }
 
 const STRING = { type: "string" }

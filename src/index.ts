@@ -148,6 +148,7 @@ import {
   screenWithholds,
   shouldNotifyIncomplete,
   toRef,
+  toolCallSummary,
   unwrapEnvelope,
   userRowCount,
 } from "./logic"
@@ -2670,6 +2671,8 @@ export default Plugin.define({
 
         const label = url || tool
         const sessionID = typeof event?.sessionID === "string" ? event.sessionID : undefined
+        const callText = toolCallSummary(tool, event.input)
+        const call = callText ? elideMiddle(redactText(callText).text, 240, 60) : ""
 
         // UI-only channel: the TUI half records every verdict in its panel and
         // toasts anomalies/failures. Returns false on hosts without an event
@@ -2682,6 +2685,7 @@ export default Plugin.define({
             ...(sessionID ? { sessionID } : {}),
             label,
             verdict,
+            ...(call ? { call } : {}),
             ...(typeof extra.junk === "number" ? { junk: extra.junk } : {}),
             ...(typeof extra.injection === "number" ? { injection: extra.injection } : {}),
             ...(typeof extra.secret === "number" ? { secret: extra.secret } : {}),

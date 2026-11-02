@@ -24,6 +24,7 @@ describe("auditEntryOf", () => {
       junk: 0.1,
       injection: 0.2,
       secret: 0.3,
+      call: "ls -la",
     }, at)
     expect(pass?.kind).toBe("screen")
     expect(pass?.tone).toBe("ok")
@@ -33,12 +34,23 @@ describe("auditEntryOf", () => {
     expect(pass?.summary).toContain("secret=0.30")
     expect(pass?.decision).toBe("pass")
     expect(pass?.subject).toBe("shell")
+    expect(pass?.call).toBe("ls -la")
+    expect(pass?.detail).toContain("ls -la")
     expect(pass?.detail).toContain("junk=0.10")
     expect(pass?.at).toBe(at)
 
     expect(auditEntryOf("screen", { label: "read", verdict: "flagged" })?.tone).toBe("warn")
     expect(auditEntryOf("screen", { label: "read", verdict: "unsafe" })?.tone).toBe("error")
     expect(auditEntryOf("screen", { label: "read", verdict: "error" })?.tone).toBe("error")
+
+    // A URL label already identifies the call; do not repeat it in DETAIL.
+    const web = auditEntryOf("screen", {
+      label: "https://example.test/a",
+      verdict: "pass",
+      call: "https://example.test/a",
+      junk: 0,
+    }, at)
+    expect(web?.detail?.startsWith("junk=")).toBe(true)
   })
 
   test("errors and config faults are error-toned and require a message", () => {

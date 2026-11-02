@@ -10,6 +10,7 @@ import {
   screenNeedsAttention,
   screenWithholds,
   screenVerdict,
+  toolCallSummary,
   parseScreenAnnotation,
   parseScreenMode,
   SELF_SCREENED_TOOLS,
@@ -317,6 +318,29 @@ describe("parseScreenNotice", () => {
     expect(parse("[jev-screen] failed: endpoint refused")).toBeUndefined()
     expect(parse("[jev-error] something else")).toBeUndefined()
     expect(parse("plain text")).toBeUndefined()
+  })
+})
+
+describe("toolCallSummary", () => {
+  test("keeps the recognizable call fields, not the result", () => {
+    expect(toolCallSummary("shell", { command: "ls -la" })).toBe("ls -la")
+    expect(toolCallSummary("webfetch", { url: "https://example.test/a" })).toBe("https://example.test/a")
+    expect(toolCallSummary("read", { filePath: "/tmp/a.ts" })).toBe("/tmp/a.ts")
+    expect(toolCallSummary("grep", { pattern: "needle", path: "src" })).toBe("needle src")
+  })
+
+  test("falls back to compact JSON and caps the result", () => {
+    expect(toolCallSummary("custom", { alpha: 1 })).toContain('"alpha":1')
+    const long = toolCallSummary("shell", { command: "x".repeat(500) }, 40)
+    expect(long.length).toBeLessThanOrEqual(40)
+    const elided = toolCallSummary("shell", { command: "x".repeat(500) }, 200)
+    expect(elided.length).toBeLessThanOrEqual(200)
+    expect(elided).toContain("chars")
+  })
+
+  test("empty inputs produce no preview", () => {
+    expect(toolCallSummary("shell", undefined)).toBe("")
+    expect(toolCallSummary("shell", { command: "   " })).toBe("")
   })
 })
 

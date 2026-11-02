@@ -1469,6 +1469,47 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
   }
 }
 
+/** The tool call that triggered a screen: just enough to recognize it (a
+ * shell command, URL, file path, pattern), never the screened result text.
+ * The caller redacts and caps the returned string again before it leaves the
+ * process; `cap` here keeps the preview cheap. */
+export function toolCallSummary(_tool: unknown, input: unknown, cap = 240): string {
+  const limit = Math.max(0, Math.floor(cap))
+  if (limit === 0) return ""
+  if (typeof input === "string") return elideMiddle(input.trim(), limit, Math.min(60, limit))
+  if (!input || typeof input !== "object") return ""
+  const record = input as Record<string, unknown>
+  const parts: string[] = []
+  let sawStringCallKey = false
+  for (const key of [
+    "command",
+    "cmd",
+    "url",
+    "filePath",
+    "filepath",
+    "pattern",
+    "path",
+    "query",
+    "description",
+    "prompt",
+    "text",
+  ]) {
+    const value = record[key]
+    if (typeof value !== "string") continue
+    sawStringCallKey = true
+    if (!value.trim()) continue
+    parts.push(value.trim())
+    if (parts.length === 2) break
+  }
+  if (parts.length > 0) return elideMiddle(parts.join(" "), limit, Math.min(60, limit))
+  if (sawStringCallKey) return ""
+  try {
+    return elideMiddle(JSON.stringify(input), limit, Math.min(60, limit))
+  } catch {
+    return ""
+  }
+}
+
 /** Turns a `screen` RPC event payload into the panel's item shape. The event
  * is the primary transport for pass verdicts (they never get a row), so the
  * panel must accept all four verdict kinds; malformed payloads are dropped

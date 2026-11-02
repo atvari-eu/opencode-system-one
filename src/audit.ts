@@ -20,6 +20,8 @@ export interface AuditEntry {
   decision?: string
   subject?: string
   detail?: string
+  /** Screen-only tool-call descriptor (command, URL, path), never content. */
+  call?: string
 }
 
 export const AUDIT_STORE_KEY = "jev-audit"
@@ -64,12 +66,16 @@ export function auditEntryOf(
   let decision = kind
   let subject = ""
   let detail = ""
+  let call = ""
   switch (kind) {
     case "screen": {
       const label = typeof data.label === "string" ? data.label : "tool"
       const verdict = typeof data.verdict === "string" ? data.verdict : "?"
-      detail = `junk=${fixed(data.junk)} injection=${fixed(data.injection)} secret=${fixed(data.secret)}`
-      summary = `${verdict}: ${label} — ${detail}`
+      const callText = typeof data.call === "string" ? data.call.trim() : ""
+      call = callText
+      const scores = `junk=${fixed(data.junk)} injection=${fixed(data.injection)} secret=${fixed(data.secret)}`
+      detail = [callText && callText !== label ? callText : "", scores].filter(Boolean).join(" · ")
+      summary = `${verdict}: ${label} — ${scores}`
       decision = verdict
       subject = label
       tone = verdict === "unsafe" || verdict === "error" ? "error" : verdict === "flagged" ? "warn" : "ok"
@@ -118,7 +124,7 @@ export function auditEntryOf(
       break
     }
   }
-  return { id: entryID(at), at, kind, summary, decision, subject, detail, ...(sessionID ? { sessionID } : {}), tone }
+  return { id: entryID(at), at, kind, summary, decision, subject, detail, ...(call ? { call } : {}), ...(sessionID ? { sessionID } : {}), tone }
 }
 
 /** Appends one entry, keeping the newest `cap` rows. */
