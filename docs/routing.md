@@ -1,6 +1,6 @@
 # Auto model routing
 
-Jev can pick how each turn runs: the reasoning effort and, optionally, the model. It engages only while the session sits on the `Auto` picker entry (registered by default), so a manual model pick always wins; `effort.auto` is off by default.
+Jev can pick how each turn runs: the reasoning effort and, optionally, the model. Model routing engages only while the session sits on the `Auto` picker entry (registered by default), so a manual model pick always wins. `effort.auto` (off by default) is independent of that gate: it routes the effort variant of whatever model is current, including a hand-picked one.
 
 - `effort.auto` routes the reasoning variant of the current model (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - the levels the UI's effort picker offers).
 - `auto` routes the model itself from your candidates: `provider/model` strings or `{ providerID, id }` objects. Typically a cheap fast model alongside the expensive one.
