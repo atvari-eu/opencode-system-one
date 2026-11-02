@@ -63,6 +63,69 @@ export function idleCompactionDue(
 }
 
 // ---------------------------------------------------------------------------
+// Event toast filtering (toasts)
+// ---------------------------------------------------------------------------
+
+/** Severity variants the host's toast surface accepts. */
+export type ToastLevel = "info" | "success" | "warning" | "error"
+export type ToastEvent = "screen" | "error" | "config" | "scrub" | "approval"
+/** Per-event minimum severity to toast at, `true` to toast every severity, or `false` to mute. */
+export type ToastFilter = ToastLevel | true | false
+export type ToastFilters = Partial<Record<ToastEvent, ToastFilter>>
+
+export const TOAST_EVENTS: readonly ToastEvent[] = [
+  "screen",
+  "error",
+  "config",
+  "scrub",
+  "approval",
+]
+
+/** Severity ordering used by the filter; an event toasts at or above its floor. */
+export const TOAST_RANK: Readonly<Record<ToastLevel, number>> = {
+  info: 0,
+  success: 1,
+  warning: 2,
+  error: 3,
+}
+
+/** Until configured otherwise, only error-severity events produce a toast. */
+export const DEFAULT_TOAST_FILTER: ToastFilter = "error"
+
+/**
+ * Accepts the `toasts` option: an object keyed by event whose value is the
+ * minimum severity that event must have to toast (`info` / `success` /
+ * `warning` / `error`), `true` for every severity, or `false` to never toast
+ * it. Missing keys use `DEFAULT_TOAST_FILTER`; unknown keys and invalid values
+ * are ignored - a typo must not hide an error or crash the TUI.
+ */
+export function parseToastFilters(raw: unknown): ToastFilters {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const out: ToastFilters = {}
+  const value = raw as Record<string, unknown>
+  for (const event of TOAST_EVENTS) {
+    const filter = value[event]
+    if (filter === false || filter === true) out[event] = filter
+    else if (typeof filter === "string" && filter in TOAST_RANK) {
+      out[event] = filter as ToastLevel
+    }
+  }
+  return out
+}
+
+/** Whether an event at `severity` clears its configured floor (default: `error`). */
+export function toastVisible(
+  filters: ToastFilters,
+  event: ToastEvent,
+  severity: ToastLevel,
+): boolean {
+  const filter = filters[event] ?? DEFAULT_TOAST_FILTER
+  if (filter === false) return false
+  if (filter === true) return true
+  return TOAST_RANK[severity] >= TOAST_RANK[filter]
+}
+
+// ---------------------------------------------------------------------------
 // Shared question shape (structurally compatible with index.ts's Question)
 // ---------------------------------------------------------------------------
 

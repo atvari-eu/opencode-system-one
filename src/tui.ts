@@ -26,8 +26,12 @@ import {
   SCREEN_NOTICE_MARK,
   jevModelTag,
   parseScreenNotice,
+  parseToastFilters,
   screenEventItemOf,
+  toastVisible,
   type ScreenVerdictItem,
+  type ToastEvent,
+  type ToastLevel,
 } from "./logic"
 import { jevRpcClientOf, subscribeJevEvents, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
 import { AUDIT_STORE_KEY, appendAudit, auditEntryOf, type AuditEntry, type AuditKind } from "./audit"
@@ -70,6 +74,8 @@ interface SelectOptions {
 }
 
 interface TuiContext {
+  /** The plugin entry's options; the TUI half reads `toasts` from here. */
+  readonly options?: Readonly<Record<string, any>>
   readonly data: {
     readonly on: (
       type: string,
@@ -122,6 +128,14 @@ export default {
   id: "atvari.jev.tui",
   async setup(context: TuiContext & Record<string, any>) {
     const cleanups: Array<() => void | Promise<void>> = []
+    // -- event toast filtering --
+    // `toasts` sets, per event, the minimum severity that toasts (`info` /
+    // `success` / `warning` / `error`), `true` for all, or `false` to mute.
+    // Missing keys default to `error`, so warnings stay out of the corner
+    // until configured otherwise; the audit ring records every event anyway.
+    const toastFilters = parseToastFilters(context.options?.toasts)
+    const shouldToast = (event: ToastEvent, severity: ToastLevel): boolean =>
+      toastVisible(toastFilters, event, severity)
     // -- status toasts --
     // Primary channel: the server half's RPC events (transcript-free):
     //   error   failed judged call (one per 60 s window per title)
@@ -145,6 +159,7 @@ export default {
           draft.message = text
         })
       } catch {}
+      if (!shouldToast("config", "error")) return
       context.ui.toast.show({
         title: "jev config",
         message: text,
@@ -157,11 +172,16 @@ export default {
     // shared audit ring below, not a separate store.
     const showScreenVerdict = (item: ScreenVerdictItem): void => {
       if (item.verdict === "pass") return
+      // A configured `toasts.screen` floor filters by verdict severity; the
+      // toast itself always keeps that severity.
+      const severity: ToastLevel =
+        item.verdict === "unsafe" || item.verdict === "error" ? "error" : "warning"
+      if (!shouldToast("screen", severity)) return
       if (item.verdict === "error") {
         context.ui.toast.show({
           title: "jev-screen",
           message: `screen unavailable: ${item.note ?? item.label}`,
-          variant: "error",
+          variant: severity,
           duration: 10_000,
         })
         return
@@ -169,7 +189,7 @@ export default {
       context.ui.toast.show({
         title: "jev-screen",
         message: `${item.verdict}: ${item.label}${item.junk !== undefined || item.injection !== undefined ? ` (junk=${item.junk ?? "?"} injection=${item.injection ?? "?"})` : ""}`,
-        variant: item.verdict === "unsafe" ? "error" : "warning",
+        variant: severity,
         duration: 10_000,
       })
     }
@@ -208,6 +228,7 @@ export default {
         recordAudit("error", data)
         const message = typeof data?.message === "string" ? data.message : ""
         if (!message) return
+        if (!shouldToast("error", "error")) return
         context.ui.toast.show({
           title: "jev",
           message,
@@ -224,6 +245,7 @@ export default {
         recordAudit("scrub", data)
         const hits = typeof data?.hits === "number" ? data.hits : 0
         if (hits <= 0) return
+        if (!shouldToast("scrub", "warning")) return
         const where = data.kind === "prompt" ? "the prompt" : (data.tool ?? "a tool input")
         context.ui.toast.show({
           title: "jev scrub",
@@ -239,6 +261,7 @@ export default {
         // Auto-allow/ask are the quiet, delegated path; refusals and
         // judgment failures are the ones a human needs to see.
         if (outcome !== "deny" && outcome !== "gate" && outcome !== "fail") return
+        if (!shouldToast("approval", outcome === "fail" ? "warning" : "error")) return
         const action = typeof data.action === "string" ? data.action : "permission"
         const resource = typeof data.resource === "string" && data.resource ? ` ${data.resource}` : ""
         context.ui.toast.show({
@@ -310,6 +333,7 @@ export default {
         message,
         ...(typeof event?.sessionID === "string" ? { sessionID: event.sessionID } : {}),
       })
+      if (!shouldToast("error", "error")) return
       context.ui.toast.show({
         title: "jev",
         message,

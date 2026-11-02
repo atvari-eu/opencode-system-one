@@ -42,6 +42,30 @@ The panel carries every UI-only event - screen verdicts, errors, config faults, 
 - Screen rows keep the redacted, capped call that triggered them (`Screened output of: <call>`); flagged/unsafe rows add a capped result preview. Passing screens store no content.
 - Mouse selection is disabled in the panel; use `c`/`y` to copy.
 
+## Event toasts (`toasts`)
+
+Each UI-only event has a severity. `toasts` sets a **minimum severity** per event: the event toasts when its severity is at or above the floor. The default floor is `error`, so by default only error-severity events show a toast; `/jev-audit` still records every event either way.
+
+| Event | Severity | Fires on |
+| --- | --- | --- |
+| `screen` | `warning` for flagged, `error` for unsafe/unavailable | a non-pass screen |
+| `error` | `error` | a failed judged call (one per 60 s window per title) |
+| `config` | `error` | one init deployment fault per changed config |
+| `scrub` | `warning` | secret-like tokens removed from a prompt or tool input |
+| `approval` | `error` for deny/gate, `warning` for a judgment failure | a refusal, gate hold, or failed judgment (allows/asks stay quiet) |
+
+Severities are ordered `info` < `success` < `warning` < `error`. A floor is inclusive and upward: `"warning"` means warning **and** error toast; `"info"` means everything. `true` shows every severity, `false` never toasts that event. Omitted events keep the `error` floor; unknown events and invalid values are ignored.
+
+```jsonc
+{
+  "toasts": {
+    "screen": "warning", // also show flagged screens
+    "scrub": "info",     // show every scrub hit
+    "approval": false    // never toast approvals
+  }
+}
+```
+
 ## Skills
 
 None needed, and none should be loaded on OpenCode with this plugin - the tool descriptions, hooks, and commands carry the whole job. For other agents (no plugin), the standalone `jev` CLI is the path, and the portable skills in [`atvari-eu/skills`](https://github.com/atvari-eu/skills) can drive it from any agent:

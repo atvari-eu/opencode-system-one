@@ -121,6 +121,7 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 | `find` | on | [jev_find](docs/find.md) |
 | `approvals` | off | [Approvals](docs/approvals.md) |
 | `compaction` | off | [Compaction](docs/compaction.md) |
+| `toasts` | `error` floor for every event | [Event toasts](docs/tools.md#event-toasts-toasts) |
 
 ## Guarantees
 
