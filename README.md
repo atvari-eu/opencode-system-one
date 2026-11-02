@@ -6,7 +6,7 @@ Jev is a decision model: it answers typed questions about content with calibrate
 
 | Feature | What it does | Default |
 | --- | --- | --- |
-| **Screening** | Tool results are checked for junk and prompt injection before they enter context; unsafe content is withheld (fail-closed). `webfetch` by default, every tool optional. | on |
+| **Screening** | Tool results are checked for junk and prompt injection before they enter context; unsafe content is withheld (fail-closed). `webfetch` and `websearch` by default, every tool optional. | on |
 | **Secret scrubbing** | Known secret formats (`sk-…`, `ghp_…`, PEM keys, JWTs, …) are redacted from tool inputs and prompts - deterministic regex, never a model call. | on |
 | **Jev tools** | The agent gets `jev_decide`, `jev_judge_many`, and `jev_screen` for verification, ranking, bounded choices, and scoring, with a durable answer cache. | on |
 | **Commands** | `/jev-screen`, `/jev-done-check`, `/jev-compact`, `/jev-approval-stats`, and the `/jev-audit` panel with every UI-only event. | on |
@@ -80,7 +80,7 @@ home.file.".config/opencode/jev-plugin/index.ts".source =
 
 ## Configuration
 
-Screening, scrubbing, the judgment tools, and the commands run out of the box. Everything below is optional; turn a part off with the object form (`"screen": { "enabled": false }`).
+Screening, scrubbing, the judgment tools (including `jev_find`), and the commands run out of the box. Everything below is optional; turn a part off with the object form (`"screen": { "enabled": false }`).
 
 ```jsonc
 // opencode.json(c)
@@ -97,7 +97,7 @@ Screening, scrubbing, the judgment tools, and the commands run out of the box. E
         },
         "effort": { "auto": true },    // per-prompt thinking level
         "doneCheck": { "auto": true }, // idle completion probe
-        "find": { "enabled": true },   // semantic code search
+        "find": { "enabled": true },   // semantic code search (on by default; false removes it)
         "approvals": true,             // vetted permission requests
         "compaction": { "enabled": true, "mode": "replace" }
       },
@@ -118,7 +118,7 @@ Screening, scrubbing, the judgment tools, and the commands run out of the box. E
 | `auto` | entry registered; routes only on the `Auto` entry | [Model routing](docs/routing.md) |
 | `effort` | off | [Model routing](docs/routing.md) |
 | `doneCheck` | off | [Done-check](docs/done-check.md) |
-| `find` | off | [jev_find](docs/find.md) |
+| `find` | on | [jev_find](docs/find.md) |
 | `approvals` | off | [Approvals](docs/approvals.md) |
 | `compaction` | off | [Compaction](docs/compaction.md) |
 

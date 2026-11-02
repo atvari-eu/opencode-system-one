@@ -18,10 +18,10 @@ import {
 } from "../src/logic"
 
 describe("parseScreenTools", () => {
-  test("default is webfetch only", () => {
-    expect(parseScreenTools(undefined)).toEqual(["webfetch"])
-    expect(parseScreenTools([])).toEqual(["webfetch"])
-    expect(parseScreenTools(["", 42 as any])).toEqual(["webfetch"])
+  test("default screens the two untrusted-content tools", () => {
+    expect(parseScreenTools(undefined)).toEqual(["webfetch", "websearch"])
+    expect(parseScreenTools([])).toEqual(["webfetch", "websearch"])
+    expect(parseScreenTools(["", 42 as any])).toEqual(["webfetch", "websearch"])
   })
 
   test("explicit lists are trimmed and deduplicated", () => {
@@ -34,9 +34,12 @@ describe("parseScreenTools", () => {
 })
 
 describe("screenApplies", () => {
-  test("default list screens only webfetch", () => {
-    expect(screenApplies("webfetch", ["webfetch"])).toBe(true)
-    expect(screenApplies("bash", ["webfetch"])).toBe(false)
+  test("default list screens webfetch and websearch, not local tools", () => {
+    const defaults = parseScreenTools(undefined)
+    expect(screenApplies("webfetch", defaults)).toBe(true)
+    expect(screenApplies("websearch", defaults)).toBe(true)
+    expect(screenApplies("bash", defaults)).toBe(false)
+    expect(screenApplies("read", defaults)).toBe(false)
   })
 
   test('"all" screens everything except self tools', () => {

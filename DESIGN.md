@@ -583,14 +583,23 @@ stdout-only builtin whitelist; `jevTimeout` was deliberately left at its
 default - budgets stay put, payloads got smaller.
 
 Read-only breadth and the built-in tool allows (2026-11).
-`approvals.readonlyAllow` originally covered shell chains only. It now also
+`approvals.readonlyAllow` (default on) originally covered shell chains only. It now also
 covers the actions that can only read by definition (`read`, `grep`, `glob`) -
 no local state can change - and the shell analysis gained
 repository-inspecting git (`status`/`log`/`diff`/`show`, rejecting `--output`
 and `--ext-diff`; `branch` stays judged because `git branch <name>` creates).
 Reads stay routed through the plugin rather than being allowed host-side: the
 secret-path gate runs before the fast path and is the only thing that catches
-`read .env` / `read ~/.ssh/id_rsa`. Separately, five actions are allowed by
+`read .env` / `read ~/.ssh/id_rsa`. The fast path emits `readonly: true` on its
+stats/audit event, so `/jev-approval-stats` counts the skips in a `readonly`
+field and `reason/readonly` band and `/jev-audit` labels them `allow/ro`
+instead of folding them into judged allows (`allow/-` stays out of the
+calibration bands). `approvals.permissions` resolutions are tagged the same
+way with `reason/rule-allow`, `reason/rule-ask`, and `reason/rule-deny`, so a
+deterministic rule outcome is never mistaken for a judge verdict in the
+stats. The same tag rides the RPC approval event and `/jev-audit` labels rule
+resolutions `allow/rule`, `ask/rule`, `deny/rule` (detail "approvals.permissions
+rule (no judgment)"), matching the fast path's `allow/ro`. Separately, five actions are allowed by
 default - `webfetch`, `websearch`, `skill`, `subagent`, `question` - because
 their risk lives in the result, not the request: fetched and skill content is
 screened, a subagent re-permissions its own calls against its agent policy,

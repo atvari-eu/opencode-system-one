@@ -1094,12 +1094,18 @@ export function idleSessionID(e: unknown): string | undefined {
 
 export type ScreenTools = string[] | "all"
 
+/** Default screened set: the two tools that ingest untrusted external
+ * content. Local tool results (read, bash, grep) stay opt-in via
+ * `screen.tools` - screening every result adds a jev round-trip and sends
+ * workspace content to the endpoint. */
+export const DEFAULT_SCREEN_TOOLS: string[] = ["webfetch", "websearch"]
+
 export function parseScreenTools(raw: unknown): ScreenTools {
   if (raw === "all") return "all"
   if (Array.isArray(raw) && raw.length > 0 && raw.every((t) => typeof t === "string" && t.trim() !== "")) {
     return Array.from(new Set((raw as string[]).map((t) => t.trim())))
   }
-  return ["webfetch"]
+  return [...DEFAULT_SCREEN_TOOLS]
 }
 
 // Tools this plugin itself registers - their outputs are verdicts that are

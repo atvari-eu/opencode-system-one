@@ -4,7 +4,7 @@ Two guards run automatically, on by default: screening judges tool results befor
 
 ## `screen`
 
-Tool results are judged for junk and prompt injection before they enter context: `webfetch` by default, every tool with `"screen": { "tools": "all" }`.
+Tool results are judged for junk and prompt injection before they enter context: `webfetch` and `websearch` by default (the tools that ingest untrusted external content), every tool with `"screen": { "tools": "all" }`, or an explicit list such as `["webfetch", "read", "mcp/*"]`.
 
 An unsafe verdict withholds the content (default `mode: "redact"`) for every screened tool - the result is replaced by a note naming why and how to override. `"mode": "annotate"` keeps all content instead.
 

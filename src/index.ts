@@ -5,9 +5,9 @@
 //
 //   screen  tool.execute.after  - tool results are screened (junk? prompt
 //                                 injection?) before entering context:
-//                                 webfetch by default, every tool with
-//                                 screen.tools="all" (fail-closed redaction
-//                                 stays scoped to fetched web content)
+//                                 webfetch + websearch by default, every tool
+//                                 with screen.tools="all" (fail-closed
+//                                 redaction covers every screened tool)
 //   scrub   execute.before + prompt hook - deterministic redaction of known
 //                                 secret formats in tool inputs and user
 //                                 prompts. ALWAYS regex-based: secrets are
@@ -36,7 +36,8 @@
 //                                 turn looks incomplete (opt-in)
 //   find    jev_find tool - semantic code-search cascade: lexical prefilter,
 //                                 path judgments, windowed passage judgments
-//                                 (opt-in)
+//                                 (registered by default; find.enabled=false
+//                                 removes it)
 //   compact System One based history compaction (opt-in) following
 //                                 tamaratran/fast-jev-compaction: tool calls and
 //                                 results are dropped/truncated by jev verdicts,
@@ -1279,7 +1280,7 @@ export default Plugin.define({
     }
     const doneCheckAuto = o.doneCheck?.auto === true
     const notifyBelow = clampThreshold(o.doneCheck?.notifyBelow, 0.01, 0.85, NOTIFY_BELOW_DEFAULT)
-    const findEnabled = o.find?.enabled === true
+    const findEnabled = o.find !== false && o.find?.enabled !== false
     const approvalsRaw: any = o.approvals
     const approvalsObj: any = typeof approvalsRaw === "object" && approvalsRaw !== null ? approvalsRaw : {}
     // Enabled by `approvals: true` (full delegation) or an object config;
@@ -1331,11 +1332,12 @@ export default Plugin.define({
       typeof rawJevTimeout === "number" && Number.isFinite(rawJevTimeout) && rawJevTimeout > 0
         ? Math.min(120_000, Math.max(2_000, rawJevTimeout))
         : 8_000
-    // Read-only fast-path (approvals.readonlyAllow, default off): a shell
-    // request whose every chain segment is structurally read-only allows
-    // without a judgment. Gates still run first, so secret paths and
-    // destructive chains hold exactly as they would without the option.
-    const approvalsReadonlyAllow = approvalsObj.readonlyAllow === true
+    // Read-only fast-path (approvals.readonlyAllow, default on): a request
+    // that can only read (read/grep/glob, or a shell chain whose every
+    // segment is structurally read-only) allows without a judgment. Gates
+    // still run first, so secret paths and destructive chains hold exactly
+    // as they would without the option.
+    const approvalsReadonlyAllow = approvalsObj.readonlyAllow !== false
     // Sandbox posture (approvals.sandbox): an operator-asserted claim that
     // the agent runs inside a sandbox - never verified, same trust family as
     // onFail: "allow". With it the reversible question swaps to the
@@ -3046,10 +3048,11 @@ export default Plugin.define({
       })
     }
 
-    // -- find: jev-backed semantic code search (opt-in) --
-    // Registered as its own first-class tool, off by default: the cascade
-    // costs several jev calls per query. Deps are injected so the cascade
-    // itself stays testable without a plugin host.
+    // -- find: jev-backed semantic code search --
+    // Registered by default; `find.enabled: false` removes it. The cascade
+    // costs several jev calls per query, but only when the agent invokes the
+    // tool - registration itself spends just the tool schema. Deps are
+    // injected so the cascade itself stays testable without a plugin host.
 
     if (findEnabled) {
       await (ctx as any).tool.transform((editor: any) => {
