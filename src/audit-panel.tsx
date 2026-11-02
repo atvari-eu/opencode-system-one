@@ -146,7 +146,8 @@ function Panel(props: {
   }
   const selectedEntry = (): AuditEntry | undefined => entries().find((entry) => entry.id === selectedId())
   const selectedBg = () => props.context?.theme?.background?.action?.primary?.focused
-  const selectedFg = () => props.context?.theme?.text?.formfield?.selected
+  const selectedFg = () =>
+    props.context?.theme?.text?.action?.primary?.focused ?? props.context?.theme?.text?.base
   const muted = () => props.context?.theme?.text?.muted
   const width = () => props.panel.width ?? 80
 
