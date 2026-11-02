@@ -142,6 +142,8 @@ const events = {
         injection: NUMBER,
         secret: NUMBER,
         note: STRING,
+        call: STRING,
+        preview: STRING,
       },
       required: ["label", "verdict"],
       additionalProperties: false,
