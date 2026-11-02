@@ -41,9 +41,8 @@ describe("parseProviderOption", () => {
       kind: "custom",
       endpoint: "https://api.example.com/inference/v1/systemone",
     })
-    expect(parseProviderOption("https://api.example.com/x/")?.endpoint).toBe(
-      "https://api.example.com/x",
-    )
+    const parsed = parseProviderOption("https://api.example.com/x/")
+    expect(parsed?.kind === "custom" ? parsed.endpoint : undefined).toBe("https://api.example.com/x")
   })
 
   test("plain http only for loopback hosts", () => {

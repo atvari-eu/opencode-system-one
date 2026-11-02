@@ -156,7 +156,7 @@ function fakeHost(providerEntry: unknown, absentAtInit: boolean) {
 async function runScenario(
   credEnv: string | undefined,
   absentAtInit: boolean,
-): Promise<{ thrown: string; fetches: typeof FETCHES }> {
+): Promise<{ thrown: string; fetches: typeof FETCHES; registryGetCalls: unknown[] }> {
   const home = mkdtempSync(join(tmpdir(), "jev-late-test-"))
   SCRATCH.push(home)
   const fetchesAtEntry = FETCHES.length
@@ -240,8 +240,8 @@ describe("plugin setup + late resolve (fake host, no network)", () => {
 
       // Exactly one ping, at settings.baseURL + /systemone, without auth.
       expect(scenario.length).toBe(1)
-      expect(scenario[0].url).toBe("https://api.eu.munito.ai/inference/v1/systemone")
-      expect(scenario[0].auth).toBeUndefined()
+      expect(scenario[0]?.url).toBe("https://api.eu.munito.ai/inference/v1/systemone")
+      expect(scenario[0]?.auth).toBeUndefined()
 
       // The registry reads stay on the object shape ({ providerID }).
       expect(registryGetCalls.length).toBeGreaterThan(0)
@@ -259,8 +259,8 @@ describe("plugin setup + late resolve (fake host, no network)", () => {
     expect(thrown).toContain("jev: 401")
     expect(thrown).not.toContain("no credential")
     expect(scenario.length).toBe(1)
-    expect(scenario[0].url).toBe("https://api.eu.munito.ai/inference/v1/systemone")
-    expect(scenario[0].auth).toBe("Bearer test-key")
+    expect(scenario[0]?.url).toBe("https://api.eu.munito.ai/inference/v1/systemone")
+    expect(scenario[0]?.auth).toBe("Bearer test-key")
     // Present at init: one registry read, no boot-ordering retry.
     expect(registryGetCalls).toEqual([{ providerID: "munito" }])
   })

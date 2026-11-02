@@ -116,9 +116,9 @@ describe("pair option building", () => {
   test("current levels first, then candidates; default pair for no-variant models", () => {
     const built = buildPairOptions(
       { providerID: "acme", modelID: "base", variant: "default" },
-      LEVELS["acme/base"],
+      LEVELS["acme/base"]!,
       [
-        { candidate: { providerID: "acme", modelID: "fast", label: "fast" }, levels: LEVELS["acme/fast"] },
+        { candidate: { providerID: "acme", modelID: "fast", label: "fast" }, levels: LEVELS["acme/fast"]! },
         { candidate: { providerID: "plain", modelID: "litellm" }, levels: [] },
       ],
     )
@@ -160,8 +160,8 @@ describe("model-only option building", () => {
   test("current model first, tier hints ride into criteria", () => {
     const options = buildModelOptions({ providerID: "acme", modelID: "base" }, CANDIDATES, () => "$2.00/Mtok input")
     expect(options.map((o) => o.key)).toEqual(["acme/base", "acme/fast", "zeta/flagship"])
-    expect(options[0].criteria).toContain("$2.00/Mtok input")
-    expect(options[1].criteria).toContain("cheap daily-driver model")
+    expect(options[0]!.criteria).toContain("$2.00/Mtok input")
+    expect(options[1]!.criteria).toContain("cheap daily-driver model")
   })
 })
 
@@ -169,7 +169,7 @@ describe("answer resolution", () => {
   const options = buildPairOptions(
     { providerID: "acme", modelID: "base", variant: "default" },
     ["low", "medium"],
-    [{ candidate: CANDIDATES[0], levels: ["high"] }],
+    [{ candidate: CANDIDATES[0]!, levels: ["high"] }],
   ).options
 
   test("resolves an offered pair", () => {
@@ -454,7 +454,7 @@ describe("offline routing fixtures", () => {
         prompt: fixture.prompt,
         judge: async () => ({ answers: { route: { choice: fixture.pick, confidence: 0.9 } } }),
       })
-      const [modelPart, variant] = fixture.pick.split("#")
+      const [modelPart = "", variant] = fixture.pick.split("#")
       const slash = modelPart.indexOf("/")
       expect(outcome.switchTo).toEqual({
         providerID: modelPart.slice(0, slash),

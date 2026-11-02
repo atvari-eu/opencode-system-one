@@ -8,7 +8,8 @@
     "./tui": "./src/tui.ts"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@opencode/plugin": "latest"
@@ -17,6 +18,13 @@
     "@opentui/core": ">=0.6.6",
     "@opentui/solid": ">=0.6.6",
     "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
+    "@types/bun": "latest",
+    "solid-js": ">=1.9.0",
+    "typescript": "^5.9.3"
   },
   "license": "MIT"
 }

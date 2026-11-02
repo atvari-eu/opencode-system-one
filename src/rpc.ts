@@ -41,8 +41,6 @@ export interface JevScreenEvent {
   sessionID?: string
   /** Tool whose output was screened. */
   tool: string
-  /** Redacted, capped descriptor of the tool call (URL, command, path). */
-  call?: string
   /** Deprecated display fallback for older TUI halves; `call || tool`. */
   label?: string
   verdict: "pass" | "flagged" | "unsafe" | "error"

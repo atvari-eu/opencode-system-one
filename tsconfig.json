@@ -7,6 +7,9 @@
     "target": "esnext",
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
     "paths": {
       "@opencode/plugin": ["./test/stubs/@opencode-plugin.ts"],
       "@opencode/plugin/rpc": ["./test/stubs/@opencode-plugin-rpc.ts"]

@@ -175,6 +175,10 @@ export async function runFind(deps: FindDeps, rawQuery: string, options: FindRun
     const named = scored
       .map((candidate, i) => {
         const r = nameSettled[i]
+        if (!r) {
+          nameErrors++
+          return { ...candidate, judged: NaN }
+        }
         if (r.status === "fulfilled") {
           nameJudged++
           return { ...candidate, judged: r.value }
@@ -231,11 +235,16 @@ export async function runFind(deps: FindDeps, rawQuery: string, options: FindRun
     const bestPerFile = new Map<string, { heat: number; window?: (typeof windows)[number] }>()
     for (let i = 0; i < windows.length; i++) {
       const r = windowSettled[i]
+      const window = windows[i]
+      if (!r || !window) {
+        windowErrors++
+        continue
+      }
       if (r.status === "fulfilled") {
         windowsJudged++
         const heat = r.value
-        const prev = bestPerFile.get(windows[i].file)
-        if (!prev || heat > prev.heat) bestPerFile.set(windows[i].file, { heat, window: windows[i] })
+        const prev = bestPerFile.get(window.file)
+        if (!prev || heat > prev.heat) bestPerFile.set(window.file, { heat, window })
       } else {
         windowErrors++
       }

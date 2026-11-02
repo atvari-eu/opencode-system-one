@@ -699,6 +699,7 @@ export function applyDecisions(
   const kept: LLMMessage[] = []
   for (let msg = 0; msg < messages.length; msg++) {
     const message = messages[msg]
+    if (!message) continue
     const parts = message.content ?? []
     const touched = parts.some((part: any) => part?.type === "tool-call" || part?.type === "tool-result")
     if (!touched) {

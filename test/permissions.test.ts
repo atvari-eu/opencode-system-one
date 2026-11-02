@@ -151,6 +151,6 @@ describe("lookupPermission", () => {
     const rules = parsePermissions([
       { action: "edit", resource: "*", effect: "system-one", context: "local repo edits are fine unless touching secrets" },
     ])
-    expect(lookupPermission("edit", ["src/logic.ts"], rules)).toEqual(rules[0])
+    expect(lookupPermission("edit", ["src/logic.ts"], rules)).toEqual(rules[0]!)
   })
 })

@@ -41,14 +41,14 @@ describe("plugin host file integrity", () => {
   const importTexts = [...indexSrc.matchAll(/import\s*\{([^}]+)\}\s*from\s*"[^"]*logic[^"]*"/g)]
   const importedNames = new Set(
     importTexts.flatMap(([, block]) =>
-      block
+      (block ?? "")
         .split(",")
         .map((part) => part.trim().replace(/^type\s+/, ""))
         .filter((name) => /^[A-Za-z_$][\w$]*$/.test(name)),
     ),
   )
-  const logicValueExports = [...logicSrc.matchAll(/^export\s+(?:async\s+function|function|const|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1])
-  const logicTypeExports = [...logicSrc.matchAll(/^export\s+(?:interface|type)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1])
+  const logicValueExports = [...logicSrc.matchAll(/^export\s+(?:async\s+function|function|const|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1] ?? "")
+  const logicTypeExports = [...logicSrc.matchAll(/^export\s+(?:interface|type)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1] ?? "")
 
   test("src/index.ts loads with every import resolvable", async () => {
     const mod = await import("../src/index.ts")

@@ -80,7 +80,7 @@ describe("windowing", () => {
     }
     // contiguity: windows tile the text with no gaps
     for (let i = 1; i < windows.length; i++) {
-      expect(windows[i].offset).toBe(windows[i - 1].offset + windows[i - 1].text.length)
+      expect(windows[i]!.offset).toBe(windows[i - 1]!.offset + windows[i - 1]!.text.length)
     }
   })
 
@@ -88,9 +88,9 @@ describe("windowing", () => {
     const text = Array.from({ length: 2000 }, (_, i) => `row-${i}`).join("\n")
     const windows = splitWindows(text, 512, 4)
     expect(windows.length).toBe(4)
-    expect(windows[0].line).toBe(1)
+    expect(windows[0]!.line).toBe(1)
     const ends = windows.map((w) => lineAtEnd(lineStartsOf(text), w.offset + w.text.length))
-    expect(ends[0]).toBeGreaterThan(1)
+    expect(ends[0]!).toBeGreaterThan(1)
   })
 
   test("single short text yields one window", () => {

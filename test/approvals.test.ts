@@ -322,7 +322,7 @@ describe("parseMinConfidence", () => {
 
 describe("parseApprovalsPolicy", () => {
   test("defaults enact both verdicts, allow the unclear band, deny gate holds (bare true or {} is full delegation)", () => {
-    const defaults = { onGate: "deny", onApprove: "allow", onRefuse: "deny", onNoVerdict: "allow", onFail: "ask" }
+    const defaults = { onGate: "deny", onApprove: "allow", onRefuse: "deny", onNoVerdict: "allow", onFail: "ask" } as const
     expect(parseApprovalsPolicy(true).policy).toEqual(defaults)
     expect(parseApprovalsPolicy({}).policy).toEqual(defaults)
     expect(parseApprovalsPolicy({}).legacyMode).toBe(null)
@@ -457,10 +457,10 @@ describe("sandbox posture (approvals.sandbox)", () => {
   })
 
   test("approvalQuestions threads the sandbox flag into the reversible wording", () => {
-    expect(approvalQuestions("shell", true, true)[0].instructions).toBe(
+    expect(approvalQuestions("shell", true, true)[0]!.instructions).toBe(
       reversibleQuestion("shell", true).instructions,
     )
-    expect(approvalQuestions("shell", true)[0].instructions).toBe(reversibleQuestion("shell").instructions)
+    expect(approvalQuestions("shell", true)[0]!.instructions).toBe(reversibleQuestion("shell").instructions)
     // the question SET is unchanged - only the wording swaps
     expect(approvalQuestions("shell", true, true).map((q) => q.id)).toEqual(["reversible", "serves_task", "harmful"])
   })
@@ -479,7 +479,7 @@ describe("sandbox posture (approvals.sandbox)", () => {
     expect(sandbox).toContain("fails harmlessly")
     expect(sandbox).not.toContain("/etc, /boot, /sbin, /dev")
     expect(sandbox).toContain("push --force")
-    expect(approvalQuestions("shell", true, true)[2].instructions).toBe(sandbox)
+    expect(approvalQuestions("shell", true, true)[2]!.instructions).toBe(sandbox)
     expect(harmfulQuestion().instructions).toBe(plain)
   })
 })
@@ -904,7 +904,7 @@ describe("resolveApproval", () => {
   test("invalid score values count as unavailable, never as small probabilities", () => {
     for (const bad of ["0.99", Number.NaN, Infinity, 1.5, -0.2, null, true]) {
       const out = resolveApproval({
-        scores: { reversible: bad, serves_task: 0.95, harmful: 0.02 },
+        scores: { reversible: bad as unknown as number, serves_task: 0.95, harmful: 0.02 },
         task: true,
         bars: BARS,
         policy: ENACT,

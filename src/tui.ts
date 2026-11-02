@@ -76,9 +76,27 @@ interface TuiContext {
       handler: (event: { readonly text?: unknown; readonly sessionID?: unknown }) => void,
     ) => () => void
   }
+  /** Host-owned reactive store: `[value, update]`, same shape the panels use.
+   * Declared here because an undeclared member falls back to the index
+   * signature below and loses the generic, which breaks `store<T>(...)`. */
+  readonly storage: {
+    store<T>(key: string, options: { initial: T; key?: string }): [T, (updater: (draft: T) => void) => void]
+    memory<T>(key: string, options: { initial: T }): [T, (updater: (draft: T) => void) => void]
+  }
+  readonly keymap: {
+    readonly layer: (input: any) => any
+    readonly shortcuts: (id: string) => string[]
+  }
   readonly ui: {
     readonly toast: {
       readonly show: (options: ToastOptions) => void
+    }
+    /** Host panel registry; the commands that use it are registered only
+     * where the surface exists, so it is declared non-optional here. */
+    readonly panel: {
+      readonly open: (name: string) => void
+      readonly close?: () => void
+      readonly current?: () => { readonly name?: string } | undefined
     }
     /** Host versions with the model-style picker dialog (optional surface;
      * /jev-models toasts the direct `/jev-models <id>` remedy when missing). */

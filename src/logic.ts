@@ -1114,7 +1114,6 @@ export const SELF_SCREENED_TOOLS: Record<string, true> = {
   jev_screen: true,
   "jev/decide": true,
   "jev/judge_many": true,
-  "jev/screen": true,
 }
 
 export function screenApplies(tool: string, tools: ScreenTools, self: Readonly<Record<string, true>> = SELF_SCREENED_TOOLS): boolean {
@@ -1287,7 +1286,7 @@ export function lineNumberFor(lineStarts: number[], offset: number): number {
   let hi = lineStarts.length - 1
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1
-    if (lineStarts[mid] <= offset) lo = mid
+    if ((lineStarts[mid] ?? 0) <= offset) lo = mid
     else hi = mid - 1
   }
   return lo + 1
@@ -1315,7 +1314,7 @@ export async function bounded<T, R>(
       const index = next++
       if (index >= items.length) return
       try {
-        results[index] = { status: "fulfilled", value: await fn(items[index], index) }
+        results[index] = { status: "fulfilled", value: await fn(items[index] as T, index) }
       } catch (reason) {
         results[index] = { status: "rejected", reason }
       }
@@ -1406,7 +1405,7 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
     : ""
   if (!body || body.startsWith("failed:") || body.startsWith("usage:")) return undefined
 
-  const num = (m: string | undefined): number | undefined => {
+  const num = (m: string | number | undefined): number | undefined => {
     if (m === undefined) return undefined
     const v = Number(m)
     return Number.isFinite(v) ? v : undefined
@@ -1416,15 +1415,16 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
   // "content withheld" clause — URLs contain colons, so ":" alone won't do.
   const withheld = body.match(/^✗\s*(.+?):\s*content withheld/)
   if (withheld) {
-    return { label: withheld[1].trim(), junk: undefined, injection: undefined, secret: undefined, verdict: "unsafe", note: "content withheld (fail-closed)" }
+    return { label: (withheld[1] ?? "").trim(), junk: undefined, injection: undefined, secret: undefined, verdict: "unsafe", note: "content withheld (fail-closed)" }
   }
 
   // ⚠ flagged (inline mode flagged notice)
   const warned = body.match(/^⚠\s*(.+?)\s+flagged\s*\(/)
   if (warned) {
-    const nums = Object.fromEntries([...warned[1].matchAll(/(junk|injection|secret)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
+    const warnedLabel = warned[1] ?? ""
+    const nums = Object.fromEntries([...warnedLabel.matchAll(/(junk|injection|secret)=([0-9.]+)/g)].map((m) => [m[1] ?? "", num(m[2])]))
     return {
-      label: warned[1].replace(/\s*(junk|injection|secret)=[0-9.]+/g, "").trim(),
+      label: warnedLabel.replace(/\s*(junk|injection|secret)=[0-9.]+/g, "").trim(),
       junk: "junk" in nums ? num(nums.junk) : undefined,
       injection: "injection" in nums ? num(nums.injection) : undefined,
       secret: "secret" in nums ? num(nums.secret) : undefined,
@@ -1436,12 +1436,13 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
   // /jev-screen command row: `<url>: junk=… injection=… → <verdict>`
   const command = body.match(/^(.*?):\s*(.*?)\s*→\s*(.+)$/)
   if (command) {
-    const nums = Object.fromEntries([...command[2].matchAll(/(junk|injection|secret)=([0-9.]+)/g)].map((m) => [m[1], num(m[2])]))
-    const verdictText = command[3]
+    const commandBody = command[2] ?? ""
+    const nums = Object.fromEntries([...commandBody.matchAll(/(junk|injection|secret)=([0-9.]+)/g)].map((m) => [m[1] ?? "", num(m[2])]))
+    const verdictText = command[3] ?? ""
     const verdict: ScreenVerdict =
       /FAIL|unsafe|do not rely/i.test(verdictText) ? "unsafe" : /flagged/i.test(verdictText) ? "flagged" : "pass"
     return {
-      label: command[1].trim(),
+      label: (command[1] ?? "").trim(),
       junk: "junk" in nums ? num(nums.junk) : undefined,
       injection: "injection" in nums ? num(nums.injection) : undefined,
       secret: "secret" in nums ? num(nums.secret) : undefined,
@@ -2698,10 +2699,10 @@ const APPROVAL_SECRET_METADATA_WRAPPER = /^(?:sudo|nice|nohup|time|env|command)$
 export function secretMetadataClean(segment: string): boolean {
   if (/\$\(|`|<|>/.test(segment)) return false
   let tokens = segment.trim().split(/\s+/)
-  while (tokens.length > 0 && (/^[\w-]+=/.test(tokens[0]) || APPROVAL_SECRET_METADATA_WRAPPER.test(tokens[0])))
+  while (tokens.length > 0 && (/^[\w-]+=/.test(tokens[0] ?? "") || APPROVAL_SECRET_METADATA_WRAPPER.test(tokens[0] ?? "")))
     tokens = tokens.slice(1)
   if (tokens.length === 0) return false
-  const verb = (tokens[0].split("/").pop() ?? "").replace(/^\.*/, "")
+  const verb = ((tokens[0] ?? "").split("/").pop() ?? "").replace(/^\.*/, "")
   if (!APPROVAL_SECRET_METADATA_VERB.test(verb)) return false
   if (verb === "find" && /-(?:delete|exec|ok)\b/.test(segment)) return false
   return true
@@ -2842,12 +2843,13 @@ export function parseApprovalsPolicy(
   const policy: ApprovalPolicy = { ...APPROVAL_POLICY_DEFAULT }
   const invalid: string[] = []
   let legacyMode: string | null = null
-  if (typeof entry.mode === "string" && APPROVAL_MODE_LEGACY[entry.mode]) {
+  const legacy = typeof entry.mode === "string" ? APPROVAL_MODE_LEGACY[entry.mode] : undefined
+  if (typeof entry.mode === "string" && legacy) {
     legacyMode = entry.mode
-    policy.onGate = APPROVAL_MODE_LEGACY[entry.mode].onGate
-    policy.onApprove = APPROVAL_MODE_LEGACY[entry.mode].onApprove
-    policy.onRefuse = APPROVAL_MODE_LEGACY[entry.mode].onRefuse
-    policy.onNoVerdict = APPROVAL_MODE_LEGACY[entry.mode].onNoVerdict
+    policy.onGate = legacy.onGate
+    policy.onApprove = legacy.onApprove
+    policy.onRefuse = legacy.onRefuse
+    policy.onNoVerdict = legacy.onNoVerdict
   } else if (entry.mode !== undefined) {
     invalid.push(`mode ${JSON.stringify(String(entry.mode))}`)
   }
@@ -3172,7 +3174,8 @@ export function suggestedApprovalStats(blob: unknown): { approve?: number; refus
       const bands = (row as { bands?: unknown })?.bands
       if (!bands || typeof bands !== "object") continue
       for (let i = 0; i < STATS_BANDS.length; i++) {
-        sums[i] += (bands as Record<string, unknown>)[`${outcome}/${STATS_BANDS[i].label}`] as number ?? 0
+        const label = STATS_BANDS[i]?.label ?? ""
+        sums[i] = (sums[i] ?? 0) + ((bands as Record<string, unknown>)[`${outcome}/${label}`] as number ?? 0)
       }
     }
     return sums
@@ -3184,7 +3187,7 @@ export function suggestedApprovalStats(blob: unknown): { approve?: number; refus
     if (samples < 50) return undefined
     let covered = 0
     for (let i = sums.length - 1; i >= 0; i--) {
-      covered += sums[i]
+      covered += sums[i] ?? 0
       if (covered / samples >= 0.95) {
         // Band floors ascend with the index: 0.5-0.6 -> 0.5, >=0.9 -> 0.9;
         // the sub-0.5 band (index 0) has no knowable floor below 0.5, so the

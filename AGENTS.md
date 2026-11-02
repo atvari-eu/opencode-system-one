@@ -9,9 +9,18 @@ them here.
 ## Commands
 
 - `bun` is not on PATH: run tests as `nix shell nixpkgs#bun -c bun test`
-  (420 tests, 22 files, ~7 s). That is the entire
-  check — there is no tsc, linter, formatter, codegen, or CI config to hunt
+  (426 tests, 22 files, ~7 s). That plus `typecheck` is the entire
+  check — there is no linter, formatter, codegen, or CI config to hunt
   for, and no build step (OpenCode loads `src/index.ts` directly).
+- Typecheck: `nix shell nixpkgs#bun -c bun install` once (dev deps), then
+  `bun run typecheck` (`tsc --noEmit`, strict + `noUncheckedIndexedAccess`,
+  source and tests). Where `bun run` is unavailable, the equivalent is
+  `nix shell nixpkgs#typescript -c tsc --noEmit -p tsconfig.json` — the
+  declaration files come from `node_modules`, so the install is required
+  either way. `src` is clean today; keep it that way rather than adding
+  `@ts-expect-error` (a new error means a real shape or narrow bug).
+  `skipLibCheck` is on because host packages (`@opentui/core`) ship
+  declaration errors we do not own.
 - One file: `nix shell nixpkgs#bun -c bun test ./test/route.test.ts`. The
   `./` prefix matters — without it bun treats the argument as a test-name
   filter instead of a path.

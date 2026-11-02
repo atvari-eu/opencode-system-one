@@ -86,7 +86,7 @@ describe("describeModelRows", () => {
 
 describe("seedJevBaseLabel", () => {
   test("a missing base takes the plugin option model", () => {
-    const draft = { sessions: {} }
+    const draft: { base?: string; sessions: Record<string, string> } = { sessions: {} }
     seedJevBaseLabel(draft, "jev-1.13")
     expect(draft.base).toBe("jev-1.13")
   })
@@ -99,7 +99,7 @@ describe("seedJevBaseLabel", () => {
     expect(draft.base).toBeUndefined()
     draft.base = undefined
     seedJevBaseLabel(draft, "  jev-1.13-free  ")
-    expect(draft.base).toBe("jev-1.13-free")
+    expect(draft.base as string | undefined).toBe("jev-1.13-free")
   })
 
   test("a base describe already filled in is never overwritten", () => {

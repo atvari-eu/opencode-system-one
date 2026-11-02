@@ -37,6 +37,16 @@ interface ViewStore {
 
 const FILTER_KEYS = AUDIT_FILTERS
 
+/** OpenTUI renders accessor children (`{() => <text/>}`) reactively, but its
+ * JSX types only accept `string | Element`. Returning the function unchanged
+ * keeps the runtime shape while satisfying the types. */
+const reactiveChild = (render: () => unknown): any => render
+
+/** AGENTS.md requires panels stay unselectable (mouse text selection over the
+ * panel tree corrupts the TUI). `list`, `text` expose the prop, `box` /
+ * `scrollbox` do not in the host's JSX types, so spread it there. */
+const NO_SELECT = { selectable: false }
+
 const TIME_W = 8
 const KIND_W = 9
 const DECISION_W = 12
@@ -164,7 +174,8 @@ function Panel(props: {
     const rows = entries()
     if (rows.length === 0) return
     const at = Math.max(0, Math.min(rows.length - 1, index))
-    select(rows[at].id)
+    const row = rows[at]
+    if (row) select(row.id)
   }
   const moveSelection = (delta: number): void => {
     const rows = entries()
@@ -352,12 +363,12 @@ function Panel(props: {
   }))
 
   return (
-    <box flexDirection="column" flexGrow={1} height="100%" minHeight={0} paddingLeft={1} paddingRight={1} selectable={false}>
+    <box flexDirection="column" flexGrow={1} height="100%" minHeight={0} paddingLeft={1} paddingRight={1} {...NO_SELECT}>
       <box flexShrink={0} flexDirection="row" gap={1} marginBottom={1}>
-        {() => (
+        {reactiveChild(() => (
           <text flexShrink={0} selectable={false}>{`jev audit — ${total()} entries · filter: ${filterLabel()} ·`}</text>
-        )}
-        {() => {
+        ))}
+        {reactiveChild(() => {
           const current = view().filter
           return FILTER_KEYS.map((item) => (
             <text
@@ -369,9 +380,9 @@ function Panel(props: {
               {`${current === item.kind ? "▸" : " "}${item.key} ${item.label}`}
             </text>
           ))
-        }}
+        })}
       </box>
-      {() => <text flexShrink={0} selectable={false} fg={muted()}>{headerRow(width())}</text>}
+      {reactiveChild(() => <text flexShrink={0} selectable={false} fg={muted()}>{headerRow(width())}</text>)}
       <scrollbox
         ref={(value: ScrollBoxRenderable) => {
           list = value
@@ -382,9 +393,9 @@ function Panel(props: {
         stickyScroll={following()}
         stickyStart="bottom"
         focusable={false}
-        selectable={false}
+        {...NO_SELECT}
       >
-        {() => {
+        {reactiveChild(() => {
           const rows = entries()
           if (rows.length === 0) return <text selectable={false}>{"no events yet"}</text>
           const selected = selectedId()
@@ -415,10 +426,10 @@ function Panel(props: {
             }
           }
           return nodes
-        }}
+        })}
       </scrollbox>
       <box flexShrink={0} flexDirection="row" paddingTop={1}>
-        {() => (
+        {reactiveChild(() => (
           <text flexGrow={1} minWidth={0} wrapMode="none" truncate selectable={false} fg={muted()}>
             {following()
               ? "following newest · click a row to select"
@@ -426,31 +437,51 @@ function Panel(props: {
                 ? "▸ click or enter to expand"
                 : "selected"}
           </text>
-        )}
-        {() => (
+        ))}
+        {reactiveChild(() => (
           <text flexShrink={0} wrapMode="none" truncate selectable={false} fg={muted()}>
             {navigationHints()}
           </text>
-        )}
+        ))}
       </box>
     </box>
   )
 }
 
+/** Minimal host surface this setup uses; the full TUI context is host-owned
+ * and much larger, so only the touched members are declared. */
+type StoreEntry<T> = [T, (updater: (draft: T) => void) => void]
+
+interface PanelContext {
+  readonly storage: {
+    store<T>(key: string, options: { initial: T; key?: string }): StoreEntry<T>
+    memory<T>(key: string, options: { initial: T }): StoreEntry<T>
+  }
+  readonly ui: {
+    readonly toast: { readonly show: (options: any) => void }
+    readonly slot?: (input: any) => () => void
+  }
+  readonly keymap: {
+    readonly layer: (input: any) => any
+    readonly shortcuts: (id: string) => string[]
+  }
+  readonly renderer?: any
+}
+
 export default {
   id: "atvari.jev.tui.audit",
-  setup(context: any) {
+  setup(context: PanelContext) {
     const store = context.storage.store<Store>(AUDIT_STORE_KEY, { initial: { items: [] }, key: "id" })
     const view = context.storage.memory<ViewStore>("jev-audit-view", {
       initial: { filter: "all", expanded: {} },
     })
-    const unslot = context.ui.slot({
+    const unslot = context.ui.slot?.({
       append: "session.panel",
       render: (input: PanelInput) =>
         input?.name === "jev-audit" ? <Panel store={store} view={view} context={context} panel={input} /> : null,
     })
     return async () => {
-      unslot()
+      unslot?.()
     }
   },
 }

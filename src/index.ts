@@ -152,7 +152,7 @@ import {
   unwrapEnvelope,
   userRowCount,
 } from "./logic"
-import { type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type ProviderOption } from "./logic"
+import { type ApprovalStatsEvent, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type ProviderOption } from "./logic"
 import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
 import { makeJevRpc, type JevModelsInfo, type JevScreenEvent, type JevSetResult } from "./rpc"
 import { execFile } from "node:child_process"
@@ -504,7 +504,6 @@ function execText(bin: string, args: string[]): Promise<string> {
   const child = execFile(bin, args, {
     encoding: "utf8",
     timeout: 15_000,
-    stdio: ["ignore", "pipe", "ignore"],
   })
   child.stdout?.on("data", (chunk: string) => {
     stdout += chunk
@@ -1131,7 +1130,7 @@ function numericOf(answer: any): number | undefined {
 
 export default Plugin.define({
   id: "atvari.jev",
-  async setup(ctx) {
+  async setup(ctx: any) {
     const o: any = (ctx as any).options ?? {}
     const modelOption = typeof o.model === "string" && o.model.trim() !== "" ? o.model.trim() : undefined
     if (modelOption) {
@@ -1260,8 +1259,8 @@ export default Plugin.define({
     // name only - the model schema has no alias/tag field - so configured
     // aliases ride in the display title ("Auto (Jev)").
     const autoEntryAliases = (Array.isArray(autoRaw?.aliases) ? autoRaw.aliases : [])
-      .filter((a): a is string => typeof a === "string" && a.trim() !== "")
-      .map((a) => a.trim())
+      .filter((a: unknown): a is string => typeof a === "string" && a.trim() !== "")
+      .map((a: string) => a.trim())
     const autoEntryName: string =
       typeof autoRaw?.name === "string" && autoRaw.name.trim() !== "" ? autoRaw.name.trim() : "Auto"
     const autoEntryTitle = autoEntryAliases.length > 0 ? `${autoEntryName} (${autoEntryAliases.join(", ")})` : autoEntryName
@@ -1728,13 +1727,13 @@ export default Plugin.define({
           await (ctx as any).provider.transform((editor: any) => {
             editor.add({
               info: {
-                ...Provider.Info.empty(entryProviderID),
+                ...(Provider.Info.empty(entryProviderID) as Record<string, unknown>),
                 name: "opencode-system-one",
                 activation: "enabled",
                 package: "@opencode/ai/providers/openai-compatible",
                 settings: { baseURL: "http://127.0.0.1:1/v1" },
               },
-              models: [{ ...Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)), name: autoEntry.title }],
+              models: [{ ...(Model.Info.default(entryProviderID, Model.ID.make(AUTO_MODEL)) as Record<string, unknown>), name: autoEntry.title }],
             })
           })
           console.log(`[jev] route: registered auto entry opencode-system-one/auto as "${autoEntry.title}"`)
@@ -2267,7 +2266,7 @@ export default Plugin.define({
         const recordApprovalStat = async (
           action: string,
           resources: readonly string[],
-          event0: Record<string, unknown>,
+          event0: ApprovalStatsEvent,
           sessionID?: string,
         ): Promise<void> => {
           // UI-only signal for every resolution. The stats blob below is
@@ -2537,7 +2536,7 @@ export default Plugin.define({
             // span rides on statsBound so the catch can report it.
             statsBound.judgeStarted = Date.now()
             const { reply, latencyMs } = await judgedApproval(
-              approvalQuestions(action, task !== "", approvalsSandboxNote !== ""),
+              approvalQuestions(action, task !== "", approvalsSandboxNote !== "") as Question[],
               state,
               leanState,
               event.sessionID,
@@ -3345,9 +3344,7 @@ export default Plugin.define({
     // model is known - posting then would guarantee a dead turn.
     const ensureOffEntry = async (sessionID: string, messages: ReadonlyArray<any>): Promise<boolean> => {
       try {
-        const model = unwrapEnvelope(
-          await (ctx as any).session.get({ sessionID }),
-        )?.model
+        const model = (unwrapEnvelope(await (ctx as any).session.get({ sessionID })) as any)?.model
         if (!isAutoEntry(autoEntry, model)) return true
         let wakePin: any
         try {
