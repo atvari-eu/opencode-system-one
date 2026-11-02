@@ -30,6 +30,33 @@ describe("makeJevRpc", () => {
     expect(screen.additionalProperties).toBe(false)
   })
 
+  test("declares the transcript-free error event", async () => {
+    const definition: any = await makeJevRpc()
+    const error = definition.events?.error?.schema
+    expect(error).toBeDefined()
+    expect(error.required).toEqual(["message"])
+    expect(error.additionalProperties).toBe(false)
+  })
+
+  test("declares the config and scrub UI events", async () => {
+    const definition: any = await makeJevRpc()
+    expect(definition.events?.config?.schema?.required).toEqual(["message"])
+    const scrub = definition.events?.scrub?.schema
+    expect(scrub).toBeDefined()
+    expect(scrub.required).toEqual(["kind", "hits"])
+    expect(scrub.properties.kind.enum).toEqual(["tool", "prompt"])
+    expect(scrub.additionalProperties).toBe(false)
+  })
+
+  test("declares the approval UI event", async () => {
+    const definition: any = await makeJevRpc()
+    const approval = definition.events?.approval?.schema
+    expect(approval).toBeDefined()
+    expect(approval.required).toEqual(["action", "outcome"])
+    expect(approval.properties.outcome.enum).toEqual(["allow", "ask", "deny", "gate", "fail"])
+    expect(approval.additionalProperties).toBe(false)
+  })
+
   test("hosts without the Rpc class fall back to the structural descriptor", async () => {
     mock.module("@opencode/plugin/rpc", () => ({ nothingHere: true }))
     try {
@@ -39,6 +66,10 @@ describe("makeJevRpc", () => {
       // events ride the same structural shape so older build paths still
       // register the TUI channel when the host exposes it
       expect(definition.events.screen).toBeDefined()
+      expect(definition.events.error).toBeDefined()
+      expect(definition.events.config).toBeDefined()
+      expect(definition.events.scrub).toBeDefined()
+      expect(definition.events.approval).toBeDefined()
     } finally {
       mock.module("@opencode/plugin/rpc", () => ({
         Rpc: { define: (definition: unknown): unknown => definition },

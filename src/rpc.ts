@@ -126,6 +126,55 @@ const events = {
       additionalProperties: false,
     },
   },
+  error: {
+    schema: {
+      type: "object",
+      properties: {
+        sessionID: STRING,
+        message: STRING,
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+  },
+  config: {
+    schema: {
+      type: "object",
+      properties: {
+        message: STRING,
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+  },
+  scrub: {
+    schema: {
+      type: "object",
+      properties: {
+        sessionID: STRING,
+        kind: { type: "string", enum: ["tool", "prompt"] },
+        tool: STRING,
+        hits: NUMBER,
+      },
+      required: ["kind", "hits"],
+      additionalProperties: false,
+    },
+  },
+  approval: {
+    schema: {
+      type: "object",
+      properties: {
+        sessionID: STRING,
+        action: STRING,
+        outcome: { type: "string", enum: ["allow", "ask", "deny", "gate", "fail"] },
+        resource: STRING,
+        verdict: STRING,
+        confidence: NUMBER,
+      },
+      required: ["action", "outcome"],
+      additionalProperties: false,
+    },
+  },
 }
 
 /** Builds the descriptor, with the host's Rpc.define when it resolves (so

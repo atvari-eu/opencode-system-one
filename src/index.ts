@@ -1168,6 +1168,9 @@ export default Plugin.define({
       deployCheck.fingerprint,
       deployCheck.ok ? { ok: true } : { ok: false, fault: deployCheck.fault },
     )
+    // Buffered init fault: the deployment check runs before the RPC
+    // registration exists, so its message is delivered event-first below.
+    let pendingConfigFault: string | undefined = undefined
     try {
       if (!deployCheck.ok) {
         const fault = deployCheck.fault
@@ -1184,12 +1187,9 @@ export default Plugin.define({
             kind: fault.kind,
             at: new Date().toISOString(),
           })
-          // Global synthetic row (no session): the TUI config-error layer
-          // picks it up and toasts it. Row marks, not logs, are the
-          // cross-half channel.
-          await (ctx as any).session?.synthetic?.({
-            text: `${JEV_CONFIG_ERROR_MARK}${fault.message}`,
-          })
+          // Buffer for event-first delivery after the RPC registration; the
+          // row is only the fallback for hosts without the event surface.
+          pendingConfigFault = fault.message
         }
       }
     } catch (err) {
@@ -1389,6 +1389,13 @@ export default Plugin.define({
       // Same unbounded-growth guard the old surfacedRows gate carried: one
       // process sees many sessions over a long session; reload resets it.
       if (surfacedAt.size > 1000) surfacedAt.clear()
+      // Event-first: the TUI half toasts the diagnostic without a transcript
+      // row. The row is the fallback for hosts without an event surface (and
+      // the cross-client surface for non-TUI clients on old builds).
+      if (emitJevEvent("error", { ...(sessionID ? { sessionID } : {}), message: title })) {
+        console.log(`[jev] surfaced: ${title} (event)`)
+        return
+      }
       try {
         await (ctx as any).session?.synthetic?.({
           ...(sessionID ? { sessionID } : {}),
@@ -1617,6 +1624,25 @@ export default Plugin.define({
       }
     }
 
+    // Deliver the buffered init fault now that the event surface exists.
+    // Event-first (the TUI toasts it without a transcript row); the row stays
+    // the fallback for hosts without RPC events.
+    if (pendingConfigFault !== undefined) {
+      const message = pendingConfigFault
+      pendingConfigFault = undefined
+      if (emitJevEvent("config", { message })) {
+        console.log(`[jev] init: config fault surfaced (event) - ${message}`)
+      } else {
+        try {
+          await (ctx as any).session?.synthetic?.({
+            text: `${JEV_CONFIG_ERROR_MARK}${message}`,
+          })
+        } catch (err: any) {
+          console.error(`[jev] init: config-fault row failed (${String(err?.message ?? err)})`)
+        }
+      }
+    }
+
     // -- scrub: tool inputs + user prompts (deterministic, no model calls) --
 
     if (scrubEnabled) {
@@ -1624,7 +1650,16 @@ export default Plugin.define({
         try {
           if (event?.input && typeof event.input === "object") {
             const hits = scrubInPlace(event.input)
-            if (hits > 0) console.log(`[jev] scrubbed ${hits} suspicious token(s) in ${event.tool} input`)
+            if (hits > 0) {
+              console.log(`[jev] scrubbed ${hits} suspicious token(s) in ${event.tool} input`)
+              // Counts only - never the matched text. UI-only signal.
+              emitJevEvent("scrub", {
+                ...(typeof event?.sessionID === "string" ? { sessionID: event.sessionID } : {}),
+                kind: "tool",
+                ...(typeof event?.tool === "string" ? { tool: event.tool } : {}),
+                hits,
+              })
+            }
           }
         } catch (err) {
           console.error(`[jev] scrub failed on ${event?.tool} input (proceding unscrubbed):`, err)
@@ -1639,6 +1674,12 @@ export default Plugin.define({
           event.prompt.text = r.text
           shiftMentionOffsets(event.prompt.files ?? [], r.offsets)
           console.log(`[jev] scrubbed ${r.hits} suspicious token(s) in user prompt`)
+          // Counts only - never the matched text. UI-only signal.
+          emitJevEvent("scrub", {
+            ...(typeof event?.sessionID === "string" ? { sessionID: event.sessionID } : {}),
+            kind: "prompt",
+            hits: r.hits,
+          })
         } catch (err) {
           console.error("[jev] prompt scrub failed (proceding unscrubbed):", err)
         }
@@ -2203,7 +2244,23 @@ export default Plugin.define({
           action: string,
           resources: readonly string[],
           event0: Record<string, unknown>,
+          sessionID?: string,
         ): Promise<void> => {
+          // UI-only signal for every resolution. The stats blob below is
+          // optional (`stats: false`); the event is not - it is the live
+          // approval stream for the TUI (and any future approval panel).
+          // Auto-allow/ask stay silent in the UI; deny/gate/fail toast.
+          const outcome = typeof event0.outcome === "string" ? event0.outcome : ""
+          if (outcome) {
+            emitJevEvent("approval", {
+              ...(sessionID ? { sessionID } : {}),
+              action,
+              outcome,
+              ...(resources[0] ? { resource: elideMiddle(resources[0], 160, 40) } : {}),
+              ...(typeof event0.verdict === "string" ? { verdict: event0.verdict } : {}),
+              ...(typeof event0.confidence === "number" ? { confidence: event0.confidence } : {}),
+            })
+          }
           if (!approvalsStats) return
           try {
             const storage = (ctx as any).storage
@@ -2289,7 +2346,7 @@ export default Plugin.define({
                     ? `[jev] approval: secret-path gate denied ${action}`
                     : `[jev] approval: secret-path gate held ${action} for manual review`,
                 )
-                await recordApprovalStat(action, resources, { outcome: "gate" })
+                await recordApprovalStat(action, resources, { outcome: "gate" }, event?.sessionID)
                 return
               }
             }
@@ -2332,7 +2389,7 @@ export default Plugin.define({
             if (chainEffect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
-              await recordApprovalStat(action, resources, { outcome: "allow" })
+              await recordApprovalStat(action, resources, { outcome: "allow" }, event?.sessionID)
               await postHint("allow")
               return
             }
@@ -2340,13 +2397,13 @@ export default Plugin.define({
               event.effect = "deny"
               event.message = `[jev] approval: denied by approvals.permissions rule`
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
-              await recordApprovalStat(action, resources, { outcome: "deny" })
+              await recordApprovalStat(action, resources, { outcome: "deny" }, event?.sessionID)
               await postHint("deny")
               return
             }
             if (chainEffect === "ask") {
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
-              await recordApprovalStat(action, resources, { outcome: "ask" })
+              await recordApprovalStat(action, resources, { outcome: "ask" }, event?.sessionID)
               await postHint("ask")
               return
             }
@@ -2378,7 +2435,7 @@ export default Plugin.define({
                       : "[jev] gate: potentially destructive or sensitive - review required",
                   )
                   console.log(`[jev] approval: gate ${deny ? "denied" : "held"} ${action}`)
-                  await recordApprovalStat(action, resources, { outcome: "gate" })
+                  await recordApprovalStat(action, resources, { outcome: "gate" }, event?.sessionID)
                   await postHint(deny ? "deny" : "ask")
                   return
                 }
@@ -2395,7 +2452,7 @@ export default Plugin.define({
             if (approvalsReadonlyAllow && isShellAction(action) && resources.every(isReadOnlyShellCommand)) {
               event.effect = "allow"
               console.log(`[jev] approval: read-only fast-path ${action} ${resources.join(" && ").slice(0, 120)}`)
-              await recordApprovalStat(action, resources, { outcome: "allow" })
+              await recordApprovalStat(action, resources, { outcome: "allow" }, event?.sessionID)
               await postHint("allow")
               return
             }
@@ -2485,7 +2542,7 @@ export default Plugin.define({
                 scores,
                 latencyMs,
                 usage: (reply as any).usage,
-              })
+              }, event?.sessionID)
               await postHint("allow")
               return
             }
@@ -2501,7 +2558,7 @@ export default Plugin.define({
                 reason: outcome.reason,
                 latencyMs,
                 usage: (reply as any).usage,
-              })
+              }, event?.sessionID)
               await postHint("deny")
               return
             }
@@ -2514,7 +2571,7 @@ export default Plugin.define({
               reason: outcome.reason,
               latencyMs,
               usage: (reply as any).usage,
-            })
+            }, event?.sessionID)
             await postHint("ask")
           } catch (err: any) {
             const cause = approvalFailureCause(err)
@@ -2534,7 +2591,7 @@ export default Plugin.define({
                 cause,
                 latencyMs,
                 enacted: "allow",
-              })
+              }, event?.sessionID)
               return
             }
             if (approvalsPolicy.onFail === "deny") {
@@ -2547,14 +2604,14 @@ export default Plugin.define({
                 cause,
                 latencyMs,
                 enacted: "deny",
-              })
+              }, event?.sessionID)
               return
             }
             await recordApprovalStat(statsBound.action, statsBound.resources, {
               outcome: "fail",
               cause,
               latencyMs,
-            })
+            }, event?.sessionID)
             await surfaceJev(err?.message, event?.sessionID)
             console.error(`[jev] approval: judgment skipped (${cause}: ${String(err?.message ?? err)})`)
           }
