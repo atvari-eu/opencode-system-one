@@ -69,6 +69,10 @@ behavior change instead of duplicating them here.
   results for **every** screened tool, not just `webfetch`. The done-check
   tail drops `NON_CONVERSATION_KINDS` (`model-switched`, `agent-switched`,
   `idle`) like the host's `toLLMMessage`; do not reintroduce those JSON rows.
+- TUI panels are **pure renderers**: `tui.ts` owns RPC subscriptions,
+  reconnect handling, and event recording. A panel module must not import
+  `./rpc` or subscribe itself - a stale half-updated RPC export once took
+  `/jev-screen-history` down on a pin update.
 - Secret redaction is deterministic regex — never a model call — and runs on
   every outbound state (screening, tool inputs, prompts, compaction).
 - `jev_judge_many` sends one request per item and aggregates in code; never

@@ -21,7 +21,16 @@
 // Kept import-free: this module is loaded by the TUI plugin runtime, whose
 // own `@opencode/plugin/tui` re-exports pull solid-js in. A structural shape
 // (id + setup, exactly what the runtime validates) avoids that dependency.
-import { JEVS_ERROR_MARK, JEV_CONFIG_ERROR_MARK, jevModelTag } from "./logic"
+import {
+  JEVS_ERROR_MARK,
+  JEV_CONFIG_ERROR_MARK,
+  SCREEN_NOTICE_MARK,
+  SCREEN_VERDICT_CAP,
+  jevModelTag,
+  parseScreenNotice,
+  screenEventItemOf,
+  type ScreenVerdictItem,
+} from "./logic"
 import { jevRpcClientOf, subscribeJevEvents, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
 
 interface ToastOptions {
@@ -119,7 +128,44 @@ export default {
       })
     }
 
+    // Screening history + toasts. The panel is a pure renderer of this store;
+    // subscriptions live here so a panel module can never fail to load on a
+    // stale/unavailable ./rpc export.
+    const screenStore = context.storage.store<{ items: ScreenVerdictItem[] }>("jev-screen-verdicts", {
+      initial: { items: [] },
+    })
+    const recordScreen = (item: ScreenVerdictItem): void => {
+      try {
+        screenStore[1]((draft: { items: ScreenVerdictItem[] }) => {
+          draft.items.push(item)
+          if (draft.items.length > SCREEN_VERDICT_CAP) {
+            draft.items.splice(0, draft.items.length - SCREEN_VERDICT_CAP)
+          }
+        })
+      } catch {}
+      if (item.verdict === "pass") return
+      if (item.verdict === "error") {
+        context.ui.toast.show({
+          title: "jev-screen",
+          message: `screen unavailable: ${item.note ?? item.label}`,
+          variant: "error",
+          duration: 10_000,
+        })
+        return
+      }
+      context.ui.toast.show({
+        title: "jev-screen",
+        message: `${item.verdict}: ${item.label}${item.junk !== undefined || item.injection !== undefined ? ` (junk=${item.junk ?? "?"} injection=${item.injection ?? "?"})` : ""}`,
+        variant: item.verdict === "unsafe" ? "error" : "warning",
+        duration: 10_000,
+      })
+    }
+
     const statusHandlers: Record<string, (data: any) => void> = {
+      screen: (data) => {
+        const item = screenEventItemOf(data)
+        if (item) recordScreen(item)
+      },
       error: (data) => {
         const message = typeof data?.message === "string" ? data.message : ""
         if (!message) return
@@ -197,6 +243,13 @@ export default {
         showConfigFault(text.slice(JEV_CONFIG_ERROR_MARK.length))
         return
       }
+      if (text.startsWith(SCREEN_NOTICE_MARK)) {
+        // Legacy rows only; the event channel carries this on current hosts.
+        if (rpcEventsActive) return
+        const item = parseScreenNotice(text)
+        if (item) recordScreen(item)
+        return
+      }
       if (!text.startsWith(JEVS_ERROR_MARK)) return
       // The event already toasted this failure on hosts that emit it.
       if (rpcEventsActive) return
@@ -212,13 +265,15 @@ export default {
 
     // -- screen verdict panel + flagged/unsafe toasts --
     let panelLoaded = false
+    let panelError = ""
     try {
       const { default: panel } = await import("./screen-panel.tsx")
       const panelCleanup = await panel.setup(context)
       cleanups.push(panelCleanup)
       panelLoaded = true
     } catch (err) {
-      console.log(`[jev] tui: screen panel unavailable: ${String((err as Error)?.message ?? err)}`)
+      panelError = String((err as Error)?.message ?? err)
+      console.log(`[jev] tui: screen panel unavailable: ${panelError}`)
     }
 
     // /jev-screen-history: open the recent screening-verdicts panel. Always
@@ -238,7 +293,9 @@ export default {
             if (!panelLoaded) {
               context.ui.toast.show({
                 title: "jev",
-                message: "screen panel unavailable - check the TUI log for the load error",
+                message: panelError
+                  ? `screen panel unavailable: ${panelError}`
+                  : "screen panel unavailable - check the TUI log for the load error",
                 variant: "warning",
                 duration: 10_000,
               })

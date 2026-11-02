@@ -322,7 +322,10 @@ that starts after the `config` event still surfaces it, and the TUI dedupes
 by message in its own durable store. TUI and panel event subscriptions
 re-attach on `server.connected` (ctx.client changes across server restarts)
 rather than holding a stale listener; the synthetic fallback follows the new
-subscription's state.
+subscription's state. The screen panel itself is a **pure renderer**: tui.ts
+owns the screen subscription and writes the shared verdict store, so a stale
+or unavailable `./rpc` export can never stop the panel module from loading
+(that failure mode took `/jev-screen-history` down on a pin update).
 
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.
