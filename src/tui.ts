@@ -32,6 +32,14 @@ import {
   type ScreenVerdictItem,
 } from "./logic"
 import { jevRpcClientOf, subscribeJevEvents, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
+// Static imports: the TUI loader compiles these TSX modules with its Solid
+// transform. Dynamic `import("./…tsx")` is resolved by Bun instead, which
+// cannot see the runtime-provided `solid-js` ("Cannot find package
+// 'solid-js'"). Static imports also let one module graph share the host's
+// Solid instance.
+import screenPanel from "./screen-panel.tsx"
+import footerMarker from "./footer-marker.tsx"
+import footerModel, { sessionHolder } from "./footer-jev-model.tsx"
 
 interface ToastOptions {
   readonly title?: string
@@ -267,8 +275,7 @@ export default {
     let panelLoaded = false
     let panelError = ""
     try {
-      const { default: panel } = await import("./screen-panel.tsx")
-      const panelCleanup = await panel.setup(context)
+      const panelCleanup = await screenPanel.setup(context)
       cleanups.push(panelCleanup)
       panelLoaded = true
     } catch (err) {
@@ -337,7 +344,6 @@ export default {
     // System One judgment model, src/footer-jev-model.tsx). Failure of one
     // marker module never hides the other.
     try {
-      const { default: footerMarker } = await import("./footer-marker.tsx")
       const markerCleanup = await footerMarker.setup(context)
       cleanups.push(markerCleanup)
     } catch (err) {
@@ -345,12 +351,10 @@ export default {
     }
     // Also the picker's current-session source: the footer slot carries the
     // session id of the session on screen, which command runs do not receive.
-    let lastSessionHolder: { current?: string } | undefined
+    let lastSessionHolder: { current?: string } | undefined = sessionHolder
     try {
-      const mod: any = await import("./footer-jev-model.tsx")
-      const modelCleanup = await mod.default.setup(context)
+      const modelCleanup = await footerModel.setup(context)
       cleanups.push(modelCleanup)
-      lastSessionHolder = mod.sessionHolder
     } catch (err) {
       console.log(`[jev] tui: footer model marker unavailable: ${String((err as Error)?.message ?? err)}`)
     }
