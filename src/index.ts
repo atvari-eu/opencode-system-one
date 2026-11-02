@@ -2287,6 +2287,12 @@ export default Plugin.define({
               ...(resources[0] ? { resource: elideMiddle(resources[0], 160, 40) } : {}),
               ...(typeof event0.verdict === "string" ? { verdict: event0.verdict } : {}),
               ...(typeof event0.confidence === "number" ? { confidence: event0.confidence } : {}),
+              ...(event0.readonly ? { readonly: true } : {}),
+              // Rule resolutions carry their `reason/rule-*` tag here too, so
+              // the audit panel can label them like the read-only fast path.
+              ...(typeof event0.reason === "string" && event0.reason.startsWith("rule-")
+                ? { reason: event0.reason }
+                : {}),
             })
           }
           if (!approvalsStats) return
@@ -2417,7 +2423,12 @@ export default Plugin.define({
             if (chainEffect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
-              await recordApprovalStat(action, resources, { outcome: "allow" }, event?.sessionID)
+              await recordApprovalStat(
+                action,
+                resources,
+                { outcome: "allow", reason: "rule-allow" },
+                event?.sessionID,
+              )
               await postHint("allow")
               return
             }
@@ -2425,13 +2436,23 @@ export default Plugin.define({
               event.effect = "deny"
               event.message = `[jev] approval: denied by approvals.permissions rule`
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> deny`)
-              await recordApprovalStat(action, resources, { outcome: "deny" }, event?.sessionID)
+              await recordApprovalStat(
+                action,
+                resources,
+                { outcome: "deny", reason: "rule-deny" },
+                event?.sessionID,
+              )
               await postHint("deny")
               return
             }
             if (chainEffect === "ask") {
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> ask (unchanged)`)
-              await recordApprovalStat(action, resources, { outcome: "ask" }, event?.sessionID)
+              await recordApprovalStat(
+                action,
+                resources,
+                { outcome: "ask", reason: "rule-ask" },
+                event?.sessionID,
+              )
               await postHint("ask")
               return
             }
@@ -2482,7 +2503,7 @@ export default Plugin.define({
             if (approvalsReadonlyAllow && isReadOnlyRequest(action, resources)) {
               event.effect = "allow"
               console.log(`[jev] approval: read-only fast-path ${action} ${resources.join(" && ").slice(0, 120)}`)
-              await recordApprovalStat(action, resources, { outcome: "allow" }, event?.sessionID)
+              await recordApprovalStat(action, resources, { outcome: "allow", readonly: true }, event?.sessionID)
               await postHint("allow")
               return
             }
@@ -3197,6 +3218,7 @@ export default Plugin.define({
                     `ask=${r.ask ?? 0}`,
                     `gate=${r.gate ?? 0}`,
                     `fail=${r.fail ?? 0}`,
+                    r.readonly ? `readonly=${r.readonly}` : "",
                     r.failTimeout || r.failHttp || r.failError
                       ? `failCauses=timeout:${r.failTimeout ?? 0} http:${r.failHttp ?? 0} error:${r.failError ?? 0}`
                       : "",
@@ -3224,7 +3246,7 @@ export default Plugin.define({
               ].filter(Boolean)
               const header =
                 `[jev-approval-stats] totals: count=${sum("count")} allow=${sum("allow")} deny=${sum("deny")}` +
-                ` ask=${sum("ask")} gate=${sum("gate")} fail=${sum("fail")}` +
+                ` ask=${sum("ask")} gate=${sum("gate")} fail=${sum("fail")} readonly=${sum("readonly")}` +
                 (suggestionParts.length
                   ? `\nsuggested minConfidence floors: ${suggestionParts.join(" ")} (0.95 band coverage)`
                   : "")

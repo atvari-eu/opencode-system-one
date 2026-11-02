@@ -108,6 +108,44 @@ describe("auditEntryOf", () => {
     expect(auditEntryOf("approval", { action: "shell", outcome: "fail" })?.tone).toBe("warn")
   })
 
+  test("read-only fast-path allows are labeled as delegated, not judged", () => {
+    const ro = auditEntryOf("approval", { action: "read", outcome: "allow", resource: "src/index.ts", readonly: true }, at)
+    expect(ro?.tone).toBe("ok")
+    expect(ro?.decision).toBe("allow/ro")
+    expect(ro?.subject).toBe("read")
+    expect(ro?.summary).toContain("read-only fast-path")
+    expect(ro?.detail).toContain("read-only fast-path (no judgment)")
+    expect(ro?.detail).toContain("src/index.ts")
+  })
+
+  test("rule-resolved approvals are labeled per outcome", () => {
+    const allow = auditEntryOf(
+      "approval",
+      { action: "shell", outcome: "allow", resource: "git status", reason: "rule-allow" },
+      at,
+    )
+    expect(allow?.decision).toBe("allow/rule")
+    expect(allow?.summary).toContain("approvals.permissions rule")
+    expect(allow?.detail).toContain("approvals.permissions rule (no judgment)")
+
+    const ask = auditEntryOf("approval", { action: "shell", outcome: "ask", reason: "rule-ask" }, at)
+    expect(ask?.decision).toBe("ask/rule")
+    expect(ask?.tone).toBe("info")
+
+    const deny = auditEntryOf("approval", { action: "shell", outcome: "deny", reason: "rule-deny" }, at)
+    expect(deny?.decision).toBe("deny/rule")
+    expect(deny?.tone).toBe("error")
+
+    // A judged reason is not a rule outcome and keeps the plain label.
+    const judged = auditEntryOf(
+      "approval",
+      { action: "shell", outcome: "ask", reason: "reversible-below-bar" },
+      at,
+    )
+    expect(judged?.decision).toBe("ask")
+    expect(judged?.detail).toBe("")
+  })
+
   test("malformed payloads are dropped", () => {
     expect(auditEntryOf("screen", undefined)).toBeUndefined()
     expect(auditEntryOf("screen", {})).toBeDefined() // defaults to ?: tool

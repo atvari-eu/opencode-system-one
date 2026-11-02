@@ -132,11 +132,21 @@ export function auditEntryOf(
       const outcome = typeof data.outcome === "string" ? data.outcome : "?"
       const action = typeof data.action === "string" ? data.action : "permission"
       const resource = typeof data.resource === "string" && data.resource ? data.resource : ""
-      decision = outcome
+      // Paths that enact before any judgment are labeled so a delegated
+      // outcome is never mistaken for a judged one: the read-only fast path
+      // as `allow/ro`, a matched approvals.permissions rule as `<outcome>/rule`.
+      const readonly = data.readonly === true
+      const rule =
+        typeof data.reason === "string" && /^rule-(allow|ask|deny)$/.test(data.reason)
+      const how = readonly ? "read-only fast-path" : rule ? "approvals.permissions rule" : ""
+      decision = readonly ? "allow/ro" : rule ? `${outcome}/rule` : outcome
       subject = action
-      detail = resource
-      summary = `${outcome}: ${action}${resource ? ` ${resource}` : ""}`
-      tone = outcome === "allow" ? "ok" : outcome === "ask" ? "info" : outcome === "fail" ? "warn" : "error"
+      detail = how ? [resource, `${how} (no judgment)`].filter(Boolean).join(" · ") : resource
+      summary = how
+        ? `${decision}: ${action}${resource ? ` ${resource}` : ""} — ${how}`
+        : `${outcome}: ${action}${resource ? ` ${resource}` : ""}`
+      tone =
+        readonly || outcome === "allow" ? "ok" : outcome === "ask" ? "info" : outcome === "fail" ? "warn" : "error"
       break
     }
   }

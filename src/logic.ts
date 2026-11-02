@@ -2996,9 +2996,11 @@ export interface ApprovalInput {
 }
 
 /** Why a resolved outcome landed on ask (or deny): the first failing
- * approve-side check, an unavailable score, or a policy-held verdict. Recorded
- * into the stats bands (`reason/...`) so tuning can see which check, not just
- * which score band, produced prompts. */
+ * approve-side check, an unavailable score, a policy-held verdict, or a
+ * deterministic `approvals.permissions` rule that resolved before any
+ * judgment. Recorded into the stats bands (`reason/...`) so tuning can see
+ * which check - or which rule - not just which score band, produced the
+ * outcome. */
 export type ApprovalReason =
   | "refuse-bar-met"
   | "hold-refuse"
@@ -3010,6 +3012,9 @@ export type ApprovalReason =
   | "serves-task-below-bar"
   | "harmful-unavailable"
   | "harmful-over-ceiling"
+  | "rule-allow"
+  | "rule-ask"
+  | "rule-deny"
 
 export interface ApprovalOutcome {
   /** What the caller applies: allow auto-runs, deny refuses, ask prompts. */
@@ -3192,6 +3197,9 @@ export interface ApprovalStatsEvent {
   cause?: "timeout" | "http" | "error"
   /** Why the judged outcome resolved this way (resolveApproval's reason). */
   reason?: ApprovalReason
+  /** Read-only fast path: allowed with no judgment. Distinguishes the
+   * delegation from a judged allow (confidence is absent). */
+  readonly?: boolean
   /** Judgment latency in ms, once a judgment reached the endpoint. */
   latencyMs?: number
   /** What approvals.onFail enacted for a "fail" outcome. */
@@ -3272,7 +3280,12 @@ export function mergeApprovalStats(existing: unknown, event: ApprovalStatsEvent)
     base.bands && typeof base.bands === "object" && !Array.isArray(base.bands)
       ? (base.bands as Record<string, unknown>)
       : {}
-  const judged = event.outcome === "allow" || event.outcome === "deny" || event.outcome === "ask"
+  // A read-only fast-path allow is enacted without a verdict: it has no
+  // confidence, so it stays out of the outcome band (which is calibration
+  // data) and only carries a reason tag.
+  const judged =
+    !event.readonly &&
+    (event.outcome === "allow" || event.outcome === "deny" || event.outcome === "ask")
   const nextBands = { ...bands }
   const bump = (key: string): void => {
     nextBands[key] = (typeof nextBands[key] === "number" ? (nextBands[key] as number) : 0) + 1
@@ -3290,6 +3303,9 @@ export function mergeApprovalStats(existing: unknown, event: ApprovalStatsEvent)
     }
     if (event.reason) bump(`reason/${event.reason}`)
   }
+  // The fast path resolves before any question; tag it so the "read-only
+  // slice no longer costs judgments" reading stays visible.
+  if (event.readonly) bump("reason/readonly")
   const usageSum = (value: unknown): number =>
     typeof value === "number" && Number.isFinite(value) ? value : 0
   const latencySum = usageSum(event.latencyMs)
@@ -3300,6 +3316,7 @@ export function mergeApprovalStats(existing: unknown, event: ApprovalStatsEvent)
     gate: num("gate") + (event.outcome === "gate" ? 1 : 0),
     fail: num("fail") + (event.outcome === "fail" ? 1 : 0),
     ask: num("ask") + (event.outcome === "ask" ? 1 : 0),
+    readonly: num("readonly") + (event.readonly ? 1 : 0),
     failTimeout: num("failTimeout") + (event.outcome === "fail" && event.cause === "timeout" ? 1 : 0),
     failHttp: num("failHttp") + (event.outcome === "fail" && event.cause === "http" ? 1 : 0),
     failError: num("failError") + (event.outcome === "fail" && event.cause === "error" ? 1 : 0),

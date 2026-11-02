@@ -103,6 +103,32 @@ describe("approval stats", () => {
     expect((agg as Record<string, unknown>).bands).toMatchObject({ "ask/-": 1 })
   })
 
+  test("rule-resolved outcomes carry their rule reason band", () => {
+    let agg: unknown = undefined
+    agg = mergeApprovalStats(agg, { outcome: "allow", reason: "rule-allow" })
+    agg = mergeApprovalStats(agg, { outcome: "ask", reason: "rule-ask" })
+    agg = mergeApprovalStats(agg, { outcome: "deny", reason: "rule-deny" })
+    expect(agg).toMatchObject({
+      allow: 1,
+      ask: 1,
+      deny: 1,
+      bands: {
+        "reason/rule-allow": 1,
+        "reason/rule-ask": 1,
+        "reason/rule-deny": 1,
+      },
+    })
+  })
+
+  test("read-only fast-path allows are counted and tagged, not banded as judged", () => {
+    const agg = mergeApprovalStats(undefined, { outcome: "allow", readonly: true })
+    expect(agg).toMatchObject({ count: 1, allow: 1, readonly: 1 })
+    const bands = (agg as Record<string, unknown>).bands as Record<string, unknown>
+    expect(bands["reason/readonly"]).toBe(1)
+    // No confidence exists, so it must not land in the calibration bands.
+    expect(bands["allow/-"]).toBeUndefined()
+  })
+
   test("fail events fold cause classes, judge latency sums and onFail enacts", () => {
     let agg: unknown = undefined
     agg = mergeApprovalStats(agg, { outcome: "fail", cause: "timeout", latencyMs: 8100 })
