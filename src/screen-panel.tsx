@@ -101,6 +101,18 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
         run: () => setStart((value) => clampStart(value - 1)),
       },
       {
+        id: "jev.screen.top",
+        title: "Verdicts top",
+        bind: "g",
+        run: () => setStart(0),
+      },
+      {
+        id: "jev.screen.bottom",
+        title: "Verdicts bottom",
+        bind: "shift+g",
+        run: () => setStart(clampStart(Number.MAX_SAFE_INTEGER)),
+      },
+      {
         id: "jev.screen.copy",
         title: "Copy jev screening verdicts",
         bind: "c",
@@ -135,7 +147,7 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
       </box>
       {visible.length === 0 ? <text selectable={false}>{"no verdicts yet"}</text> : visible.map((item, i) => <Row item={item} index={i} />)}
       <box marginTop={1}>
-        <text selectable={false}>{`${range} of ${items.length}${scrollable ? " · j/k scroll" : ""}`}</text>
+        <text selectable={false}>{`${range} of ${items.length}${scrollable ? " · j/k scroll · g/G top/bottom" : ""}`}</text>
       </box>
       <text selectable={false}>{"esc/q close · f fullscreen · c copy"}</text>
     </box>
