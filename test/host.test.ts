@@ -42,6 +42,7 @@ function makeCtx(options: Record<string, any> = {}) {
   const tools = new Map<string, any>()
   const kv = new Map<string, any>()
   const synthetic: Array<{ sessionID?: string; text: string }> = []
+  const events: Array<{ name: string; data: any }> = []
   const hookKey = (domain: string, name: string) => `${domain}:${name}`
 
   const session: any = {
@@ -97,8 +98,17 @@ function makeCtx(options: Record<string, any> = {}) {
     },
     provider: { transform: async (cb: HookFn) => cb(makeEditor(new Map())) },
     event: { subscribe: async function* () {} },
+    rpc: {
+      register: async () => ({
+        events: {
+          emit: async (name: string, data: any) => {
+            events.push({ name, data })
+          },
+        },
+      }),
+    },
   }
-  return { ctx, hooks, commands, tools, kv, synthetic }
+  return { ctx, hooks, commands, tools, kv, synthetic, events }
 }
 
 const APPROVALS_OPTIONS: Record<string, any> = {
@@ -285,6 +295,33 @@ describe("plugin runtime harness", () => {
     expect(async () => hook!({ status: "completed", tool: "webfetch", input: {}, result: undefined })).not.toThrow()
     expect(async () => hook!({ status: "error" })).not.toThrow()
     expect(async () => hook!({ status: "completed", tool: "read", input: {}, result: "plain text, no url" })).not.toThrow()
+  })
+
+  test("screen failures ride the RPC event, not a transcript row", async () => {
+    const plugin = await loadSetup()
+    const built = makeCtx({ screen: { enabled: true, tools: ["webfetch"] } })
+    await plugin.setup(built.ctx)
+    const hook = built.hooks.get("tool:execute.after")!
+    const before = built.synthetic.length
+    const event: any = {
+      status: "completed",
+      tool: "webfetch",
+      input: { url: "https://example.test/page" },
+      result: { content: [{ type: "text", text: "fetched content that would be judged" }] },
+      sessionID: "ses_screen_fail",
+    }
+    await hook(event)
+    // the judge endpoint is refused, so the screen fails; the UI event carries
+    // the diagnostic and no per-call transcript row is written
+    const screenEvents = built.events.filter((e) => e.name === "screen")
+    expect(screenEvents.length).toBeGreaterThan(0)
+    expect(screenEvents[screenEvents.length - 1]?.data.verdict).toBe("error")
+    expect(screenEvents[screenEvents.length - 1]?.data.label).toBe("https://example.test/page")
+    expect(
+      built.synthetic.slice(before).filter((s) => s.text.startsWith("[jev-screen]")),
+    ).toEqual([])
+    // fetched web content stays fail-closed inline on a failed screen
+    expect(JSON.stringify(event.result)).toContain("[jev-screen unavailable:")
   })
 
   test("commands handle garbage input without throwing", async () => {

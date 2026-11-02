@@ -140,8 +140,9 @@ import {
   routeTurn,
   resolveProviderBaseURL,
   screenApplies,
-  screenRedacts,
+  screenNeedsAttention,
   screenVerdict,
+  screenWithholds,
   shouldNotifyIncomplete,
   toRef,
   unwrapEnvelope,
@@ -149,7 +150,7 @@ import {
 } from "./logic"
 import { type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type ProviderOption } from "./logic"
 import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
-import { makeJevRpc, type JevModelsInfo, type JevSetResult } from "./rpc"
+import { makeJevRpc, type JevModelsInfo, type JevScreenEvent, type JevSetResult } from "./rpc"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
@@ -966,18 +967,21 @@ function readResultText(result: unknown): string {
 }
 
 // Replaces the primary text of a Tool.Result in place, tolerating every
-// documented content shape. Returns true when a text slot was found.
+// documented content shape. Any further text parts are blanked so a withheld
+// result cannot leak the rest of its content through a sibling part. Returns
+// true when a text slot was found.
 function setPrimaryText(result: unknown, text: string): boolean {
   if (!result || typeof result !== "object") return false
   const content = (result as any).content
   if (Array.isArray(content)) {
+    let found = false
     for (const part of content) {
       if (part && typeof part === "object" && (part as any).type === "text") {
-        ;(part as any).text = text
-        return true
+        ;(part as any).text = found ? "" : text
+        found = true
       }
     }
-    return false
+    return found
   }
   if (typeof content === "string") {
     ;(result as any).content = text
@@ -988,6 +992,16 @@ function setPrimaryText(result: unknown, text: string): boolean {
     return true
   }
   return false
+}
+
+// Replaces the result text whether the host supplied a Tool.Result object or
+// a bare string; never throws. Fail-closed rewriting must not silently leave
+// the original content in place on a shape the mutator does not know.
+function replaceResultText(event: any, text: string): void {
+  if (setPrimaryText(event?.result, text)) return
+  try {
+    event.result = text
+  } catch {}
 }
 
 function scrubInPlace(value: unknown): number {
@@ -1339,6 +1353,28 @@ export default Plugin.define({
     const SURFACED_COOLDOWN_MS = 60_000
     const surfacedAt = new Map<string, number>()
 
+    // Registration of the jev-config RPC (methods + events). Declared here,
+    // before the first emitter use, and assigned by the registration block
+    // below; undefined until then / on hosts without event support.
+    let rpcRegistration: any
+
+    // UI-only notification transport. Returns false when the host offers no
+    // event surface, so callers can keep the old synthetic-row fallback for
+    // outcomes that must not disappear. Nothing emitted here enters the
+    // session transcript.
+    const emitJevEvent = (name: string, data: Record<string, unknown>): boolean => {
+      try {
+        const eventApi = rpcRegistration?.events
+        const emit = eventApi?.emit
+        if (typeof emit !== "function") return false
+        const pending = emit.call(eventApi, name, data)
+        if (pending && typeof pending.then === "function") pending.catch(() => {})
+        return true
+      } catch {
+        return false
+      }
+    }
+
     const surfaceJev = async (message: unknown, sessionID?: string): Promise<void> => {
       const title = surfaceTitle(message) || "jev: judgment failed - no diagnostic message"
       const lastSurfaced = surfacedAt.get(`${sessionID ?? ""}|${title}`)
@@ -1551,7 +1587,7 @@ export default Plugin.define({
         )
       } else {
         try {
-          await rpcApi.register(jevRpcDescriptor, {
+          rpcRegistration = await rpcApi.register(jevRpcDescriptor, {
             describe: async (input: any): Promise<JevModelsInfo> => {
               const sessionID = typeof input?.sessionID === "string" ? input.sessionID : ""
               const pin = sessionID ? await pinOf(sessionID) : undefined
@@ -2525,11 +2561,22 @@ export default Plugin.define({
 
     // -- screen: tool results before they enter context --
     // webfetch by default; "screen": { "tools": "all" } screens every tool
-    // result (annotated only - fail-closed redaction stays scoped to fetched
-    // web content). The plugin's own judgment tools are skipped: their
-    // outputs are verdicts that are already judged.
+    // result. Fail-closed redaction (`mode: "redact"`) withholds an unsafe
+    // result for every screened tool. The plugin's own judgment tools are
+    // skipped: their outputs are verdicts that are already judged.
+    //
+    // Context invariant: a PASSING verdict never writes anything - no row, no
+    // prefix - so screening every tool is free in transcript terms. Only
+    // anomalies (flagged/unsafe) and withheld content touch the transcript,
+    // and the model sees them inline when `annotation: "inline"`. UI-only
+    // feedback (the panel, pass history, failure toasts) rides the RPC
+    // `screen` event instead of session rows.
 
     if (screenEnabled) {
+      // Per-(session, failure) cadence for screen-failure events; same 60 s
+      // window as surfaceJev, so a dead deployment screening every tool call
+      // toasts once per window instead of once per call.
+      const screenFaultAt = new Map<string, number>()
       await (ctx as any).tool.hook("execute.after", async (event: any) => {
         if (event?.status !== "completed") return
         const tool = String(event?.tool ?? "")
@@ -2538,11 +2585,31 @@ export default Plugin.define({
         const text0 = readResultText(event.result)
         if (!text0) return
 
-        // Visible notice for flagged screens (plugin-only UI surface: a
-        // timeline row, like the /jev-screen command output).
+        const label = url || tool
+        const sessionID = typeof event?.sessionID === "string" ? event.sessionID : undefined
+
+        // UI-only channel: the TUI half records every verdict in its panel and
+        // toasts anomalies/failures. Returns false on hosts without an event
+        // surface, which is what gates the synthetic-row fallbacks below.
+        const emitScreen = (
+          verdict: JevScreenEvent["verdict"],
+          extra: { junk?: number; injection?: number; secret?: number; note?: string } = {},
+        ): boolean =>
+          emitJevEvent("screen", {
+            ...(sessionID ? { sessionID } : {}),
+            label,
+            verdict,
+            ...(typeof extra.junk === "number" ? { junk: extra.junk } : {}),
+            ...(typeof extra.injection === "number" ? { injection: extra.injection } : {}),
+            ...(typeof extra.secret === "number" ? { secret: extra.secret } : {}),
+            ...(extra.note ? { note: extra.note } : {}),
+          })
+
+        // Fallback transcript row for outcomes that must not disappear when
+        // the host has no event surface. Never used for a passing verdict.
         const notice = async (text: string) => {
           try {
-            await (ctx as any).session?.synthetic?.({ sessionID: event?.sessionID, text })
+            await (ctx as any).session?.synthetic?.({ sessionID, text })
           } catch {}
         }
 
@@ -2563,54 +2630,76 @@ export default Plugin.define({
           const injection = outcome.injection
           const secret = outcome.secret
           const tag = `jev-screen: junk=${fmt(junk)} injection=${fmt(injection)} secret=${fmt(secret)}`
-          const unsafe = outcome.verdict === "unsafe"
           const scrubbedHits = outcome.scrubbedHits
+          const suffix = scrubbedHits ? ` scrubbed=${scrubbedHits}` : ""
 
-          if (screenMode === "redact" && unsafe && screenRedacts(tool)) {
-            const note = `[jev-screen withheld this content (fail-closed): ${tag}. Read the page manually or set screen.enabled=false in the jev plugin options to override.]` +
+          emitScreen(outcome.verdict, {
+            ...(typeof junk === "number" ? { junk } : {}),
+            ...(typeof injection === "number" ? { injection } : {}),
+            ...(typeof secret === "number" ? { secret } : {}),
+            ...(scrubbedHits ? { note: `scrubbed=${scrubbedHits}` } : {}),
+          })
+
+          if (screenWithholds(screenMode, outcome.verdict)) {
+            // Fail-closed for every screened tool: the withheld note replaces
+            // the result's text, so no unsafe content reaches the model. The
+            // row stays - it is an anomaly, and the model-facing note alone
+            // leaves the human without a timeline marker.
+            const note = `[jev-screen withheld this content (fail-closed): ${tag}. Re-run the tool with a narrower target, or set screen.enabled=false in the jev plugin options to override.]` +
               (scrubbedHits ? `\n(${scrubbedHits} secret-like token(s) were redacted before screening.)` : "")
-            setPrimaryText(event.result, note)
-            await notice(`[jev-screen] ✗ ${url || tool}: content withheld (fail-closed) - ${tag}`)
+            replaceResultText(event, note)
+            await notice(`[jev-screen] ✗ ${label}: content withheld (fail-closed) - ${tag}`)
             return
           }
 
-          if (text0) {
-            const suffix = scrubbedHits ? ` scrubbed=${scrubbedHits}` : ""
-            if (screenAnnotation === "notice") {
-              // Result text stays untouched; the verdict posts as its own
-              // timeline row. Timing note: the synthetic row lands after the
-              // result in the transcript - the model reads unannotated
-              // content and learns of the verdict late.
-              await notice(`[jev-screen] junk=${fmt(junk)} injection=${fmt(injection)} secret=${fmt(secret)}${suffix} ${unsafe ? "⚠ do-not-rely" : "pass"} - ${url || tool}`)
-              return
-            }
-            const flag = unsafe ? ` ⚠ do-not-rely` : ""
-            setPrimaryText(event.result, `[${tag}${suffix}${flag}]\n\n` + text0)
-            if (unsafe) {
-              await notice(
-                `[jev-screen] ⚠ ${url || tool} flagged (${tag}) - result annotated, do not rely on it`,
-              )
-            }
+          // Passing verdicts stop here: no transcript artifact, in either
+          // annotation mode. The event above is the whole downstream record.
+          if (!screenNeedsAttention(outcome.verdict)) return
+
+          if (screenAnnotation === "notice") {
+            // Anomalies only. The row lands after the result in the
+            // transcript; the model reads unannotated content and learns of
+            // the verdict late (the documented notice trade-off).
+            await notice(
+              `[jev-screen] junk=${fmt(junk)} injection=${fmt(injection)} secret=${fmt(secret)}${suffix} ${
+                outcome.verdict === "unsafe" ? "⚠ do-not-rely" : "flagged"
+              } - ${label}`,
+            )
+            return
           }
+          const flag = outcome.verdict === "unsafe" ? ` ⚠ do-not-rely` : ""
+          replaceResultText(event, `[${tag}${suffix}${flag}]\n\n` + text0)
         } catch (err: any) {
           const message = String(err?.message ?? err)
-          await surfaceJev(`screen unavailable for ${url || tool}: ${message}`, event?.sessionID)
+          // Failures are UI-only for local tools: the result is untouched and
+          // never withheld, so a toasting event is the whole surface. Hosts
+          // without events keep the surfaced row so the fault is not lost.
+          // An outage while `tools: "all"` is screening every call would
+          // otherwise toast per call, so the same 60 s per-failure cadence as
+          // surfaceJev applies (distinct failures still surface separately).
+          const faultKey = `${sessionID ?? ""}|${message}`
+          const lastFault = screenFaultAt.get(faultKey) ?? 0
+          if (Date.now() - lastFault >= 60_000) {
+            screenFaultAt.set(faultKey, Date.now())
+            if (screenFaultAt.size > 200) screenFaultAt.clear()
+            const emitted = emitScreen("error", { note: surfaceTitle(message) })
+            if (!emitted) await surfaceJev(`screen unavailable for ${label}: ${message}`, sessionID)
+          } else {
+            console.log(`[jev] screen: failure suppressed (cooldown) for ${label}`)
+          }
+          console.error(`[jev] screen: unavailable for ${label} (${message})`)
           if (inlineScreenFailure(tool)) {
             // Fetched web content stays fail-closed inline: a failed screen
             // there means possibly-injected content is about to be read, so
             // the error prefix stays attached to the bounded (not verbatim)
             // payload.
             const fallback = readResultText(event.result)
-            setPrimaryText(
-              event.result,
+            replaceResultText(
+              event,
               `[jev-screen unavailable: ${message}]\n\n` + fallback.slice(0, 3000) +
                 (fallback.length > 3000 ? " …[truncated]" : ""),
             )
           }
-          // Local tools (shell, read, grep, glob, edit, MCP, ...): the result
-          // text stays untouched and untruncated - the failure surfaces as
-          // its own "[jev-error]" row / error toast instead of noise inside
-          // the tool output the model treats as tool content.
         }
       })
     }
@@ -2938,11 +3027,25 @@ export default Plugin.define({
               const secretFlag = typeof secret === "number" && secret >= screenSecretThreshold
               const verdictRaw = screenVerdict(junk, injection)
               const verdict = verdictRaw === "pass" && secretFlag ? "flagged" : verdictRaw
+              emitJevEvent("screen", {
+                ...(typeof sessionID === "string" ? { sessionID } : {}),
+                label,
+                verdict,
+                ...(typeof junk === "number" ? { junk } : {}),
+                ...(typeof injection === "number" ? { injection } : {}),
+                ...(typeof secret === "number" ? { secret } : {}),
+              })
               await (ctx as any).session.synthetic({
                 sessionID,
                 text: `[jev-screen] ${label}: junk=${fmt(junk)} injection=${fmt(injection)} secret=${fmt(secret)} → ${verdict}`,
               })
             } catch (err: any) {
+              emitJevEvent("screen", {
+                ...(typeof sessionID === "string" ? { sessionID } : {}),
+                label: target || "jev-screen",
+                verdict: "error",
+                note: String(err?.message ?? err),
+              })
               await (ctx as any).session.synthetic({
                 sessionID,
                 text: `[jev-screen] failed: ${String(err?.message ?? err)}`,

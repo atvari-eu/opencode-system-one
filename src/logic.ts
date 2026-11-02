@@ -1083,25 +1083,38 @@ export function screenApplies(tool: string, tools: ScreenTools, self: Readonly<R
 }
 
 // Where the screening verdict lands: "notice" leaves the tool result
-// untouched and posts a separate timeline row (human-facing, default);
-// "inline" prefixes the result text so the model sees the verdict where it
-// reads the content. Trade-off documented in README / screen hook comment.
+// untouched and posts a separate timeline row for anomalies (passes are
+// UI-only); "inline" prefixes the result text so the model sees the verdict
+// where it reads the content. Neither mode writes anything for a passing
+// verdict - the screen is a safety net, not a per-call transcript entry.
 export function parseScreenAnnotation(raw: unknown): "inline" | "notice" {
   return raw === "inline" ? "inline" : "notice"
 }
 
-// What an unsafe verdict does: "redact" replaces unsafe fetched web content
-// fail-closed (default); "annotate" only labels flagged results and keeps
-// all content. Local tool output is annotated-only in both modes.
+// What an unsafe verdict does: "redact" withholds unsafe results fail-closed
+// (default); "annotate" only labels flagged results and keeps all content.
+// Redaction applies to every screened tool - a local tool result can carry
+// injected instructions just as a fetched page can.
 export function parseScreenMode(raw: unknown): "annotate" | "redact" {
   return raw === "annotate" ? "annotate" : "redact"
 }
 
-// Fail-closed redaction deliberately stays scoped to fetched web content:
-// redacting arbitrary bash output destroys its usefulness; other tool
-// results are annotated only.
-export function screenRedacts(tool: string): boolean {
-  return tool === "webfetch"
+/** True when an unsafe verdict under this mode replaces the content. The
+ * scope is the verdict, not the tool: `mode: "redact"` guards every screened
+ * result (webfetch, shell, read, MCP, ...). */
+export function screenWithholds(
+  mode: "annotate" | "redact",
+  verdict: "pass" | "flagged" | "unsafe",
+): boolean {
+  return mode === "redact" && verdict === "unsafe"
+}
+
+/** Only a non-pass verdict is worth a transcript artifact (an inline prefix
+ * or a notice row). Committing this rule here - rather than at each call
+ * site - is what keeps `tools: "all"` free of context growth on clean
+ * content, whatever `annotation` says. */
+export function screenNeedsAttention(verdict: "pass" | "flagged" | "unsafe"): boolean {
+  return verdict !== "pass"
 }
 
 // Verdict bands for jev screening (auto screening, the /jev-screen command
@@ -1317,12 +1330,13 @@ export const JEVS_ERROR_MARK = "[jev-error] "
  * per-session `[jev-error]` rows the individual call sites surface. */
 export const JEV_CONFIG_ERROR_MARK = "[jev-config-error] "
 
-// Plain screening-notice rows, posted by the auto screen hook (and the
-// /jev-screen command). The TUI half parses them into the verdict panel and
-// flags/unsafe toasts; passes stay silent in the UI.
+// Plain screening-notice rows, posted by the auto screen hook for anomalies
+// and withheld content (and by the /jev-screen command). Hosts with the RPC
+// event surface use that instead; this is the fallback the TUI half parses
+// into the verdict panel and flagged/unsafe toasts.
 export const SCREEN_NOTICE_MARK = "[jev-screen]"
 
-export type ScreenVerdict = "pass" | "flagged" | "unsafe"
+export type ScreenVerdict = "pass" | "flagged" | "unsafe" | "error"
 
 export interface ScreenVerdictItem {
   /** URL or tool name the verdict is about, as printed in the row. */
@@ -1410,6 +1424,32 @@ export function parseScreenNotice(text: string): ScreenVerdictItem | undefined {
     secret: "secret" in nums ? num(nums.secret) : undefined,
     verdict,
     note: undefined,
+  }
+}
+
+/** Turns a `screen` RPC event payload into the panel's item shape. The event
+ * is the primary transport for pass verdicts (they never get a row), so the
+ * panel must accept all four verdict kinds; malformed payloads are dropped
+ * rather than rendered as a bogus verdict. */
+export function screenEventItemOf(data: unknown): ScreenVerdictItem | undefined {
+  const d = data as any
+  if (!d || typeof d !== "object") return undefined
+  const verdict = d.verdict
+  if (verdict !== "pass" && verdict !== "flagged" && verdict !== "unsafe" && verdict !== "error") {
+    return undefined
+  }
+  const label = typeof d.label === "string" ? d.label.trim() : ""
+  if (!label) return undefined
+  const number = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined
+  const note = typeof d.note === "string" && d.note.trim() !== "" ? d.note.trim() : undefined
+  return {
+    label,
+    junk: number(d.junk),
+    injection: number(d.injection),
+    secret: number(d.secret),
+    verdict,
+    note,
   }
 }
 

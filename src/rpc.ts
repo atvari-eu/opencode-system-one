@@ -32,7 +32,23 @@ export interface JevSetResult {
   message?: string
 }
 
+/** One screening verdict, sent server -> TUI over the `screen` event. This is
+ * the UI-only channel: it feeds the verdict panel and the flagged/unsafe
+ * toasts without writing anything to the session transcript. `error` carries
+ * a failed screen (the TUI toasts the diagnostic; the result text stays
+ * untouched for local tools). */
+export interface JevScreenEvent {
+  sessionID?: string
+  label: string
+  verdict: "pass" | "flagged" | "unsafe" | "error"
+  junk?: number
+  injection?: number
+  secret?: number
+  note?: string
+}
+
 const STRING = { type: "string" }
+const NUMBER = { type: "number" }
 
 const methods = {
   describe: {
@@ -90,6 +106,28 @@ const methods = {
   },
 }
 
+/** Events emitted by the server half. `screen` is the transcript-free UI
+ * transport (pass verdicts, panel history, anomalies' toasts); nothing here
+ * is a session message. */
+const events = {
+  screen: {
+    schema: {
+      type: "object",
+      properties: {
+        sessionID: STRING,
+        label: STRING,
+        verdict: { type: "string", enum: ["pass", "flagged", "unsafe", "error"] },
+        junk: NUMBER,
+        injection: NUMBER,
+        secret: NUMBER,
+        note: STRING,
+      },
+      required: ["label", "verdict"],
+      additionalProperties: false,
+    },
+  },
+}
+
 /** Builds the descriptor, with the host's Rpc.define when it resolves (so
  * the runtime owns the shape validation) and the raw structural descriptor
  * otherwise. */
@@ -102,7 +140,8 @@ export async function makeJevRpc(): Promise<unknown> {
     // older host without the rpc module: the structural descriptor still
     // works for register()/client.rpc()
   }
-  return define ? define({ id: JEV_RPC_ID, methods }) : { id: JEV_RPC_ID, methods }
+  const definition = { id: JEV_RPC_ID, methods, events }
+  return define ? define(definition) : definition
 }
 
 /** TUI half helper: the jev-config subclient over the CLI plugin's generated

@@ -6,7 +6,9 @@ import { runScreen, SCREEN_QUESTIONS, secretScoreNormalized } from "../src/scree
 import {
   parseScreenTools,
   screenApplies,
-  screenRedacts,
+  screenEventItemOf,
+  screenNeedsAttention,
+  screenWithholds,
   screenVerdict,
   parseScreenAnnotation,
   parseScreenMode,
@@ -49,11 +51,25 @@ describe("screenApplies", () => {
   })
 })
 
-describe("screenRedacts", () => {
-  test("fail-closed redaction stays scoped to fetched web content", () => {
-    expect(screenRedacts("webfetch")).toBe(true)
-    expect(screenRedacts("bash")).toBe(false)
-    expect(screenRedacts("edit")).toBe(false)
+describe("screenWithholds", () => {
+  test("redact withholds unsafe results for every screened tool", () => {
+    expect(screenWithholds("redact", "unsafe")).toBe(true)
+    expect(screenWithholds("redact", "flagged")).toBe(false)
+    expect(screenWithholds("redact", "pass")).toBe(false)
+  })
+
+  test("annotate never withholds", () => {
+    for (const verdict of ["pass", "flagged", "unsafe"] as const) {
+      expect(screenWithholds("annotate", verdict)).toBe(false)
+    }
+  })
+})
+
+describe("screenNeedsAttention", () => {
+  test("only anomalies earn a transcript artifact", () => {
+    expect(screenNeedsAttention("pass")).toBe(false)
+    expect(screenNeedsAttention("flagged")).toBe(true)
+    expect(screenNeedsAttention("unsafe")).toBe(true)
   })
 })
 
@@ -301,5 +317,36 @@ describe("parseScreenNotice", () => {
     expect(parse("[jev-screen] failed: endpoint refused")).toBeUndefined()
     expect(parse("[jev-error] something else")).toBeUndefined()
     expect(parse("plain text")).toBeUndefined()
+  })
+})
+
+describe("screenEventItemOf", () => {
+  test("accepts every verdict kind, including error", () => {
+    for (const verdict of ["pass", "flagged", "unsafe", "error"] as const) {
+      const item = screenEventItemOf({
+        label: "bash",
+        verdict,
+        junk: 0.1,
+        injection: 0.2,
+        secret: 0.3,
+        note: "x",
+      })
+      expect(item?.verdict).toBe(verdict)
+      expect(item?.label).toBe("bash")
+      expect(item?.junk).toBeCloseTo(0.1)
+      expect(item?.note).toBe("x")
+    }
+  })
+
+  test("pass events carry no transcript requirement but still parse", () => {
+    expect(screenEventItemOf({ label: "webfetch", verdict: "pass" })?.verdict).toBe("pass")
+  })
+
+  test("malformed payloads are dropped, never rendered as a verdict", () => {
+    expect(screenEventItemOf(undefined)).toBeUndefined()
+    expect(screenEventItemOf({})).toBeUndefined()
+    expect(screenEventItemOf({ label: "", verdict: "pass" })).toBeUndefined()
+    expect(screenEventItemOf({ label: "bash", verdict: "maybe" })).toBeUndefined()
+    expect(screenEventItemOf({ label: "bash", verdict: "pass", junk: "high" })?.junk).toBeUndefined()
   })
 })

@@ -21,12 +21,24 @@ describe("makeJevRpc", () => {
     expect(definition.methods.reset.input.required).toEqual(["sessionID"])
   })
 
+  test("declares the transcript-free screen event", async () => {
+    const definition: any = await makeJevRpc()
+    const screen = definition.events?.screen?.schema
+    expect(screen).toBeDefined()
+    expect(screen.required).toEqual(["label", "verdict"])
+    expect(screen.properties.verdict.enum).toEqual(["pass", "flagged", "unsafe", "error"])
+    expect(screen.additionalProperties).toBe(false)
+  })
+
   test("hosts without the Rpc class fall back to the structural descriptor", async () => {
     mock.module("@opencode/plugin/rpc", () => ({ nothingHere: true }))
     try {
       const definition: any = await makeJevRpc()
       expect(definition.id).toBe(JEV_RPC_ID)
       expect(definition.methods.describe).toBeDefined()
+      // events ride the same structural shape so older build paths still
+      // register the TUI channel when the host exposes it
+      expect(definition.events.screen).toBeDefined()
     } finally {
       mock.module("@opencode/plugin/rpc", () => ({
         Rpc: { define: (definition: unknown): unknown => definition },
