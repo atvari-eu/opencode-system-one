@@ -72,7 +72,7 @@ behavior change instead of duplicating them here.
 - TUI panels are **pure renderers**: `tui.ts` owns RPC subscriptions,
   reconnect handling, and event recording. A panel module must not import
   `./rpc` or subscribe itself - a stale half-updated RPC export once took
-  `/jev-screen-history` down on a pin update.
+  the TUI event panel down on a pin update.
 - Secret redaction is deterministic regex — never a model call — and runs on
   every outbound state (screening, tool inputs, prompts, compaction).
 - `jev_judge_many` sends one request per item and aggregates in code; never
@@ -115,8 +115,8 @@ behavior change instead of duplicating them here.
   export it ("Export named 'jsxDEV' not found"), and Bun's default React
   runtime emits `react/jsx-runtime`. Dynamic `import("./x.tsx")` is also
   resolved by Bun at runtime and cannot see the TUI-provided runtime, so
-  keep these imports static. All three failure modes took
-  `/jev-screen-history` and the footer markers down.
+  keep these imports static. All three failure modes took the TUI panels
+  and footer markers down.
 - OpenTUI text nodes must be children of `<text>`, never a `<box>`: the
   renderer throws `Orphan text error: "…" must have a <text> as a parent`.
   An empty-string fallback like `<box>{""}</box>` is enough to crash the

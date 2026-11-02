@@ -322,10 +322,10 @@ that starts after the `config` event still surfaces it, and the TUI dedupes
 by message in its own durable store. TUI and panel event subscriptions
 re-attach on `server.connected` (ctx.client changes across server restarts)
 rather than holding a stale listener; the synthetic fallback follows the new
-subscription's state. The screen panel itself is a **pure renderer**: tui.ts
-owns the screen subscription and writes the shared verdict store, so a stale
+subscription's state. The audit panel is a **pure renderer**: tui.ts
+owns every subscription and writes the shared audit store, so a stale
 or unavailable `./rpc` export can never stop the panel module from loading
-(that failure mode took `/jev-screen-history` down on a pin update).
+(that failure mode took the event panel down on a pin update).
 
 ## TUI audit panel
 
@@ -335,8 +335,8 @@ config faults, scrub hits, and approval resolutions - into a durable
 toggles the panel: `a/s/e/p/r/x` filter by kind, `j/k` scroll, `g/G` jump,
 `c` copies the filtered view via OSC52, `esc/q` close, `f` fullscreen. The
 ring is TUI-side, so entries start when the TUI is running; the config fault
-is replayed through `configFault`, and `/jev-screen-history` remains the
-screen-specific view.
+is replayed through `configFault`. The retired `/jev-screen-history` view is
+now `/jev-audit` with the `s` filter.
 
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.

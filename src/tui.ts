@@ -6,11 +6,10 @@
 // every failure toasts, on purpose; the config layer is the only cadence
 // that keeps a dedupe gate.
 //
-// Also composes the screen-verdict panel (src/screen-panel.tsx, solid JSX -
-// the TUI loader compiles TSX with babel-preset-solid; the dynamic import
-// keeps the error-toast path working even if the panel fails to load). The
-// "open the verdict panel" command lives HERE, not in the panel module, so
-// /jev-screen-history exists even when the TSX panel itself fails to load.
+// Also composes the audit panel (src/audit-panel.tsx, solid JSX - the TUI
+// loader compiles TSX with its Solid transform) and the prompt-footer
+// markers. /jev-audit is the one event panel: /jev-screen-history retired
+// into its screen filter. The screen verdicts still toast here.
 //
 // Also drives /jev-models (switch the System One judgment model for the
 // current session): the dialog calls the server half through the jev-config
@@ -25,7 +24,6 @@ import {
   JEVS_ERROR_MARK,
   JEV_CONFIG_ERROR_MARK,
   SCREEN_NOTICE_MARK,
-  SCREEN_VERDICT_CAP,
   jevModelTag,
   parseScreenNotice,
   screenEventItemOf,
@@ -38,7 +36,6 @@ import { AUDIT_STORE_KEY, appendAudit, auditEntryOf, type AuditEntry, type Audit
 // cannot see the runtime-provided `solid-js` ("Cannot find package
 // 'solid-js'"). Static imports also let one module graph share the host's
 // Solid instance.
-import screenPanel from "./screen-panel.tsx"
 import auditPanel from "./audit-panel.tsx"
 import footerMarker from "./footer-marker.tsx"
 import footerModel, { sessionHolder } from "./footer-jev-model.tsx"
@@ -138,22 +135,9 @@ export default {
       })
     }
 
-    // Screening history + toasts. The panel is a pure renderer of this store;
-    // subscriptions live here so a panel module can never fail to load on a
-    // stale/unavailable ./rpc export.
-    const screenStore = context.storage.store<{ items: ScreenVerdictItem[] }>("jev-screen-verdicts", {
-      initial: { items: [] },
-    })
-    const recordScreen = (item: ScreenVerdictItem): void => {
-      try {
-        const entry: ScreenVerdictItem = { ...item, at: Date.now() }
-        screenStore[1]((draft: { items: ScreenVerdictItem[] }) => {
-          draft.items.push(entry)
-          if (draft.items.length > SCREEN_VERDICT_CAP) {
-            draft.items.splice(0, draft.items.length - SCREEN_VERDICT_CAP)
-          }
-        })
-      } catch {}
+    // Screen verdicts still toast here; the durable history lives in the
+    // shared audit ring below, not a separate store.
+    const showScreenVerdict = (item: ScreenVerdictItem): void => {
       if (item.verdict === "pass") return
       if (item.verdict === "error") {
         context.ui.toast.show({
@@ -192,7 +176,7 @@ export default {
       screen: (data) => {
         recordAudit("screen", data)
         const item = screenEventItemOf(data)
-        if (item) recordScreen(item)
+        if (item) showScreenVerdict(item)
       },
       error: (data) => {
         recordAudit("error", data)
@@ -288,7 +272,7 @@ export default {
         const item = parseScreenNotice(text)
         if (item) {
           recordAudit("screen", item)
-          recordScreen(item)
+          showScreenVerdict(item)
         }
         return
       }
@@ -310,18 +294,6 @@ export default {
     })
     cleanups.push(unlisten)
 
-    // -- screen verdict panel + flagged/unsafe toasts --
-    let panelLoaded = false
-    let panelError = ""
-    try {
-      const panelCleanup = await screenPanel.setup(context)
-      cleanups.push(panelCleanup)
-      panelLoaded = true
-    } catch (err) {
-      panelError = String((err as Error)?.message ?? err)
-      console.log(`[jev] tui: screen panel unavailable: ${panelError}`)
-    }
-
     // -- audit panel: all UI-only RPC events in one log --
     let auditPanelLoaded = false
     let auditPanelError = ""
@@ -334,40 +306,11 @@ export default {
       console.log(`[jev] tui: audit panel unavailable: ${auditPanelError}`)
     }
 
-    // /jev-screen-history: open the recent screening-verdicts panel. Always
-    // registered, so the command exists even if the TSX panel failed to load
-    // (in that case it toasts why instead of silently disappearing).
+    // /jev-audit: open the event log. Always registered, so the command exists
+    // even if the TSX panel failed to load (it then toasts why).
     const unlayer = context.keymap.layer(() => ({
       mode: "global",
       commands: [
-        {
-          id: "jev.screen-verdicts",
-          title: "Jev screening verdicts",
-          description: "Open the recent jev-screen verdict panel",
-          group: "jev",
-          palette: true,
-          slash: { name: "jev-screen-history" },
-          run: () => {
-            if (!panelLoaded) {
-              context.ui.toast.show({
-                title: "jev",
-                message: panelError
-                  ? `screen panel unavailable: ${panelError}`
-                  : "screen panel unavailable - check the TUI log for the load error",
-                variant: "warning",
-                duration: 10_000,
-              })
-              return
-            }
-            // Toggle: running the command while the panel is open closes it.
-            const current = context.ui.panel?.current?.()
-            if (current?.name === "jev-screen") {
-              context.ui.panel.close?.()
-              return
-            }
-            context.ui.panel.open("jev-screen")
-          },
-        },
         {
           id: "jev.audit",
           title: "Jev event audit",

@@ -18,7 +18,7 @@
 // /jev-models picker takes the session on screen from here.
 //
 // No solid import: the runtime provides the reactive scope (same shape as
-// screen-panel.tsx / footer-marker.tsx; a failure here never hides the
+// audit-panel.tsx / footer-marker.tsx; a failure here never hides the
 // "(auto)" marker, which loads separately in src/tui.ts).
 import type { JSX } from "@opentui/solid"
 import { jevModelTag, seedJevBaseLabel, settleUnverifiedJevSession } from "./logic"
@@ -31,7 +31,7 @@ export const sessionHolder: { current?: string } = { current: undefined }
 export default {
   id: "atvari.jev.tui.footer-model",
   async setup(context: any) {
-    // Docs shape (see screen-panel.tsx): [value, updater] pair; the
+    // Docs shape (see audit-panel.tsx): [value, updater] pair; the
     // { initial } wrap keeps hosts that treat the second argument as
     // options from dropping the default.
     const store = context.storage.store(JEV_MODEL_STORE_KEY, {

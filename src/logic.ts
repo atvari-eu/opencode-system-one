@@ -1378,10 +1378,6 @@ export const SCREEN_NOTICE_MARK = "[jev-screen]"
 
 export type ScreenVerdict = "pass" | "flagged" | "unsafe" | "error"
 
-/** Cap on the TUI's screening-verdict ring. The recorder lives in tui.ts and
- * the panel renders this same store. */
-export const SCREEN_VERDICT_CAP = 50
-
 export interface ScreenVerdictItem {
   /** URL or tool name the verdict is about, as printed in the row. */
   label: string

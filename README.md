@@ -21,9 +21,9 @@ compaction can be decided by System One instead of a lossy summary
   the result becomes a note naming why it was withheld and how to override.
   Set `"mode": "annotate"` to keep all content. Passing verdicts never write
   to the transcript (no row, no prefix) in either annotation mode: the
-  verdict is UI-only, shown in the TUI verdict panel (`/jev-screen-history`;
-  esc/q close, f fullscreen, j/k scrolls, g/G top/bottom, c copies the
-  rows; mouse selection is disabled in the panel),
+  verdict is UI-only, shown in `/jev-audit` (press `s` to filter to screen;
+  esc/q close, f fullscreen, j/k scrolls, g/G top/bottom, c copies,
+  mouse selection is disabled in the panel),
   so screening every tool costs no context on clean content. The annotation
   knob therefore only decides where *anomalies* land: `"annotation":
   "notice"` (default) posts a standalone `[jev-screen]` row, `"inline"`
