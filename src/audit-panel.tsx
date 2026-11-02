@@ -103,7 +103,7 @@ function Panel(props: {
     if ((props.panel.width ?? 0) < 72) {
       return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} scroll · ${key("jev.audit.copy", "c")} copy · esc/q close`
     }
-    return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} scroll · ${key("jev.audit.top", "g")}/${key("jev.audit.bottom", "shift+g")} top/bottom · ${key("jev.audit.copy", "c")} copy · ${key("jev.audit.fullscreen", "f")} fullscreen · esc/q close`
+    return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} scroll · ${key("jev.audit.top", "g")}/G top/bottom · ${key("jev.audit.copy", "c")} copy · ${key("jev.audit.fullscreen", "f")} fullscreen · esc/q close`
   }
 
   props.context.keymap.layer(() => ({
