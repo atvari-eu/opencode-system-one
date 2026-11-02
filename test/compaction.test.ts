@@ -353,4 +353,27 @@ describe("contextMessages", () => {
     expect(messages[0]).toMatchObject({ role: "user", content: [{ type: "text", text: "hi" }] })
     expect(messages[1]?.role).toBe("system")
   })
+
+  test("compaction rows keep the summary and the host's recent window in the estimate", () => {
+    const summary = "older history removed by jev"
+    const recent = "[User]: hi\n[Assistant tool call]: bash {\"cmd\":\"ls\"}"
+    const messages = contextMessages([
+      { id: "c1", type: "compaction", summary, metadata: { keepID: "m1", recent } },
+      { id: "m1", type: "user", text: "next" },
+    ])
+    // The compaction message is not a timeline kind with a `text` field; the
+    // watcher used to drop it, losing the bulk of the post-compaction context.
+    expect(messages.map((m) => m.id)).toEqual(["c1", "m1"])
+    expect(messages[0]).toMatchObject({ role: "system" })
+    expect(messageChars(messages[0]!)).toBe(summary.length + "\n\n".length + recent.length)
+    // The recent replay is text; it must not materialize tool calls.
+    expect(collectCalls(messages, 0)).toHaveLength(0)
+  })
+
+  test("legacy top-level recent text is counted too", () => {
+    const messages = contextMessages([
+      { id: "c1", type: "compaction", summary: "summary", recent: "legacy replay" },
+    ])
+    expect(messageChars(messages[0]!)).toBe("summary".length + "\n\n".length + "legacy replay".length)
+  })
 })

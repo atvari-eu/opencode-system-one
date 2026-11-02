@@ -35,7 +35,7 @@ Privacy: judging needs to see the conversation, so enabling compaction sends the
 
 ## Idle compaction (`auto`)
 
-When set, the plugin posts the same compaction request `/compact` uses at session idle, once the active context (messages after the last compaction) passes the target:
+When set, the plugin posts the same compaction request `/compact` uses at session idle, once the active context passes the target. That context is what `session.context` returns - the last compaction's summary plus its kept recent window, then newer messages - so it tracks the request, not the stored history:
 
 - `"auto": { "share": 0.5 }` compacts at that fraction of the session model's context window (follows model routing).
 - `"auto": { "tokens": 60000 }` compacts at an absolute token count (wins over `share`).

@@ -257,7 +257,10 @@ function messageText(message: LLMMessage): string {
  * one estimate/candidate implementation for the idle watcher and the hook -
  * reading raw timeline rows with the LLM-shape helpers silently undercounts
  * context (tool output is most of a transcript) and finds no tool calls at all.
- * Non-conversation rows (model/agent switches, idle markers) are dropped.
+ * Non-conversation rows (model/agent switches, idle markers) are dropped. A
+ * compaction row is not dropped: it carries the summary plus the host's kept
+ * recent window in `metadata.recent`, which is most of the post-compaction
+ * context - skipping it made the idle estimate reset far below the real size.
  */
 export function contextMessages(rows: ReadonlyArray<any>): LLMMessage[] {
   const out: LLMMessage[] = []
@@ -275,6 +278,29 @@ export function contextMessages(rows: ReadonlyArray<any>): LLMMessage[] {
     }
     const kind = String(row.type ?? row.role ?? "")
     if (NON_CONVERSATION_KINDS.has(kind)) continue
+    if (kind === "compaction") {
+      // The compaction message stands in for the replaced history AND the
+      // host's kept recent window (`metadata.recent`, or the pre-2.1 top-level
+      // `recent`). Both are sent to the model, so both count; the recent text
+      // is a rendered replay with no structured tool parts, so a system role
+      // keeps collectCalls from scanning it.
+      const summary = typeof row.summary === "string" ? row.summary : ""
+      const recent =
+        typeof row.metadata?.recent === "string"
+          ? row.metadata.recent
+          : typeof row.recent === "string"
+            ? row.recent
+            : ""
+      const text = [summary, recent].filter((part) => part.trim() !== "").join("\n\n")
+      if (text !== "") {
+        out.push({
+          ...(typeof row.id === "string" ? { id: row.id } : {}),
+          role: "system",
+          content: [{ type: "text", text }],
+        })
+      }
+      continue
+    }
     if (kind === "user" || kind === "synthetic") {
       out.push({
         ...(typeof row.id === "string" ? { id: row.id } : {}),

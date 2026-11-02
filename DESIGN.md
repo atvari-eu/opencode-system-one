@@ -873,6 +873,16 @@ target, and would have found zero tool calls even if it had. `contextMessages`
 normalizes both shapes now; the resting-point lookup still reads the raw rows
 because its `model-switched` seats are dropped by normalization.
 
+Second shape trap in the same path (2026-11): after a compaction the active
+context is the `compaction` row plus what followed it - and that row carries
+the host's kept recent window as `metadata.recent` (a rendered text replay,
+~110K chars in the observed session). `contextMessages` dropped the row for
+having no `text` field, so the estimate fell to the post-compaction rows only
+(~48K) while the UI showed 122K, and idle compaction never retriggered.
+Compaction rows now contribute `summary` + `metadata.recent` (top-level
+`recent` in legacy rows) as one system text message, which `messageChars`
+counts and `collectCalls` ignores.
+
 Screen-failure presentation changed in the same commit family: a failed
 screen on a local tool (shell, reads, edits, MCP) no longer prefixes and
 truncates the tool's own output - the failure is its own surfaced row, and
