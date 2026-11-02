@@ -332,14 +332,16 @@ or unavailable `./rpc` export can never stop the panel module from loading
 `tui.ts` records every UI-only RPC event - screen verdicts, failed calls,
 config faults, scrub hits, and approval resolutions - into a durable
 200-entry `jev-audit` ring; `audit-panel.tsx` is a pure renderer. `/jev-audit`
-toggles the panel: `a/s/e/p/r/x` filter by kind, `j/k` scroll, `g/G` jump,
-`c` copies the filtered view via OSC52, `esc/q` close, `f` fullscreen. The
-panel renders newest first and keeps the top pinned while new events arrive,
-unless the reader has scrolled away. Filter and expanded-row state live in the
-panel's host-owned `jev-audit-view` memory store, so the keymap layer and the
-JSX tree observe the same reactive runtime; rows crop to one line until
-clicked. The ring is TUI-side, so entries start when the TUI is running; the
-config fault is replayed through `configFault`. The retired
+toggles the panel: events render newest first as
+`TIME / KIND / DECISION / SUBJECT / DETAIL` rows with one selected row
+(`j/k` select, `g/G` jump, `enter`/`space` expand, `y` copy the row, `c` copy
+the filtered table, `esc/q` close, `f` fullscreen, `a/s/e/p/r/x` filter). The
+panel pins the top while new events arrive unless the reader has scrolled
+away; expanded details render below the row so columns stay aligned. Filter,
+selection, and expanded-row state live in the panel's host-owned
+`jev-audit-view` memory store, so the keymap layer and the JSX tree observe
+the same reactive runtime. The ring is TUI-side, so entries start when the TUI
+is running; the config fault is replayed through `configFault`. The retired
 `/jev-screen-history` view is now `/jev-audit` with the `s` filter.
 
 The auto done-check gets the same treatment in miniature: it is the one

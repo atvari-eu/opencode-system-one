@@ -1,13 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 // TUI event-audit panel. Pure renderer: src/tui.ts owns every RPC
 // subscription, reconnect, and the durable `jev-audit` store; this module
-// only filters and renders it. Keep it free of ./rpc imports (see
+// only filters, selects, and renders it. Keep it free of ./rpc imports (see
 // AGENTS.md: panels must not subscribe themselves).
 //
-// Filter and expansion state live in a host-owned memory store rather than
-// local signals: the panel and its keymap layer must observe the same reactive
-// runtime the host uses for JSX, and a plain getter read inside JSX is the
-// simplest way to keep that true.
+// Filter, selection, and expansion state live in a host-owned memory store
+// rather than local signals: the panel and its keymap layer must observe the
+// same reactive runtime the host uses for JSX.
 import type { JSX } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import {
@@ -33,28 +32,78 @@ interface Store {
 interface ViewStore {
   filter: AuditKind | "all"
   expanded: Record<string, boolean>
+  selected?: string
 }
 
 const FILTER_KEYS = AUDIT_FILTERS
+
+const TIME_W = 8
+const KIND_W = 9
+const DECISION_W = 10
+const SUBJECT_W = 14
 
 function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim()
 }
 
-function formatEntry(entry: AuditEntry, expanded: boolean, width: number): string {
+function cell(value: string, width: number): string {
+  const text = oneLine(value)
+  if (text.length > width) return text.slice(0, Math.max(0, width - 1)) + "…"
+  return text.padEnd(width)
+}
+
+function timeOf(entry: AuditEntry): string {
   const at = new Date(entry.at)
-  const time = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`
-  const summary = entry.summary ?? ""
-  const flat = oneLine(summary)
-  const more = summary.includes("\n") || flat.length > Math.max(24, width - 22)
-  const marker = more ? (expanded ? "▾" : "▸") : " "
-  const body = expanded ? summary.trim().replace(/\n/g, "\n  ") : flat
-  return `${marker} ${time}  ${entry.kind.padEnd(8)}  ${body}`
+  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}:${String(at.getSeconds()).padStart(2, "0")}`
+}
+
+const decisionOf = (entry: AuditEntry): string => entry.decision ?? entry.kind
+const subjectOf = (entry: AuditEntry): string => entry.subject ?? ""
+const detailOf = (entry: AuditEntry): string => entry.detail ?? entry.summary ?? ""
+
+function showSubject(width: number): boolean {
+  return width >= 92
+}
+
+function detailWidth(width: number): number {
+  const fixed = 2 + 1 + TIME_W + 1 + KIND_W + 1 + DECISION_W + (showSubject(width) ? 1 + SUBJECT_W : 0) + 1
+  return Math.max(8, width - fixed)
+}
+
+function moreThanRow(entry: AuditEntry, width: number): boolean {
+  const detail = detailOf(entry)
+  return detail.includes("\n") || oneLine(detail).length > detailWidth(width)
+}
+
+function formatRow(entry: AuditEntry, width: number, selected: boolean, expanded: boolean): string {
+  const marker = `${selected ? "›" : " "}${moreThanRow(entry, width) ? (expanded ? "▾" : "▸") : " "}`
+  let line = `${marker} ${cell(timeOf(entry), TIME_W)} ${cell(entry.kind, KIND_W)} ${cell(decisionOf(entry), DECISION_W)}`
+  if (showSubject(width)) line += ` ${cell(subjectOf(entry), SUBJECT_W)}`
+  return `${line} ${oneLine(detailOf(entry))}`
+}
+
+function headerRow(width: number): string {
+  let line = `   ${cell("TIME", TIME_W)} ${cell("KIND", KIND_W)} ${cell("DECISION", DECISION_W)}`
+  if (showSubject(width)) line += ` ${cell("SUBJECT", SUBJECT_W)}`
+  return `${line} DETAIL`
+}
+
+function detailBlock(entry: AuditEntry): string {
+  const lines = [detailOf(entry)]
+  if (entry.sessionID) lines.push(`session ${entry.sessionID}`)
+  return lines.join("\n").replace(/\r\n?/g, "\n")
 }
 
 function panelText(entries: readonly AuditEntry[], filter: AuditKind | "all"): string {
-  return [`jev audit — ${entries.length} ${filter === "all" ? "entries" : filter + " entries"}`, ...entries.map((entry) => formatEntry(entry, true, 80))].join("\n")
+  const lines = [`jev audit — ${entries.length} ${filter === "all" ? "entries" : filter + " entries"}`]
+  for (const entry of entries) {
+    lines.push(`${timeOf(entry)} ${entry.kind} ${decisionOf(entry)} ${subjectOf(entry)}`.trimEnd())
+    lines.push(`  ${detailBlock(entry).replace(/\n/g, "\n  ")}`)
+  }
+  return lines.join("\n")
 }
+
+const rowDomID = (id: string): string => `jev-audit-row-${id}`
 
 function Panel(props: {
   store: readonly [Store, unknown]
@@ -76,17 +125,73 @@ function Panel(props: {
     return current === "all" ? "all" : current
   }
   const expanded = (id: string): boolean => Boolean(view().expanded?.[id])
-  const setFilter = (kind: AuditKind | "all"): void => {
-    props.view[1]((draft) => {
-      draft.filter = kind
-    })
-    list?.scrollTo(0)
+  const selectedId = (): string | undefined => {
+    const rows = entries()
+    const current = view().selected
+    return current && rows.some((entry) => entry.id === current) ? current : rows[0]?.id
   }
-  const toggleExpanded = (id: string): void => {
+  const selectedEntry = (): AuditEntry | undefined => entries().find((entry) => entry.id === selectedId())
+  const selectedBg = () => props.context?.theme?.background?.action?.primary?.focused
+  const selectedFg = () => props.context?.theme?.text?.formfield?.selected
+  const muted = () => props.context?.theme?.text?.muted
+  const width = () => props.panel.width ?? 80
+
+  const select = (id: string): void => {
+    props.view[1]((draft) => {
+      draft.selected = id
+    })
+    list?.scrollChildIntoView?.(rowDomID(id))
+  }
+  const selectAt = (index: number): void => {
+    const rows = entries()
+    if (rows.length === 0) return
+    const at = Math.max(0, Math.min(rows.length - 1, index))
+    select(rows[at].id)
+  }
+  const moveSelection = (delta: number): void => {
+    const rows = entries()
+    if (rows.length === 0) return
+    const current = rows.findIndex((entry) => entry.id === selectedId())
+    selectAt((current < 0 ? 0 : current) + delta)
+  }
+  const toggle = (id: string): void => {
     props.view[1]((draft) => {
       draft.expanded = { ...(draft.expanded ?? {}) }
       if (draft.expanded[id]) delete draft.expanded[id]
       else draft.expanded[id] = true
+    })
+  }
+  const selectAndToggle = (id: string): void => {
+    props.view[1]((draft) => {
+      draft.selected = id
+      draft.expanded = { ...(draft.expanded ?? {}) }
+      if (draft.expanded[id]) delete draft.expanded[id]
+      else draft.expanded[id] = true
+    })
+    list?.scrollChildIntoView?.(rowDomID(id))
+  }
+  const toggleSelected = (): void => {
+    const entry = selectedEntry()
+    if (entry) toggle(entry.id)
+  }
+  const setFilter = (kind: AuditKind | "all"): void => {
+    const rows = filterAudit(all(), kind)
+    props.view[1]((draft) => {
+      draft.filter = kind
+      draft.selected = rows.at(-1)?.id
+    })
+    list?.scrollTo(0)
+  }
+  const copy = (text: string, what: string): void => {
+    let ok = false
+    try {
+      ok = props.context.renderer?.copyToClipboardOSC52?.(text) === true
+    } catch {}
+    props.context.ui.toast.show({
+      title: "jev-audit",
+      message: ok ? `copied ${what}` : "clipboard unavailable - this terminal rejected OSC52",
+      variant: ok ? "success" : "warning",
+      duration: 4_000,
     })
   }
 
@@ -100,10 +205,10 @@ function Panel(props: {
     }
   }
   const navigationHints = (): string => {
-    if ((props.panel.width ?? 0) < 72) {
-      return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} scroll · ${key("jev.audit.copy", "c")} copy · esc/q close`
+    if ((props.panel.width ?? 0) < 82) {
+      return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} select · ${key("jev.audit.expand", "enter")} expand · ${key("jev.audit.copy-row", "y")} copy · esc/q close`
     }
-    return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} scroll · ${key("jev.audit.top", "g")}/G top/bottom · ${key("jev.audit.copy", "c")} copy · ${key("jev.audit.fullscreen", "f")} fullscreen · esc/q close`
+    return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} select · ${key("jev.audit.top", "g")}/G top/bottom · ${key("jev.audit.expand", "enter")} expand · ${key("jev.audit.copy-row", "y")} copy · ${key("jev.audit.copy", "c")} copy all · ${key("jev.audit.fullscreen", "f")} fullscreen · esc/q close`
   }
 
   props.context.keymap.layer(() => ({
@@ -129,47 +234,60 @@ function Panel(props: {
       },
       {
         id: "jev.audit.down",
-        title: "Scroll audit down",
+        title: "Select next audit row",
         bind: "j",
-        run: () => list?.scrollBy(1),
+        run: () => moveSelection(1),
       },
       {
         id: "jev.audit.up",
-        title: "Scroll audit up",
+        title: "Select previous audit row",
         bind: "k",
-        run: () => list?.scrollBy(-1),
+        run: () => moveSelection(-1),
       },
       {
         id: "jev.audit.top",
-        title: "Audit top",
+        title: "Audit newest",
         bind: "g",
-        run: () => list?.scrollTo(0),
+        run: () => {
+          selectAt(0)
+          list?.scrollTo(0)
+        },
       },
       {
         id: "jev.audit.bottom",
-        title: "Audit bottom",
+        title: "Audit oldest",
         bind: "shift+g",
-        run: () => list?.scrollTo(Infinity),
+        run: () => {
+          selectAt(entries().length - 1)
+          list?.scrollTo(Infinity)
+        },
+      },
+      {
+        id: "jev.audit.expand",
+        title: "Toggle selected audit row",
+        bind: "return",
+        run: toggleSelected,
+      },
+      {
+        id: "jev.audit.expand-space",
+        title: "Toggle selected audit row",
+        bind: "space",
+        run: toggleSelected,
+      },
+      {
+        id: "jev.audit.copy-row",
+        title: "Copy selected audit row",
+        bind: "y",
+        run: () => {
+          const entry = selectedEntry()
+          if (entry) copy(panelText([entry], view().filter ?? "all"), "selected event")
+        },
       },
       {
         id: "jev.audit.copy",
         title: "Copy jev audit",
         bind: "c",
-        run: () => {
-          const shown = entries()
-          let ok = false
-          try {
-            ok = props.context.renderer?.copyToClipboardOSC52?.(panelText(shown, view().filter ?? "all")) === true
-          } catch {}
-          props.context.ui.toast.show({
-            title: "jev-audit",
-            message: ok
-              ? `copied ${shown.length} ${filterLabel() === "all" ? "entries" : filterLabel() + " entries"}`
-              : "clipboard unavailable - this terminal rejected OSC52",
-            variant: ok ? "success" : "warning",
-            duration: 4_000,
-          })
-        },
+        run: () => copy(panelText(entries(), view().filter ?? "all"), filterLabel() === "all" ? "all entries" : `${filterLabel()} entries`),
       },
       { id: "jev.audit.filter-all", title: "Jev audit filter: all", bind: "a", run: () => setFilter("all") },
       { id: "jev.audit.filter-screen", title: "Jev audit filter: screen", bind: "s", run: () => setFilter("screen") },
@@ -185,52 +303,70 @@ function Panel(props: {
     ],
   }))
 
-  const muted = () => props.context?.theme?.text?.muted
-  const width = () => props.panel.width ?? 80
   return (
     <box flexDirection="column" flexGrow={1} height="100%" minHeight={0} paddingLeft={1} paddingRight={1} selectable={false}>
       <box flexShrink={0} flexDirection="row" gap={1} marginBottom={1}>
         <text flexShrink={0} selectable={false}>{`jev audit — ${total()} entries · filter: ${filterLabel()} ·`}</text>
-        {FILTER_KEYS.map((item) => (
-          <text
-            flexShrink={0}
-            selectable={false}
-            fg={muted()}
-            onMouseUp={() => setFilter(item.kind)}
-          >
-            {`${view().filter === item.kind ? "▸" : " "}${item.key} ${item.label}`}
-          </text>
-        ))}
+        {() => {
+          const current = view().filter
+          return FILTER_KEYS.map((item) => (
+            <text
+              flexShrink={0}
+              selectable={false}
+              fg={muted()}
+              onMouseUp={() => setFilter(item.kind)}
+            >
+              {`${current === item.kind ? "▸" : " "}${item.key} ${item.label}`}
+            </text>
+          ))
+        }}
       </box>
+      <text flexShrink={0} selectable={false} fg={muted()}>{headerRow(width())}</text>
       <scrollbox
         ref={(value: ScrollBoxRenderable) => (list = value)}
         flexGrow={1}
         minHeight={0}
         stickyScroll
         stickyStart="top"
+        focusable={false}
         selectable={false}
       >
         {() => {
           const rows = entries()
           if (rows.length === 0) return <text selectable={false}>{"no events yet"}</text>
-          return rows.map((entry) => {
+          const selected = selectedId()
+          const w = width()
+          const nodes: JSX.Element[] = []
+          for (const entry of rows) {
+            const isSelected = entry.id === selected
             const isExpanded = expanded(entry.id)
-            return (
+            nodes.push(
               <text
+                id={rowDomID(entry.id)}
                 selectable={false}
-                wrapMode={isExpanded ? "word" : "none"}
-                truncate={!isExpanded}
-                onMouseUp={() => toggleExpanded(entry.id)}
+                bg={isSelected ? selectedBg() : undefined}
+                fg={isSelected ? selectedFg() : undefined}
+                wrapMode="none"
+                truncate
+                onMouseUp={() => selectAndToggle(entry.id)}
               >
-                {formatEntry(entry, isExpanded, width())}
-              </text>
+                {formatRow(entry, w, isSelected, isExpanded)}
+              </text>,
             )
-          })
+            if (isExpanded) {
+              nodes.push(
+                <text selectable={false} wrapMode="word" fg={muted()}>
+                  {`    ${detailBlock(entry).replace(/\n/g, "\n    ")}`}
+                </text>,
+              )
+            }
+          }
+          return nodes
         }}
       </scrollbox>
       <box flexShrink={0} flexDirection="row" paddingTop={1}>
         <text flexGrow={1} minWidth={0} wrapMode="none" truncate selectable={false} fg={muted()}>
-          {entries().some((entry) => entry.summary?.includes("\n") || oneLine(entry.summary ?? "").length > Math.max(24, width() - 22)) ? "▸ click a row to expand" : ""}
+          {entries().some((entry) => moreThanRow(entry, width())) ? "▸ click or enter to expand" : ""}
         </text>
         <text flexShrink={0} wrapMode="none" truncate selectable={false} fg={muted()}>
           {navigationHints()}

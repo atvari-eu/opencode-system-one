@@ -16,6 +16,10 @@ export interface AuditEntry {
   summary: string
   sessionID?: string
   tone: AuditTone
+  /** Structured table cells. Older persisted rows may not have them. */
+  decision?: string
+  subject?: string
+  detail?: string
 }
 
 export const AUDIT_STORE_KEY = "jev-audit"
@@ -57,17 +61,26 @@ export function auditEntryOf(
   const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined
   let summary = ""
   let tone: AuditTone = "info"
+  let decision = kind
+  let subject = ""
+  let detail = ""
   switch (kind) {
     case "screen": {
       const label = typeof data.label === "string" ? data.label : "tool"
       const verdict = typeof data.verdict === "string" ? data.verdict : "?"
-      summary = `${verdict}: ${label} — junk=${fixed(data.junk)} injection=${fixed(data.injection)} secret=${fixed(data.secret)}`
+      detail = `junk=${fixed(data.junk)} injection=${fixed(data.injection)} secret=${fixed(data.secret)}`
+      summary = `${verdict}: ${label} — ${detail}`
+      decision = verdict
+      subject = label
       tone = verdict === "unsafe" || verdict === "error" ? "error" : verdict === "flagged" ? "warn" : "ok"
       break
     }
     case "error": {
       const message = typeof data.message === "string" ? data.message : ""
       if (!message) return undefined
+      decision = "error"
+      subject = "call"
+      detail = message
       summary = message
       tone = "error"
       break
@@ -75,6 +88,9 @@ export function auditEntryOf(
     case "config": {
       const message = typeof data.message === "string" ? data.message : ""
       if (!message) return undefined
+      decision = "config"
+      subject = "config"
+      detail = message
       summary = message
       tone = "error"
       break
@@ -83,6 +99,9 @@ export function auditEntryOf(
       const hits = typeof data.hits === "number" ? data.hits : 0
       if (hits <= 0) return undefined
       const where = data.kind === "prompt" ? "the prompt" : (typeof data.tool === "string" ? data.tool : "a tool input")
+      decision = "scrub"
+      subject = where
+      detail = `${hits} secret-like token(s)`
       summary = `removed ${hits} secret-like token(s) from ${where}`
       tone = "warn"
       break
@@ -90,13 +109,16 @@ export function auditEntryOf(
     case "approval": {
       const outcome = typeof data.outcome === "string" ? data.outcome : "?"
       const action = typeof data.action === "string" ? data.action : "permission"
-      const resource = typeof data.resource === "string" && data.resource ? ` ${data.resource}` : ""
-      summary = `${outcome}: ${action}${resource}`
+      const resource = typeof data.resource === "string" && data.resource ? data.resource : ""
+      decision = outcome
+      subject = action
+      detail = resource
+      summary = `${outcome}: ${action}${resource ? ` ${resource}` : ""}`
       tone = outcome === "allow" ? "ok" : outcome === "ask" ? "info" : outcome === "fail" ? "warn" : "error"
       break
     }
   }
-  return { id: entryID(at), at, kind, summary, ...(sessionID ? { sessionID } : {}), tone }
+  return { id: entryID(at), at, kind, summary, decision, subject, detail, ...(sessionID ? { sessionID } : {}), tone }
 }
 
 /** Appends one entry, keeping the newest `cap` rows. */
