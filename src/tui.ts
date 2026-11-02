@@ -158,6 +158,7 @@ export default {
 
     const auditStore = context.storage.store<{ items: AuditEntry[] }>(AUDIT_STORE_KEY, {
       initial: { items: [] },
+      key: "id",
     })
     const recordAudit = (kind: AuditKind, data: any): void => {
       const entry = auditEntryOf(kind, data)

@@ -8,6 +8,8 @@ export type AuditKind = "screen" | "error" | "config" | "scrub" | "approval"
 export type AuditTone = "ok" | "warn" | "error" | "info"
 
 export interface AuditEntry {
+  /** Stable reconcile key for the durable Solid store. */
+  id: string
   /** Arrival time, ms since epoch. */
   at: number
   kind: AuditKind
@@ -18,12 +20,21 @@ export interface AuditEntry {
 
 export const AUDIT_STORE_KEY = "jev-audit"
 
-/** Ring size: the panel pages and filters over this, so it stays bounded. */
+/** Ring size: the panel scrolls and filters over this, so it stays bounded. */
 export const AUDIT_CAP = 200
 
 export const AUDIT_KINDS: readonly AuditKind[] = ["screen", "error", "config", "scrub", "approval"]
 
 const fixed = (value: unknown): string => (typeof value === "number" ? value.toFixed(2) : "?")
+
+let sequence = 0
+
+/** The storage store reconciles arrays by `id`; entries need one even when
+ * several events land in the same millisecond. */
+function entryID(at: number): string {
+  sequence = (sequence + 1) % 1_000_000
+  return `${at.toString(36)}-${sequence.toString(36)}`
+}
 
 /** Maps one event payload to an audit entry. Unknown/malformed payloads are
  * dropped rather than rendered as a bogus row. `at` is injectable for tests. */
@@ -75,7 +86,7 @@ export function auditEntryOf(
       break
     }
   }
-  return { at, kind, summary, ...(sessionID ? { sessionID } : {}), tone }
+  return { id: entryID(at), at, kind, summary, ...(sessionID ? { sessionID } : {}), tone }
 }
 
 /** Appends one entry, keeping the newest `cap` rows. */

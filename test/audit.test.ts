@@ -8,7 +8,13 @@ import {
 } from "../src/audit"
 
 const at = 1_700_000_000_000
-const entry = (kind: AuditEntry["kind"], summary = "x"): AuditEntry => ({ at, kind, summary, tone: "info" })
+const entry = (kind: AuditEntry["kind"], summary = "x"): AuditEntry => ({
+  id: `${at}-${summary}`,
+  at,
+  kind,
+  summary,
+  tone: "info",
+})
 
 describe("auditEntryOf", () => {
   test("screen verdicts carry numbers, label, and tone", () => {
@@ -64,6 +70,13 @@ describe("auditEntryOf", () => {
     expect(auditEntryOf("screen", undefined)).toBeUndefined()
     expect(auditEntryOf("screen", {})).toBeDefined() // defaults to ?: tool
     expect(auditEntryOf("error", null)).toBeUndefined()
+  })
+
+  test("entries get a unique reconcile id, even in the same millisecond", () => {
+    const first = auditEntryOf("error", { message: "same" }, at)
+    const second = auditEntryOf("error", { message: "same" }, at)
+    expect(first?.id).toBeTruthy()
+    expect(first?.id).not.toBe(second?.id)
   })
 })
 

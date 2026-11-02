@@ -1,10 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 // TUI event-audit panel. Pure renderer: src/tui.ts owns every RPC
 // subscription, reconnect, and the durable `jev-audit` store; this module
-// only pages/filters/renders it. Keep it free of ./rpc imports (see
+// only filters and renders it. Keep it free of ./rpc imports (see
 // AGENTS.md: panels must not subscribe themselves).
 import type { JSX } from "@opentui/solid"
-import { createSignal } from "solid-js"
+import type { ScrollBoxRenderable } from "@opentui/core"
+import { createMemo, createSignal, For } from "solid-js"
 import {
   AUDIT_STORE_KEY,
   filterAudit,
@@ -15,6 +16,7 @@ import {
 interface PanelInput {
   readonly name: string
   readonly sessionID: string
+  readonly width: number
   readonly close: () => void
   readonly toggleFullscreen: () => void
 }
@@ -22,8 +24,6 @@ interface PanelInput {
 interface Store {
   readonly items: AuditEntry[]
 }
-
-const PANEL_PAGE = 15
 
 const FILTER_KEYS: ReadonlyArray<{ key: string; kind: AuditKind | "all"; label: string }> = [
   { key: "a", kind: "all", label: "all" },
@@ -44,19 +44,31 @@ function panelText(entries: readonly AuditEntry[], filter: AuditKind | "all"): s
   return [`jev audit — ${entries.length} ${filter === "all" ? "entries" : filter + " entries"}`, ...entries.map(formatEntry)].join("\n")
 }
 
-function Row(props: { entry: AuditEntry; index: number }): JSX.Element {
-  return <text key={props.index} selectable={false}>{formatEntry(props.entry)}</text>
-}
-
 function Panel(props: { store: readonly [Store, unknown]; context: any; panel: PanelInput }): JSX.Element {
   const [filter, setFilter] = createSignal<AuditKind | "all">("all")
-  const [start, setStart] = createSignal(0)
+  let list: ScrollBoxRenderable | undefined
+
+  // Every read below is reactive: the storage tuple is a Solid store, and the
+  // panel stays mounted while events stream in.
   const all = (): AuditEntry[] => props.store?.[0]?.items ?? []
-  const filtered = (): AuditEntry[] => filterAudit(all(), filter())
-  const clampStart = (value: number): number => {
-    const total = filtered().length
-    return Math.max(0, Math.min(value, Math.max(0, total - PANEL_PAGE)))
+  const total = createMemo(() => all().length)
+  const entries = createMemo(() => filterAudit(all(), filter()))
+  const filterLabel = (): string => (filter() === "all" ? "all" : filter())
+
+  // Footer hints use the host's live bindings, so a remapped key is shown as
+  // configured. `shortcuts` is reactive and must be read inside JSX/memos.
+  const key = (id: string, fallback: string): string => {
+    try {
+      return props.context.keymap.shortcuts(id).join("/") || fallback
+    } catch {
+      return fallback
+    }
   }
+  const navigationHints = createMemo(() => {
+    const compact = (props.panel.width ?? 0) < 72
+    if (compact) return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} scroll · c copy · esc/q close`
+    return `${key("jev.audit.down", "j")}/${key("jev.audit.up", "k")} scroll · ${key("jev.audit.top", "g")}/${key("jev.audit.bottom", "shift+g")} top/bottom · ${key("jev.audit.copy", "c")} copy · ${key("jev.audit.fullscreen", "f")} fullscreen · esc/q close`
+  })
 
   props.context.keymap.layer(() => ({
     mode: "global",
@@ -83,40 +95,40 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
         id: "jev.audit.down",
         title: "Scroll audit down",
         bind: "j",
-        run: () => setStart((value) => clampStart(value + 1)),
+        run: () => list?.scrollBy(1),
       },
       {
         id: "jev.audit.up",
         title: "Scroll audit up",
         bind: "k",
-        run: () => setStart((value) => clampStart(value - 1)),
+        run: () => list?.scrollBy(-1),
       },
       {
         id: "jev.audit.top",
         title: "Audit top",
         bind: "g",
-        run: () => setStart(0),
+        run: () => list?.scrollTo(0),
       },
       {
         id: "jev.audit.bottom",
         title: "Audit bottom",
         bind: "shift+g",
-        run: () => setStart(clampStart(Number.MAX_SAFE_INTEGER)),
+        run: () => list?.scrollTo(Infinity),
       },
       {
         id: "jev.audit.copy",
         title: "Copy jev audit",
         bind: "c",
         run: () => {
-          const entries = filtered()
+          const shown = entries()
           let ok = false
           try {
-            ok = props.context.renderer?.copyToClipboardOSC52?.(panelText(entries, filter())) === true
+            ok = props.context.renderer?.copyToClipboardOSC52?.(panelText(shown, filter())) === true
           } catch {}
           props.context.ui.toast.show({
             title: "jev-audit",
             message: ok
-              ? `copied ${entries.length} ${filter() === "all" ? "entries" : filter() + " entries"}`
+              ? `copied ${shown.length} ${filter() === "all" ? "entries" : filter() + " entries"}`
               : "clipboard unavailable - this terminal rejected OSC52",
             variant: ok ? "success" : "warning",
             duration: 4_000,
@@ -129,29 +141,29 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
         bind: entry.key,
         run: () => {
           setFilter(entry.kind)
-          setStart(0)
+          list?.scrollTo(0)
         },
       })),
     ],
   }))
 
-  const items = all()
-  const entries = filtered()
-  const first = Math.min(start(), Math.max(0, entries.length - PANEL_PAGE))
-  const visible = entries.slice(first, first + PANEL_PAGE)
-  const range = entries.length === 0 ? "0-0" : `${first + 1}-${first + visible.length}`
-  const filterLabel = filter() === "all" ? "all" : filter()
+  const muted = () => props.context?.theme?.text?.muted
   return (
-    <box flexDirection="column" paddingLeft={1} paddingRight={1} selectable={false}>
-      <box marginBottom={1}>
-        <text selectable={false}>{`jev audit — ${items.length} entries · ${filterLabel}`}</text>
+    <box flexDirection="column" flexGrow={1} height="100%" minHeight={0} paddingLeft={1} paddingRight={1} selectable={false}>
+      <box flexShrink={0} marginBottom={1}>
+        <text selectable={false}>{`jev audit — ${total()} entries · ${filterLabel()} · a/s/e/p/r/x filter`}</text>
       </box>
-      {visible.length === 0 ? <text selectable={false}>{"no events yet"}</text> : visible.map((entry, i) => <Row entry={entry} index={i} />)}
-      <box marginTop={1}>
-        <text selectable={false}>{`${range} of ${entries.length} · j/k scroll · g/G top/bottom`}</text>
+      <scrollbox ref={(value: ScrollBoxRenderable) => (list = value)} flexGrow={1} minHeight={0} selectable={false}>
+        <For each={entries()} fallback={<text selectable={false}>{"no events yet"}</text>}>
+          {(entry) => <text selectable={false}>{formatEntry(entry)}</text>}
+        </For>
+      </scrollbox>
+      <box flexShrink={0} flexDirection="row" paddingTop={1}>
+        <box flexGrow={1} />
+        <text flexShrink={0} wrapMode="none" truncate selectable={false} fg={muted()}>
+          {navigationHints()}
+        </text>
       </box>
-      <text selectable={false}>{"a all · s screen · e error · p approval · r scrub · x config"}</text>
-      <text selectable={false}>{"esc/q close · f fullscreen · c copy"}</text>
     </box>
   )
 }
@@ -159,7 +171,7 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
 export default {
   id: "atvari.jev.tui.audit",
   setup(context: any) {
-    const store = context.storage.store<Store>(AUDIT_STORE_KEY, { initial: { items: [] } })
+    const store = context.storage.store<Store>(AUDIT_STORE_KEY, { initial: { items: [] }, key: "id" })
     const unslot = context.ui.slot({
       append: "session.panel",
       render: (input: PanelInput) =>
