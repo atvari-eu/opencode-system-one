@@ -25,6 +25,16 @@ export const AUDIT_CAP = 200
 
 export const AUDIT_KINDS: readonly AuditKind[] = ["screen", "error", "config", "scrub", "approval"]
 
+/** Single-key filters shown in the panel header and bound in the TUI layer. */
+export const AUDIT_FILTERS: ReadonlyArray<{ key: string; kind: AuditKind | "all"; label: string }> = [
+  { key: "a", kind: "all", label: "all" },
+  { key: "s", kind: "screen", label: "screen" },
+  { key: "e", kind: "error", label: "errors" },
+  { key: "p", kind: "approval", label: "approvals" },
+  { key: "r", kind: "scrub", label: "scrub" },
+  { key: "x", kind: "config", label: "config" },
+]
+
 const fixed = (value: unknown): string => (typeof value === "number" ? value.toFixed(2) : "?")
 
 let sequence = 0

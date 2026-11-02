@@ -44,7 +44,7 @@ function makeContext(overrides: { rpc?: boolean | object; dialog?: boolean }) {
     keymap: {
       layer: (build: () => any) => {
         const config = build()
-        context.__commands = config.commands
+        context.__commands.push(...config.commands)
         return async () => {}
       },
     },
