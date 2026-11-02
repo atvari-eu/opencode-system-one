@@ -9,6 +9,7 @@
 // Solid scope is provided by the TUI plugin runtime; no solid import is
 // needed to read the reactive store.
 import type { JSX } from "@opentui/solid"
+import { createSignal } from "solid-js"
 import { SCREEN_VERDICT_CAP, type ScreenVerdictItem } from "./logic"
 
 interface PanelInput {
@@ -21,6 +22,9 @@ interface PanelInput {
 interface Store {
   readonly items: ScreenVerdictItem[]
 }
+
+/** Rows shown at once; j/k move the window over the capped verdict ring. */
+const PANEL_PAGE = 15
 
 const VERDICT_PREFIX: Record<string, string> = {
   pass: "✓ pass",
@@ -53,8 +57,16 @@ function panelText(items: ScreenVerdictItem[]): string {
 }
 
 function Panel(props: { store: readonly [Store, unknown]; context: any; panel: PanelInput }): JSX.Element {
-  // The host owns the panel chrome; expose explicit close/fullscreen keys so
-  // the panel is never a dead end. The layer is disposed with the component.
+  const [start, setStart] = createSignal(0)
+  // store[0] is the reactive value; items can be briefly undefined while the
+  // initial value syncs, or if an older host ignored the { initial } default.
+  const all = (): ScreenVerdictItem[] => props.store?.[0]?.items ?? []
+  const clampStart = (value: number): number => {
+    const total = all().length
+    return Math.max(0, Math.min(value, Math.max(0, total - PANEL_PAGE)))
+  }
+  // The host owns the panel chrome; expose explicit keys so the panel is
+  // never a dead end. The layer is disposed with the component.
   props.context.keymap.layer(() => ({
     mode: "global",
     commands: [
@@ -77,12 +89,24 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
         run: () => props.panel.toggleFullscreen(),
       },
       {
+        id: "jev.screen.down",
+        title: "Scroll verdicts down",
+        bind: "j",
+        run: () => setStart((value) => clampStart(value + 1)),
+      },
+      {
+        id: "jev.screen.up",
+        title: "Scroll verdicts up",
+        bind: "k",
+        run: () => setStart((value) => clampStart(value - 1)),
+      },
+      {
         id: "jev.screen.copy",
         title: "Copy jev screening verdicts",
         bind: "c",
         run: () => {
           // Read the store at press time, not the value captured on mount.
-          const current = props.store?.[0]?.items ?? []
+          const current = all()
           let ok = false
           try {
             ok = props.context.renderer?.copyToClipboardOSC52?.(panelText(current)) === true
@@ -99,18 +123,21 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
       },
     ],
   }))
-  // store[0] is the reactive value; items can be briefly undefined while the
-  // initial value syncs, or if an older host ignored the { initial } default
-  const items = props.store?.[0]?.items ?? []
+  const items = all()
+  const first = Math.min(start(), Math.max(0, items.length - PANEL_PAGE))
+  const visible = items.slice(first, first + PANEL_PAGE)
+  const range = items.length === 0 ? "0-0" : `${first + 1}-${first + visible.length}`
+  const scrollable = items.length > PANEL_PAGE
   return (
     <box flexDirection="column" paddingLeft={1} paddingRight={1} selectable={false}>
       <box marginBottom={1}>
         <text selectable={false}>{`jev screening — last ${items.length}/${SCREEN_VERDICT_CAP} verdicts`}</text>
       </box>
-      {items.length === 0 ? <text selectable={false}>{"no verdicts yet"}</text> : items.map((item, i) => <Row item={item} index={i} />)}
+      {visible.length === 0 ? <text selectable={false}>{"no verdicts yet"}</text> : visible.map((item, i) => <Row item={item} index={i} />)}
       <box marginTop={1}>
-        <text selectable={false}>{"esc/q close · f fullscreen · c copy"}</text>
+        <text selectable={false}>{`${range} of ${items.length}${scrollable ? " · j/k scroll" : ""}`}</text>
       </box>
+      <text selectable={false}>{"esc/q close · f fullscreen · c copy"}</text>
     </box>
   )
 }
