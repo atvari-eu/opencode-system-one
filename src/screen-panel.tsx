@@ -45,7 +45,7 @@ function formatItem(item: ScreenVerdictItem): string {
 }
 
 function Row(props: { item: ScreenVerdictItem; index: number }): JSX.Element {
-  return <text key={props.index}>{formatItem(props.item)}</text>
+  return <text key={props.index} selectable={false}>{formatItem(props.item)}</text>
 }
 
 function panelText(items: ScreenVerdictItem[]): string {
@@ -103,13 +103,13 @@ function Panel(props: { store: readonly [Store, unknown]; context: any; panel: P
   // initial value syncs, or if an older host ignored the { initial } default
   const items = props.store?.[0]?.items ?? []
   return (
-    <box flexDirection="column" paddingLeft={1} paddingRight={1}>
+    <box flexDirection="column" paddingLeft={1} paddingRight={1} selectable={false}>
       <box marginBottom={1}>
-        <text>{`jev screening — last ${items.length}/${SCREEN_VERDICT_CAP} verdicts`}</text>
+        <text selectable={false}>{`jev screening — last ${items.length}/${SCREEN_VERDICT_CAP} verdicts`}</text>
       </box>
-      {items.length === 0 ? <text>{"no verdicts yet"}</text> : items.map((item, i) => <Row item={item} index={i} />)}
+      {items.length === 0 ? <text selectable={false}>{"no verdicts yet"}</text> : items.map((item, i) => <Row item={item} index={i} />)}
       <box marginTop={1}>
-        <text>{"esc/q close · f fullscreen · c copy"}</text>
+        <text selectable={false}>{"esc/q close · f fullscreen · c copy"}</text>
       </box>
     </box>
   )

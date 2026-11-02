@@ -122,6 +122,10 @@ behavior change instead of duplicating them here.
   An empty-string fallback like `<box>{""}</box>` is enough to crash the
   panel - return `null` for non-matching slot names and wrap every text row
   in `<text>`.
+- Keep custom `session.panel` renderables `selectable={false}`: mouse text
+  selection over the panel tree corrupts the whole OpenCode TUI (the view
+  shifts up and the renderer desyncs). Use the panel's `c`/OSC52 copy
+  shortcut instead.
 
 - The end-user CLI binary may be `opencode2` (localhost wrapper) rather than
   `opencode`; the credential loader tries `OPENCODE_BIN` → `opencode` →
