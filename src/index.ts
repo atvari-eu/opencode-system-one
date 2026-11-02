@@ -2684,6 +2684,7 @@ export default Plugin.define({
           emitJevEvent("screen", {
             ...(sessionID ? { sessionID } : {}),
             label,
+            tool,
             verdict,
             ...(call ? { call } : {}),
             ...(typeof extra.junk === "number" ? { junk: extra.junk } : {}),

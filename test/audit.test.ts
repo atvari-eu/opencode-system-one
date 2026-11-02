@@ -55,10 +55,21 @@ describe("auditEntryOf", () => {
 
     const flagged = auditEntryOf("screen", {
       label: "webfetch",
+      tool: "webfetch",
       verdict: "flagged",
       preview: "line one\nline two",
     }, at)
     expect(flagged?.preview).toContain("line two")
+
+    const webCall = auditEntryOf("screen", {
+      label: "https://example.test/a",
+      tool: "webfetch",
+      verdict: "pass",
+      call: "https://example.test/a",
+      junk: 0,
+    }, at)
+    expect(webCall?.subject).toBe("webfetch")
+    expect(webCall?.detail).toContain("Screened output of: https://example.test/a")
     const passWithPreview = auditEntryOf("screen", { label: "webfetch", verdict: "pass", preview: "nope" }, at)
     expect(passWithPreview?.preview).toBeUndefined()
   })

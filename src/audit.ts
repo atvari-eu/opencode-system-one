@@ -77,6 +77,7 @@ export function auditEntryOf(
   switch (kind) {
     case "screen": {
       const label = typeof data.label === "string" ? data.label : "tool"
+      const tool = typeof data.tool === "string" && data.tool.trim() ? data.tool.trim() : label
       const verdict = typeof data.verdict === "string" ? data.verdict : "?"
       const callText = typeof data.call === "string" ? data.call.trim() : ""
       call = callText
@@ -90,7 +91,7 @@ export function auditEntryOf(
       detail = [callText ? `Screened output of: ${callText}` : "", scores].filter(Boolean).join(" · ")
       summary = `${verdict}: ${label} — ${scores}`
       decision = verdict
-      subject = label
+      subject = tool
       tone = verdict === "unsafe" || verdict === "error" ? "error" : verdict === "flagged" ? "warn" : "ok"
       break
     }

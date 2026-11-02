@@ -30,6 +30,7 @@ describe("makeJevRpc", () => {
     expect(screen.properties.verdict.enum).toEqual(["pass", "flagged", "unsafe", "error"])
     expect(screen.properties.call).toBeDefined()
     expect(screen.properties.preview).toBeDefined()
+    expect(screen.properties.tool).toBeDefined()
     expect(screen.additionalProperties).toBe(false)
   })
 

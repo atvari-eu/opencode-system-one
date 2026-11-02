@@ -39,7 +39,10 @@ export interface JevSetResult {
  * untouched for local tools). */
 export interface JevScreenEvent {
   sessionID?: string
+  /** Display label: the URL for webfetch, otherwise the tool name. */
   label: string
+  /** Tool whose output was screened. `label` keeps the URL for toasts. */
+  tool?: string
   verdict: "pass" | "flagged" | "unsafe" | "error"
   junk?: number
   injection?: number
@@ -137,6 +140,7 @@ const events = {
       properties: {
         sessionID: STRING,
         label: STRING,
+        tool: STRING,
         verdict: { type: "string", enum: ["pass", "flagged", "unsafe", "error"] },
         junk: NUMBER,
         injection: NUMBER,

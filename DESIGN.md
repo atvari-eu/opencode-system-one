@@ -344,11 +344,11 @@ glyph (`✓` ok, `!` warn, `✗` error, `?` info); emoji are avoided because
 double-width glyphs break column alignment. Filter, selection, and
 expanded-row state live in the panel's host-owned `jev-audit-view` memory
 store, so the keymap layer and the JSX tree observe the same reactive runtime;
-opening the panel clears a previous selection. Screen audit rows carry the
-tool-call descriptor that triggered the screen as
-`Screened output of: <call>` (command, URL, or path: redacted and capped),
-making clear the verdict applies to the tool's output, not the call itself;
-approvals likewise carry action/resource. Flagged and unsafe screens
+opening the panel clears a previous selection. Screen audit rows use the
+screened tool as `SUBJECT` and carry the tool-call descriptor as
+`Screened output of: <call>` in `DETAIL` (command, URL, or path: redacted and
+capped), making clear the verdict applies to the tool's output, not the call
+itself; approvals likewise carry action/resource. Flagged and unsafe screens
 additionally carry a redacted, capped result preview shown in the expanded
 row; passing screens stay content-free. The ring is TUI-side, so entries start
 when the TUI is running; the config fault is replayed through `configFault`.
