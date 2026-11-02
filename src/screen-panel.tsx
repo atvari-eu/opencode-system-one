@@ -1,4 +1,4 @@
-/** @jsxImportSource solid-js */
+/** @jsxImportSource @opentui/solid */
 // TUI verdict panel for the jev screening notices. This module is a pure
 // renderer: src/tui.ts owns all RPC event subscriptions, reconnects, and
 // writes the durable `jev-screen-verdicts` store (including the

@@ -1,4 +1,4 @@
-/** @jsxImportSource solid-js */
+/** @jsxImportSource @opentui/solid */
 // TUI prompt-footer marker for the ACTIVE System One judgment model -
 // "(jev:1.13-free)" rendered right next to the model text (the same
 // "prompt.footer.status" slot family as the "(auto)" footer marker; this

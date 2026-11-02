@@ -108,13 +108,14 @@ behavior change instead of duplicating them here.
   memory. `bun test` only proves module-load integrity, NOT runtime host
   behavior.
 - Every `.tsx` module the TUI loads must be imported **statically** from
-  `tui.ts` and start with `/** @jsxImportSource solid-js */` (and
-  `tsconfig` sets `jsx: react-jsx` + `jsxImportSource: solid-js`). Without
-  the pragma Bun's default JSX runtime emits `react/jsx-runtime`, which the
-  TUI does not provide. Dynamic `import("./x.tsx")` is resolved by Bun at
-  runtime, which also cannot see the TUI-provided `solid-js` ("Cannot find
-  package 'solid-js'"); static imports are compiled by the TUI's own
-  Solid/Babel loader and share the host's runtime. Both failure modes took
+  `tui.ts` and start with `/** @jsxImportSource @opentui/solid */` (and
+  `tsconfig` sets `jsx: react-jsx` + `jsxImportSource: @opentui/solid`).
+  `@opentui/solid` is the documented OpenTUI JSX runtime; pointing at
+  `solid-js` resolves `jsxDEV` from `solid-js/dist/solid.js`, which does not
+  export it ("Export named 'jsxDEV' not found"), and Bun's default React
+  runtime emits `react/jsx-runtime`. Dynamic `import("./x.tsx")` is also
+  resolved by Bun at runtime and cannot see the TUI-provided runtime, so
+  keep these imports static. All three failure modes took
   `/jev-screen-history` and the footer markers down.
 
 - The end-user CLI binary may be `opencode2` (localhost wrapper) rather than
