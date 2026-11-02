@@ -144,8 +144,9 @@ export default {
     })
     const recordScreen = (item: ScreenVerdictItem): void => {
       try {
+        const entry: ScreenVerdictItem = { ...item, at: Date.now() }
         screenStore[1]((draft: { items: ScreenVerdictItem[] }) => {
-          draft.items.push(item)
+          draft.items.push(entry)
           if (draft.items.length > SCREEN_VERDICT_CAP) {
             draft.items.splice(0, draft.items.length - SCREEN_VERDICT_CAP)
           }
@@ -306,6 +307,13 @@ export default {
                 variant: "warning",
                 duration: 10_000,
               })
+              return
+            }
+            // Toggle: running the command while the panel is open closes it.
+            const current = context.ui.panel?.current?.()
+            if (current?.name === "jev-screen") {
+              context.ui.panel.close?.()
+              return
             }
             context.ui.panel.open("jev-screen")
           },

@@ -14,6 +14,8 @@ import { SCREEN_VERDICT_CAP, type ScreenVerdictItem } from "./logic"
 interface PanelInput {
   readonly name: string
   readonly sessionID: string
+  readonly close: () => void
+  readonly toggleFullscreen: () => void
 }
 
 interface Store {
@@ -27,21 +29,76 @@ const VERDICT_PREFIX: Record<string, string> = {
   error: "✗ error",
 }
 
-function Row(props: { item: ScreenVerdictItem; index: number }): JSX.Element {
-  const at = new Date(props.item.at)
-  const time = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`
+function formatItem(item: ScreenVerdictItem): string {
+  const at = typeof item.at === "number" ? new Date(item.at) : undefined
+  const time = at
+    ? `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`
+    : "--:--"
   const counts = [
-    props.item.junk !== undefined ? `junk=${props.item.junk.toFixed(2)}` : undefined,
-    props.item.injection !== undefined ? `injection=${props.item.injection.toFixed(2)}` : undefined,
-    props.item.secret !== undefined ? `secret=${props.item.secret.toFixed(2)}` : undefined,
+    item.junk !== undefined ? `junk=${item.junk.toFixed(2)}` : undefined,
+    item.injection !== undefined ? `injection=${item.injection.toFixed(2)}` : undefined,
+    item.secret !== undefined ? `secret=${item.secret.toFixed(2)}` : undefined,
   ]
     .filter(Boolean)
     .join(" ")
-  const text = `${time}  ${VERDICT_PREFIX[props.item.verdict] ?? props.item.verdict}  ${props.item.label}${counts ? " — " + counts : ""}${props.item.note ? " — " + props.item.note : ""}`
-  return <text key={props.index}>{text}</text>
+  return `${time}  ${VERDICT_PREFIX[item.verdict] ?? item.verdict}  ${item.label}${counts ? " — " + counts : ""}${item.note ? " — " + item.note : ""}`
 }
 
-function Panel(props: { store: readonly [Store, unknown] }): JSX.Element {
+function Row(props: { item: ScreenVerdictItem; index: number }): JSX.Element {
+  return <text key={props.index}>{formatItem(props.item)}</text>
+}
+
+function panelText(items: ScreenVerdictItem[]): string {
+  return [`jev screening — last ${items.length}/${SCREEN_VERDICT_CAP} verdicts`, ...items.map(formatItem)].join("\n")
+}
+
+function Panel(props: { store: readonly [Store, unknown]; context: any; panel: PanelInput }): JSX.Element {
+  // The host owns the panel chrome; expose explicit close/fullscreen keys so
+  // the panel is never a dead end. The layer is disposed with the component.
+  props.context.keymap.layer(() => ({
+    mode: "global",
+    commands: [
+      {
+        id: "jev.screen.close",
+        title: "Close jev screening verdicts",
+        bind: "escape",
+        run: () => props.panel.close(),
+      },
+      {
+        id: "jev.screen.close-q",
+        title: "Close jev screening verdicts",
+        bind: "q",
+        run: () => props.panel.close(),
+      },
+      {
+        id: "jev.screen.fullscreen",
+        title: "Toggle jev screening fullscreen",
+        bind: "f",
+        run: () => props.panel.toggleFullscreen(),
+      },
+      {
+        id: "jev.screen.copy",
+        title: "Copy jev screening verdicts",
+        bind: "c",
+        run: () => {
+          // Read the store at press time, not the value captured on mount.
+          const current = props.store?.[0]?.items ?? []
+          let ok = false
+          try {
+            ok = props.context.renderer?.copyToClipboardOSC52?.(panelText(current)) === true
+          } catch {}
+          props.context.ui.toast.show({
+            title: "jev-screen",
+            message: ok
+              ? `copied ${current.length} verdict(s)`
+              : "clipboard unavailable - this terminal rejected OSC52",
+            variant: ok ? "success" : "warning",
+            duration: 4_000,
+          })
+        },
+      },
+    ],
+  }))
   // store[0] is the reactive value; items can be briefly undefined while the
   // initial value syncs, or if an older host ignored the { initial } default
   const items = props.store?.[0]?.items ?? []
@@ -51,6 +108,9 @@ function Panel(props: { store: readonly [Store, unknown] }): JSX.Element {
         <text>{`jev screening — last ${items.length}/${SCREEN_VERDICT_CAP} verdicts`}</text>
       </box>
       {items.length === 0 ? <text>{"no verdicts yet"}</text> : items.map((item, i) => <Row item={item} index={i} />)}
+      <box marginTop={1}>
+        <text>{"esc/q close · f fullscreen · c copy"}</text>
+      </box>
     </box>
   )
 }
@@ -65,7 +125,7 @@ export default {
     const unslot = context.ui.slot({
       append: "session.panel",
       render: (input: PanelInput) =>
-        input?.name === "jev-screen" ? <Panel store={store} /> : null,
+        input?.name === "jev-screen" ? <Panel store={store} context={context} panel={input} /> : null,
     })
     return async () => {
       unslot()

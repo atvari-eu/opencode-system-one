@@ -1392,6 +1392,8 @@ export interface ScreenVerdictItem {
   verdict: ScreenVerdict
   /** Extra wording from row styles without numbers (e.g. "result annotated"). */
   note: string | undefined
+  /** Arrival time (ms since epoch) stamped by the TUI recorder. */
+  at?: number
 }
 
 /**
