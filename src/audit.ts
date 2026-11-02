@@ -5,6 +5,9 @@
 
 export type AuditKind = "screen" | "error" | "config" | "scrub" | "approval"
 
+/** Panel filter values: one kind, everything, or the warn/error anomaly view. */
+export type AuditFilter = AuditKind | "all" | "anomaly"
+
 export type AuditTone = "ok" | "warn" | "error" | "info"
 
 export interface AuditEntry {
@@ -34,8 +37,9 @@ export const AUDIT_CAP = 200
 export const AUDIT_KINDS: readonly AuditKind[] = ["screen", "error", "config", "scrub", "approval"]
 
 /** Single-key filters shown in the panel header and bound in the TUI layer. */
-export const AUDIT_FILTERS: ReadonlyArray<{ key: string; kind: AuditKind | "all"; label: string }> = [
+export const AUDIT_FILTERS: ReadonlyArray<{ key: string; kind: AuditFilter; label: string }> = [
   { key: "a", kind: "all", label: "all" },
+  { key: "n", kind: "anomaly", label: "anomalies" },
   { key: "s", kind: "screen", label: "screen" },
   { key: "e", kind: "error", label: "errors" },
   { key: "p", kind: "approval", label: "approvals" },
@@ -154,6 +158,8 @@ export function appendAudit(items: readonly AuditEntry[], entry: AuditEntry, cap
   return next.length > cap ? next.slice(next.length - cap) : next
 }
 
-export function filterAudit(items: readonly AuditEntry[], kind: AuditKind | "all"): AuditEntry[] {
-  return kind === "all" ? [...items] : items.filter((item) => item.kind === kind)
+export function filterAudit(items: readonly AuditEntry[], filter: AuditFilter): AuditEntry[] {
+  if (filter === "all") return [...items]
+  if (filter === "anomaly") return items.filter((item) => item.tone === "warn" || item.tone === "error")
+  return items.filter((item) => item.kind === filter)
 }

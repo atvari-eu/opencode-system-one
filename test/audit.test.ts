@@ -126,4 +126,14 @@ describe("appendAudit + filterAudit", () => {
     expect(filterAudit(items, "approval")).toHaveLength(1)
     expect(filterAudit(items, "scrub")).toHaveLength(0)
   })
+
+  test("anomalies keep only warn and error tones", () => {
+    const items: AuditEntry[] = [
+      { ...entry("screen"), tone: "ok" },
+      { ...entry("screen"), tone: "warn" },
+      { ...entry("screen"), tone: "error" },
+      { ...entry("approval"), tone: "info" },
+    ]
+    expect(filterAudit(items, "anomaly").map((item) => item.tone)).toEqual(["warn", "error"])
+  })
 })

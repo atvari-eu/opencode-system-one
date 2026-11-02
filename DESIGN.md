@@ -336,8 +336,9 @@ toggles the panel: events render oldest first as
 `TIME / KIND / SUBJECT / DECISION / DETAIL` rows with an optional selected row
 (`j/k` select, `g/G` top/bottom, `enter`/`space` expand, `y` copy the row,
 `c` copy the filtered table, `d` deselect, `esc/q` close, `f` fullscreen,
-`a/s/e/p/r/x` filter). The panel opens at the bottom and follows new events
-while nothing is selected; selecting a row stops auto-scroll, and `d` clears
+`a/n/s/e/p/r/x` filter). Anomalies are the warn/error tones, so `n` drops
+passing screens and delegated asks. The panel opens at the bottom and follows
+new events while nothing is selected; selecting a row stops auto-scroll, and `d` clears
 the selection to resume following. The decision cell prefixes a one-cell tone
 glyph (`✓` ok, `!` warn, `✗` error, `?` info); emoji are avoided because
 double-width glyphs break column alignment. Filter, selection, and

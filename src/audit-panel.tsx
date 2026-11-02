@@ -14,7 +14,7 @@ import {
   AUDIT_STORE_KEY,
   filterAudit,
   type AuditEntry,
-  type AuditKind,
+  type AuditFilter,
 } from "./audit"
 
 interface PanelInput {
@@ -30,7 +30,7 @@ interface Store {
 }
 
 interface ViewStore {
-  filter: AuditKind | "all"
+  filter: AuditFilter
   expanded: Record<string, boolean>
   selected?: string
 }
@@ -109,8 +109,12 @@ function detailBlock(entry: AuditEntry): string {
   return lines.join("\n").replace(/\r\n?/g, "\n")
 }
 
-function panelText(entries: readonly AuditEntry[], filter: AuditKind | "all"): string {
-  const lines = [`jev audit — ${entries.length} ${filter === "all" ? "entries" : filter + " entries"}`]
+function filterName(filter: AuditFilter): string {
+  return filter === "all" ? "all" : filter === "anomaly" ? "anomalies" : filter
+}
+
+function panelText(entries: readonly AuditEntry[], filter: AuditFilter): string {
+  const lines = [`jev audit — ${entries.length} ${filter === "all" ? "entries" : filterName(filter) + " entries"}`]
   for (const entry of entries) {
     lines.push(`${toneGlyph(entry.tone)} ${timeOf(entry)} ${entry.kind} ${decisionOf(entry)} ${subjectOf(entry)}`.trimEnd())
     lines.push(`  ${detailBlock(entry).replace(/\n/g, "\n  ")}`)
@@ -134,10 +138,7 @@ function Panel(props: {
   // Ascending: oldest at the top, newest at the bottom.
   const entries = (): AuditEntry[] => filterAudit(all(), view().filter ?? "all")
   const total = (): number => all().length
-  const filterLabel = (): string => {
-    const current = view().filter ?? "all"
-    return current === "all" ? "all" : current
-  }
+  const filterLabel = (): string => filterName(view().filter ?? "all")
   const expanded = (id: string): boolean => Boolean(view().expanded?.[id])
   const selectedId = (): string | undefined => {
     const current = view().selected
@@ -202,7 +203,7 @@ function Panel(props: {
     const entry = selectedEntry()
     if (entry) toggle(entry.id)
   }
-  const setFilter = (kind: AuditKind | "all"): void => {
+  const setFilter = (kind: AuditFilter): void => {
     props.view[1]((draft) => {
       draft.filter = kind
     })
@@ -327,9 +328,15 @@ function Panel(props: {
         id: "jev.audit.copy",
         title: "Copy jev audit",
         bind: "c",
-        run: () => copy(panelText(entries(), view().filter ?? "all"), filterLabel() === "all" ? "all entries" : `${filterLabel()} entries`),
+        run: () => copy(panelText(entries(), view().filter ?? "all"), filterLabel() === "all" ? "all entries" : "filtered entries"),
       },
       { id: "jev.audit.filter-all", title: "Jev audit filter: all", bind: "a", run: () => setFilter("all") },
+      {
+        id: "jev.audit.filter-anomaly",
+        title: "Jev audit filter: anomalies",
+        bind: "n",
+        run: () => setFilter("anomaly"),
+      },
       { id: "jev.audit.filter-screen", title: "Jev audit filter: screen", bind: "s", run: () => setFilter("screen") },
       { id: "jev.audit.filter-error", title: "Jev audit filter: errors", bind: "e", run: () => setFilter("error") },
       {

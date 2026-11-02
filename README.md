@@ -69,7 +69,8 @@ compaction can be decided by System One instead of a lossy summary
   `/jev-audit` opens the side panel with every UI-only event (screen verdicts,
   errors, config faults, scrub hits, approvals), oldest first in a
   `TIME / KIND / SUBJECT / DECISION / DETAIL` table (the decision cell carries
-  a one-cell `✓/!/✗/?` cue, not emoji): `a/s/e/p/r/x` filter,
+  a one-cell `✓/!/✗/?` cue, not emoji): `a/n/s/e/p/r/x` filter
+  (all/anomalies/screen/errors/approvals/scrub/config),
   `j/k` select, `g/G` top/bottom, `enter`/`space` expand, `y` copy the
   selected row, `c` copy all, `d` deselect and resume following the newest,
   `esc/q` close. The panel opens at the newest row and keeps following it
