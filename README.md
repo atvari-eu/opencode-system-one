@@ -825,7 +825,33 @@ Options (all defaults mirror the reference):
 | `truncateHeadChars` | `300` | Head kept when a result is pruned. |
 | `minReduction` | `0.25` | Required relative shrink before a hook-supplied summary replaces the built-in one. |
 | `maxSummaryTokens` | half the model window | Cap on the hook-supplied summary (estimated tokens). |
-| `auto` | off | Idle auto-compaction outside OpenCode's near-full trigger: at session idle, if the transcript (estimated ~chars/4) passes the target, the plugin posts the same compaction request `/compact` uses - which runs through the jev pass. Give the target as an object: `"auto": { "share": 0.5 }` compacts at that fraction of the session model's context window (follows model routing); `"auto": { "tokens": 60000 }` compacts at an absolute token count (wins over `share`). `"auto": true` is shorthand for `{ "share": 0.5 }`. Hysteresis is inherent: after a pass the transcript sits well below the target until the conversation regrows. |
+| `auto` | off | Idle auto-compaction outside OpenCode's near-full trigger: at session idle, if the transcript (estimated ~chars/4) passes the target, the plugin posts the same compaction request `/compact` uses - which runs through the jev pass. Give the target as an object: `"auto": { "share": 0.5 }` compacts at that fraction of the session model's context window (follows model routing); `"auto": { "tokens": 60000 }` compacts at an absolute token count (wins over `share`). `"auto": true` is shorthand for `{ "share": 0.5 }`. Fires once per turn-end at most, and only over the active context (messages after the last compaction), so a successful pass resets the estimate and the next pass comes after another target's worth of conversation - see [Idle triggers and repeated passes](#idle-triggers-and-repeated-passes). |
+| `debug` | `false` | Log one `idle-compaction: ~Ntok vs Mtok target` line per idle event (plus why a gated retry waited), so "never fired" and "fired but skipped" are distinguishable without reading the source. |
+
+### Idle triggers and repeated passes
+
+`auto` is a **repeatable** trigger, not a one-shot: OpenCode's `session.context`
+returns the messages after the last compaction, so once a pass succeeds the
+estimate drops to the summary and the watcher stays quiet until the
+conversation regrows past the target. With a 1M-token model and
+`"tokens": 60000` that is roughly 14 jev passes before OpenCode's own
+compaction comes into play - v2 starts that at `compaction.buffer` of the
+window (default `"15%"`, i.e. ~850k on 1M), a core setting independent of this
+plugin. Set `"compaction": { "auto": false }` in `opencode.jsonc` if jev should
+be the only compactor.
+
+Repeat attempts are throttled: at most one pass per idle event, no second pass
+within a minute of a previous jev pass, 120 s backoff after a failure, and
+OpenCode itself merges compaction requests made while one is pending. A pass
+that runs but produces no summary (nothing stale enough, `minReduction` short,
+summary over cap) leaves the transcript over the target; instead of re-judging
+the same history at the next idle, the watcher then waits for real growth -
+15 % of the transcript at the skip, at least 4000 estimated tokens - and
+surfaces each skip attempt as its own row (so one per growth step, not per
+idle). A tool-call-free transcript can never be pruned enough by jev (user and
+assistant text is never rewritten), so it keeps reporting that skip instead of
+compacting.
+
 
 ## Skills
 

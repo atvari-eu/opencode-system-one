@@ -718,6 +718,22 @@ inside one wake cycle; the outage still toasts per window, and the loop
 sources themselves stand down (done-check stores its stand-down marker
 on probe failure, idle-compaction backs off 120 s per failure).
 
+Idle auto-compaction needed a second brake for a different failure: a pass
+that runs but yields no summary (nothing stale enough, `minReduction` short,
+summary over cap) leaves the transcript above the target, so without a gate
+every later idle re-judged the same history - one jev pass a minute, forever,
+on a transcript jev cannot prune (prose-heavy, or no unpinned calls). The idle
+marker now carries the watcher's estimate, the hook parks it as a skip, and
+the watcher retries only after real growth (15 % of the transcript at the
+skip, at least 4000 tokens). The marker also moved to *before* the
+`session.compact` request: the hook runs inside that call, so the old
+write-after ordering made idle-origin passes look native - a skip fell
+through to the built-in summarizer instead of aborting, and the yield-window
+bookkeeping misfired. The hysteresis itself holds because v2's
+`session.context` returns the active messages after the last compaction, not
+the stored history; the idle estimate therefore resets on a successful pass
+while earlier messages stay on disk.
+
 Screen-failure presentation changed in the same commit family: a failed
 screen on a local tool (shell, reads, edits, MCP) no longer prefixes and
 truncates the tool's own output - the failure is its own surfaced row, and

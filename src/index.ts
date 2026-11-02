@@ -106,6 +106,7 @@ import {
   effectiveJevModel,
   emergencyRealModel,
   idleSessionID,
+  idleCompactionDue,
   isAvailableModel,
   isShellAction,
   matchesPatterns,
@@ -3371,6 +3372,10 @@ export default Plugin.define({
       const c: any = o.compaction ?? {}
       const num = (v: unknown, d: number) =>
         typeof v === "number" && Number.isFinite(v) ? v : d
+      // One line per idle event with the estimate (compaction.debug): without
+      // it a below-target idle logs nothing, so "never fired" and "fired but
+      // skipped" look identical from the outside.
+      const compactionDebug = c.debug === true
       const compactionOptions = {
         keepThreshold: num(c.keepThreshold, COMPACTION_DEFAULTS.keepThreshold),
         preserveRecentMessages: Math.max(
@@ -3423,8 +3428,14 @@ export default Plugin.define({
       // user /compact and native auto triggers the same failure falls back to
       // the built-in pass. Markers older than a few minutes are stale entries
       // of compactions that either completed or were re-triggered.
-      const IDLE_POSTED = new Map<string, number>()
+      const IDLE_POSTED = new Map<string, { at: number; estimate: number }>()
       const IDLE_POSTED_MAX_MS = 300_000
+      // An idle pass that runs but yields no summary leaves the transcript over
+      // the target, so the next idle would judge the same history again. The
+      // estimate at that skip becomes the retry gate: the watcher triggers
+      // again only after real growth (idleCompactionDue), and a successful
+      // pass or a drop below the target clears the entry.
+      const IDLE_SKIPPED = new Map<string, number>()
 
       // /jev-compact marks the same way (the hook cannot see the trigger
       // reason) and gets pure jev-only semantics: unlike a plain /compact the
@@ -3434,12 +3445,12 @@ export default Plugin.define({
 
       await (ctx as any).session.hook("compaction", async (event: any) => {
         const sid = String(event?.sessionID ?? "")
-        const idlePostedAt = IDLE_POSTED.get(sid)
+        const idlePosted = IDLE_POSTED.get(sid)
         IDLE_POSTED.delete(sid)
-        if (idlePostedAt !== undefined && Date.now() - idlePostedAt > IDLE_POSTED_MAX_MS) {
+        if (idlePosted !== undefined && Date.now() - idlePosted.at > IDLE_POSTED_MAX_MS) {
           console.log("[jev] compaction: ignoring a stale idle-trigger flag")
         }
-        const idleOrigin = idlePostedAt !== undefined && Date.now() - idlePostedAt <= IDLE_POSTED_MAX_MS
+        const idleOrigin = idlePosted !== undefined && Date.now() - idlePosted.at <= IDLE_POSTED_MAX_MS
         const manualPostedAt = MANUAL_POSTED.get(sid)
         MANUAL_POSTED.delete(sid)
         if (manualPostedAt !== undefined && Date.now() - manualPostedAt > MANUAL_POSTED_MAX_MS) {
@@ -3515,6 +3526,7 @@ export default Plugin.define({
           )
           lastCompactionAt = { sessionID: sid, at: now }
           if (plan.replaceSummary) {
+            IDLE_SKIPPED.delete(sid)
             event.result = {
               summary: plan.replaceSummary,
               ...(plan.tokens ? { tokens: plan.tokens } : {}),
@@ -3531,12 +3543,17 @@ export default Plugin.define({
           if (idleOrigin) {
             // Idle-triggered request: only a jev-supplied summary counts. A
             // guard shortfall (insufficient reduction, oversized summary) also
-            // means no compaction - not a built-in summarizer run - and the
-            // next idle retries while the threshold holds.
+            // means no compaction - not a built-in summarizer run. Park the
+            // estimate so the watcher waits for real growth instead of
+            // re-judging the same history at the very next idle.
+            if (idlePosted) {
+              IDLE_SKIPPED.set(sid, idlePosted.estimate)
+              if (IDLE_SKIPPED.size > 1000) IDLE_SKIPPED.clear()
+            }
             throw new Error(
               plan.keepMessages
-                ? "jev idle compaction skipped: summary guards failed"
-                : "jev idle compaction skipped: nothing stale enough to act on",
+                ? "jev idle compaction skipped: summary guards failed - retried once the transcript grows"
+                : "jev idle compaction skipped: nothing stale enough to act on - retried once the transcript grows",
             )
           }
           if (manualOrigin) {
@@ -3548,6 +3565,7 @@ export default Plugin.define({
               throw new Error("jev compaction skipped: nothing stale enough to act on")
             }
             event.messages = plan.keepMessages
+            IDLE_SKIPPED.delete(sid)
             await manualNotice(
               `jev pass kept ${plan.keepMessages.length} of ${originalCount} messages - the built-in summarizer continues on the cleaned transcript (compaction.mode clean)`,
             )
@@ -3558,6 +3576,7 @@ export default Plugin.define({
           }
           if (plan.keepMessages) {
             event.messages = plan.keepMessages
+            IDLE_SKIPPED.delete(sid)
             console.log("[jev] compaction: decisions applied in place - built-in summarizer runs on the cleaned transcript")
           } else {
             console.log("[jev] compaction: nothing stale enough to act on - built-in compaction continues")
@@ -3567,9 +3586,10 @@ export default Plugin.define({
           if (idleOrigin) {
             // Idle-triggered request: no jev judgment means no compaction at
             // all. Throwing fails the compaction (marked as failed in the
-            // transcript); the next idle will retry once the threshold still
-            // holds, and OpenCode's native near-full auto trigger remains the
-            // no-jev-needed backstop.
+            // transcript); a later idle retries - growth-gated when the earlier
+            // pass reported a skip, straight away when it was a real failure
+            // (IDLE_FAIL_UNTIL in the watcher covers repeats) - and OpenCode's
+            // native near-full auto trigger remains the no-jev-needed backstop.
             throw new Error(
               `jev idle compaction failed: ${String(err?.message ?? err)}`,
             )
@@ -3632,15 +3652,35 @@ export default Plugin.define({
                 0,
               )
               const estimated = Math.ceil(chars / 4)
-              if (estimated < target) return
+              const skippedAt = IDLE_SKIPPED.get(sessionID)
+              if (compactionDebug) {
+                console.log(
+                  `[jev] idle-compaction: ~${estimated}tok vs ${target}tok target${skippedAt !== undefined ? ` (last skip at ~${skippedAt}tok)` : ""} - ${sessionID}`,
+                )
+              }
+              if (!idleCompactionDue(estimated, target, skippedAt)) {
+                // A transcript that a pass could not prune enough stays over
+                // the target; retrying at every idle would re-judge the same
+                // history once a minute. Wait for the growth the gate asks for.
+                if (estimated < target) IDLE_SKIPPED.delete(sessionID)
+                else if (compactionDebug)
+                  console.log(
+                    `[jev] idle-compaction: ~${estimated}tok is not enough growth since the last skipped pass - waiting`,
+                  )
+                return
+              }
               // Jev-only trigger: never fall through to the built-in summarizer
               // because of no candidates - if every call is pinned
               // (preserveRecentMessages) skip instead.
-              const calls = collectCalls(messages, COMPACTION_DEFAULTS.preserveRecentMessages)
+              const calls = collectCalls(messages, compactionOptions.preserveRecentMessages)
               if (!calls.some((call) => !call.pinned)) {
                 console.log(
                   `[jev] idle-compaction: transcript past ${target}tok but no unpinned candidates - skipping (native auto-compaction will handle it)`,
                 )
+                return
+              }
+              if (typeof (ctx as any).session?.compact !== "function") {
+                console.log("[jev] idle-compaction: session.compact unavailable on this OpenCode version - skipped")
                 return
               }
               console.log(
@@ -3652,8 +3692,19 @@ export default Plugin.define({
               // ride the pseudo-model and fail. Same cure as the done-check
               // wake.
               await ensureOffEntry(sessionID, messages)
-              await (ctx as any).session.compact?.({ sessionID })
-              IDLE_POSTED.set(sessionID, Date.now())
+              // Mark BEFORE the request: the compaction hook runs inside it,
+              // and only a marker that is already there lets the hook tell an
+              // idle-origin pass from a native one (skip semantics, no
+              // built-in summarizer). A request that fails before reaching the
+              // hook clears its own marker again.
+              const marker = { at: Date.now(), estimate: estimated }
+              IDLE_POSTED.set(sessionID, marker)
+              try {
+                await (ctx as any).session.compact({ sessionID })
+              } catch (err) {
+                if (IDLE_POSTED.get(sessionID) === marker) IDLE_POSTED.delete(sessionID)
+                throw err
+              }
               IDLE_FAIL_UNTIL.delete(sessionID)
             } catch (err: any) {
               IDLE_FAIL_UNTIL.set(sessionID, Date.now() + IDLE_FAIL_BACKOFF_MS)

@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { renderSummary, collectCalls, renderCallReport, runCompaction, DEFAULTS } from "../src/compaction"
-import { parseIdleAuto } from "../src/logic"
+import { IDLE_SKIP_GROWTH_MIN, idleCompactionDue, parseIdleAuto } from "../src/logic"
 
 const message = (role: "user" | "assistant" | "system", text: string): any => ({
   role,
@@ -232,6 +232,30 @@ describe("parseIdleAuto", () => {
     expect(parseIdleAuto({ share: 2 })).toEqual({ tokens: 0, share: 0.95 })
     expect(parseIdleAuto({ tokens: -5 })).toEqual({ tokens: 0, share: 0 })
     expect(parseIdleAuto({})).toEqual({ tokens: 0, share: 0 })
+  })
+})
+
+describe("idleCompactionDue", () => {
+  test("below the target never triggers, skipped or not", () => {
+    expect(idleCompactionDue(59_999, 60_000)).toBe(false)
+    expect(idleCompactionDue(59_999, 60_000, 50_000)).toBe(false)
+  })
+
+  test("without a skip, past the target triggers immediately", () => {
+    expect(idleCompactionDue(60_000, 60_000)).toBe(true)
+    expect(idleCompactionDue(900_000, 60_000)).toBe(true)
+  })
+
+  test("after a skip, waits for 15% growth of the transcript at the skip", () => {
+    expect(idleCompactionDue(60_000, 60_000, 60_000)).toBe(false)
+    expect(idleCompactionDue(68_999, 60_000, 60_000)).toBe(false)
+    expect(idleCompactionDue(69_000, 60_000, 60_000)).toBe(true)
+  })
+
+  test("the growth floor keeps short transcripts from retrying on every token", () => {
+    // 15% of 10k is 1.5k - the 4k floor wins.
+    expect(idleCompactionDue(10_000 + IDLE_SKIP_GROWTH_MIN - 1, 10_000, 10_000)).toBe(false)
+    expect(idleCompactionDue(10_000 + IDLE_SKIP_GROWTH_MIN, 10_000, 10_000)).toBe(true)
   })
 })
 

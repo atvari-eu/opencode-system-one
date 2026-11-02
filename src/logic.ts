@@ -37,6 +37,31 @@ export function parseIdleAuto(raw: unknown): IdleAutoOptions {
   return { tokens: 0, share: 0 }
 }
 
+/** Relative growth of the transcript at the last skipped idle pass required before retrying. */
+export const IDLE_SKIP_GROWTH = 0.15
+/** Floor for that growth, in estimated tokens: a short transcript must still move a little. */
+export const IDLE_SKIP_GROWTH_MIN = 4_000
+
+/**
+ * Whether an idle event should attempt an auto-compaction. Below the target
+ * nothing happens. After a pass that ran but produced no summary, the
+ * transcript is still over the target - retrying at the very next idle would
+ * judge the same history again, so wait for real growth first (15 % of the
+ * transcript at the skip, at least 4000 estimated tokens). A transcript that
+ * never prunes enough then costs one attempt per growth step instead of one
+ * per idle event.
+ */
+export function idleCompactionDue(
+  estimated: number,
+  target: number,
+  skippedAt?: number,
+): boolean {
+  if (estimated < target) return false
+  if (skippedAt === undefined) return true
+  const growth = Math.max(Math.ceil(skippedAt * IDLE_SKIP_GROWTH), IDLE_SKIP_GROWTH_MIN)
+  return estimated >= skippedAt + growth
+}
+
 // ---------------------------------------------------------------------------
 // Shared question shape (structurally compatible with index.ts's Question)
 // ---------------------------------------------------------------------------
