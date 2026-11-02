@@ -1,3 +1,4 @@
+/** @jsxImportSource solid-js */
 // TUI footer marker for jev auto-routing: renders "(auto)" at prompt.footer.status
 // while the session rests on the opencode-system-one/auto entry or after the
 // plugin's last auto grab. The decision is pure (footerAutoMarker in logic.ts);

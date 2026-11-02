@@ -107,6 +107,13 @@ behavior change instead of duplicating them here.
   covered by tests should be verified against the docs page, not from
   memory. `bun test` only proves module-load integrity, NOT runtime host
   behavior.
+- Every `.tsx` module the TUI loads must start with
+  `/** @jsxImportSource solid-js */` (and `tsconfig` sets
+  `jsx: react-jsx` + `jsxImportSource: solid-js`). Without it Bun's default
+  JSX runtime emits `react/jsx-runtime`, which the TUI does not provide:
+  "Cannot find package 'react' imported from src/screen-panel" took
+  `/jev-screen-history` and both footer markers down. Solid is provided by
+  the TUI runtime, so the import must point there.
 
 - The end-user CLI binary may be `opencode2` (localhost wrapper) rather than
   `opencode`; the credential loader tries `OPENCODE_BIN` → `opencode` →
