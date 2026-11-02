@@ -80,7 +80,7 @@ function showSubject(width: number): boolean {
 }
 
 function detailWidth(width: number): number {
-  const fixed = 2 + 1 + TIME_W + 1 + KIND_W + 1 + DECISION_W + (showSubject(width) ? 1 + SUBJECT_W : 0) + 1
+  const fixed = 2 + 1 + TIME_W + 1 + KIND_W + (showSubject(width) ? 1 + SUBJECT_W : 0) + 1 + DECISION_W + 1
   return Math.max(8, width - fixed)
 }
 
@@ -91,15 +91,15 @@ function moreThanRow(entry: AuditEntry, width: number): boolean {
 
 function formatRow(entry: AuditEntry, width: number, selected: boolean, expanded: boolean): string {
   const marker = `${selected ? "›" : " "}${moreThanRow(entry, width) ? (expanded ? "▾" : "▸") : " "}`
-  let line = `${marker} ${cell(timeOf(entry), TIME_W)} ${cell(entry.kind, KIND_W)} ${cell(`${toneGlyph(entry.tone)} ${decisionOf(entry)}`, DECISION_W)}`
+  let line = `${marker} ${cell(timeOf(entry), TIME_W)} ${cell(entry.kind, KIND_W)}`
   if (showSubject(width)) line += ` ${cell(subjectOf(entry), SUBJECT_W)}`
-  return `${line} ${oneLine(detailOf(entry))}`
+  return `${line} ${cell(`${toneGlyph(entry.tone)} ${decisionOf(entry)}`, DECISION_W)} ${oneLine(detailOf(entry))}`
 }
 
 function headerRow(width: number): string {
-  let line = `   ${cell("TIME", TIME_W)} ${cell("KIND", KIND_W)} ${cell("DECISION", DECISION_W)}`
+  let line = `   ${cell("TIME", TIME_W)} ${cell("KIND", KIND_W)}`
   if (showSubject(width)) line += ` ${cell("SUBJECT", SUBJECT_W)}`
-  return `${line} DETAIL`
+  return `${line} ${cell("DECISION", DECISION_W)} DETAIL`
 }
 
 function detailBlock(entry: AuditEntry): string {

@@ -68,7 +68,7 @@ compaction can be decided by System One instead of a lossy summary
   they resolve, so recurring asks can become explicit permissions rules.
   `/jev-audit` opens the side panel with every UI-only event (screen verdicts,
   errors, config faults, scrub hits, approvals), oldest first in a
-  `TIME / KIND / DECISION / SUBJECT / DETAIL` table (the decision cell carries
+  `TIME / KIND / SUBJECT / DECISION / DETAIL` table (the decision cell carries
   a one-cell `✓/!/✗/?` cue, not emoji): `a/s/e/p/r/x` filter,
   `j/k` select, `g/G` top/bottom, `enter`/`space` expand, `y` copy the
   selected row, `c` copy all, `d` deselect and resume following the newest,

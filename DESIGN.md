@@ -333,7 +333,7 @@ or unavailable `./rpc` export can never stop the panel module from loading
 config faults, scrub hits, and approval resolutions - into a durable
 200-entry `jev-audit` ring; `audit-panel.tsx` is a pure renderer. `/jev-audit`
 toggles the panel: events render oldest first as
-`TIME / KIND / DECISION / SUBJECT / DETAIL` rows with an optional selected row
+`TIME / KIND / SUBJECT / DECISION / DETAIL` rows with an optional selected row
 (`j/k` select, `g/G` top/bottom, `enter`/`space` expand, `y` copy the row,
 `c` copy the filtered table, `d` deselect, `esc/q` close, `f` fullscreen,
 `a/s/e/p/r/x` filter). The panel opens at the bottom and follows new events
