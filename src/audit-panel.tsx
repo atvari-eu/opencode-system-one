@@ -86,7 +86,7 @@ function detailWidth(width: number): number {
 
 function moreThanRow(entry: AuditEntry, width: number): boolean {
   const detail = detailOf(entry)
-  return detail.includes("\n") || oneLine(detail).length > detailWidth(width)
+  return Boolean(entry.preview) || detail.includes("\n") || oneLine(detail).length > detailWidth(width)
 }
 
 function formatRow(entry: AuditEntry, width: number, selected: boolean, expanded: boolean): string {
@@ -104,6 +104,7 @@ function headerRow(width: number): string {
 
 function detailBlock(entry: AuditEntry): string {
   const lines = [detailOf(entry)]
+  if (entry.preview) lines.push(`content: ${entry.preview}`)
   if (entry.sessionID) lines.push(`session ${entry.sessionID}`)
   return lines.join("\n").replace(/\r\n?/g, "\n")
 }

@@ -51,6 +51,15 @@ describe("auditEntryOf", () => {
       junk: 0,
     }, at)
     expect(web?.detail?.startsWith("junk=")).toBe(true)
+
+    const flagged = auditEntryOf("screen", {
+      label: "webfetch",
+      verdict: "flagged",
+      preview: "line one\nline two",
+    }, at)
+    expect(flagged?.preview).toContain("line two")
+    const passWithPreview = auditEntryOf("screen", { label: "webfetch", verdict: "pass", preview: "nope" }, at)
+    expect(passWithPreview?.preview).toBeUndefined()
   })
 
   test("errors and config faults are error-toned and require a message", () => {

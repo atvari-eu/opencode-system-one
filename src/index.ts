@@ -2679,7 +2679,7 @@ export default Plugin.define({
         // surface, which is what gates the synthetic-row fallbacks below.
         const emitScreen = (
           verdict: JevScreenEvent["verdict"],
-          extra: { junk?: number; injection?: number; secret?: number; note?: string } = {},
+          extra: { junk?: number; injection?: number; secret?: number; note?: string; preview?: string } = {},
         ): boolean =>
           emitJevEvent("screen", {
             ...(sessionID ? { sessionID } : {}),
@@ -2690,6 +2690,7 @@ export default Plugin.define({
             ...(typeof extra.injection === "number" ? { injection: extra.injection } : {}),
             ...(typeof extra.secret === "number" ? { secret: extra.secret } : {}),
             ...(extra.note ? { note: extra.note } : {}),
+            ...(extra.preview ? { preview: extra.preview } : {}),
           })
 
         // Fallback transcript row for outcomes that must not disappear when
@@ -2725,6 +2726,9 @@ export default Plugin.define({
             ...(typeof injection === "number" ? { injection } : {}),
             ...(typeof secret === "number" ? { secret } : {}),
             ...(scrubbedHits ? { note: `scrubbed=${scrubbedHits}` } : {}),
+            ...(outcome.verdict === "flagged" || outcome.verdict === "unsafe"
+              ? { preview: elideMiddle(redactText(sample).text, 500, 120) }
+              : {}),
           })
 
           if (screenWithholds(screenMode, outcome.verdict)) {
@@ -3121,6 +3125,9 @@ export default Plugin.define({
                 ...(typeof junk === "number" ? { junk } : {}),
                 ...(typeof injection === "number" ? { injection } : {}),
                 ...(typeof secret === "number" ? { secret } : {}),
+                ...(verdict === "flagged" || verdict === "unsafe"
+                  ? { preview: elideMiddle(redactText(sample).text, 500, 120) }
+                  : {}),
               })
               await (ctx as any).session.synthetic({
                 sessionID,

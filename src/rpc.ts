@@ -48,6 +48,9 @@ export interface JevScreenEvent {
   /** The tool call that triggered the screen (command, URL, path), capped and
    * redacted server-side. Never the screened result text. */
   call?: string
+  /** Anomaly-only preview of the screened result, redacted and capped. Pass
+   * verdicts never carry content. */
+  preview?: string
 }
 
 const STRING = { type: "string" }
