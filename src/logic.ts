@@ -1521,7 +1521,11 @@ export function screenEventItemOf(data: unknown): ScreenVerdictItem | undefined 
   if (verdict !== "pass" && verdict !== "flagged" && verdict !== "unsafe" && verdict !== "error") {
     return undefined
   }
-  const label = typeof d.label === "string" ? d.label.trim() : ""
+  const label =
+    (typeof d.label === "string" && d.label.trim()) ||
+    (typeof d.call === "string" && d.call.trim()) ||
+    (typeof d.tool === "string" && d.tool.trim()) ||
+    ""
   if (!label) return undefined
   const number = (value: unknown): number | undefined =>
     typeof value === "number" && Number.isFinite(value) ? value : undefined

@@ -39,10 +39,12 @@ export interface JevSetResult {
  * untouched for local tools). */
 export interface JevScreenEvent {
   sessionID?: string
-  /** Display label: the URL for webfetch, otherwise the tool name. */
-  label: string
-  /** Tool whose output was screened. `label` keeps the URL for toasts. */
-  tool?: string
+  /** Tool whose output was screened. */
+  tool: string
+  /** Redacted, capped descriptor of the tool call (URL, command, path). */
+  call?: string
+  /** Deprecated display fallback for older TUI halves; `call || tool`. */
+  label?: string
   verdict: "pass" | "flagged" | "unsafe" | "error"
   junk?: number
   injection?: number
@@ -149,7 +151,7 @@ const events = {
         call: STRING,
         preview: STRING,
       },
-      required: ["label", "verdict"],
+      required: ["tool", "verdict"],
       additionalProperties: false,
     },
   },

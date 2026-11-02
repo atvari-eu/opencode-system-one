@@ -26,7 +26,7 @@ describe("makeJevRpc", () => {
     const definition: any = await makeJevRpc()
     const screen = definition.events?.screen?.schema
     expect(screen).toBeDefined()
-    expect(screen.required).toEqual(["label", "verdict"])
+    expect(screen.required).toEqual(["tool", "verdict"])
     expect(screen.properties.verdict.enum).toEqual(["pass", "flagged", "unsafe", "error"])
     expect(screen.properties.call).toBeDefined()
     expect(screen.properties.preview).toBeDefined()

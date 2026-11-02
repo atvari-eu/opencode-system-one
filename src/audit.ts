@@ -76,8 +76,10 @@ export function auditEntryOf(
   let preview = ""
   switch (kind) {
     case "screen": {
-      const label = typeof data.label === "string" ? data.label : "tool"
-      const tool = typeof data.tool === "string" && data.tool.trim() ? data.tool.trim() : label
+      const tool =
+        (typeof data.tool === "string" && data.tool.trim() ? data.tool.trim() : "") ||
+        (typeof data.label === "string" && data.label.trim() ? data.label.trim() : "tool")
+      const label = typeof data.label === "string" && data.label.trim() ? data.label.trim() : tool
       const verdict = typeof data.verdict === "string" ? data.verdict : "?"
       const callText = typeof data.call === "string" ? data.call.trim() : ""
       call = callText

@@ -2665,14 +2665,13 @@ export default Plugin.define({
         if (event?.status !== "completed") return
         const tool = String(event?.tool ?? "")
         if (!screenApplies(tool, screenTools)) return
-        const url = typeof event.input?.url === "string" ? event.input.url : ""
         const text0 = readResultText(event.result)
         if (!text0) return
 
-        const label = url || tool
         const sessionID = typeof event?.sessionID === "string" ? event.sessionID : undefined
         const callText = toolCallSummary(tool, event.input)
         const call = callText ? elideMiddle(redactText(callText).text, 240, 60) : ""
+        const label = call || tool
 
         // UI-only channel: the TUI half records every verdict in its panel and
         // toasts anomalies/failures. Returns false on hosts without an event
@@ -2683,8 +2682,8 @@ export default Plugin.define({
         ): boolean =>
           emitJevEvent("screen", {
             ...(sessionID ? { sessionID } : {}),
-            label,
             tool,
+            label,
             verdict,
             ...(call ? { call } : {}),
             ...(typeof extra.junk === "number" ? { junk: extra.junk } : {}),
@@ -3121,7 +3120,9 @@ export default Plugin.define({
               const verdict = verdictRaw === "pass" && secretFlag ? "flagged" : verdictRaw
               emitJevEvent("screen", {
                 ...(typeof sessionID === "string" ? { sessionID } : {}),
+                tool: "jev-screen",
                 label,
+                call: label,
                 verdict,
                 ...(typeof junk === "number" ? { junk } : {}),
                 ...(typeof injection === "number" ? { injection } : {}),
@@ -3137,6 +3138,7 @@ export default Plugin.define({
             } catch (err: any) {
               emitJevEvent("screen", {
                 ...(typeof sessionID === "string" ? { sessionID } : {}),
+                tool: "jev-screen",
                 label: target || "jev-screen",
                 verdict: "error",
                 note: String(err?.message ?? err),

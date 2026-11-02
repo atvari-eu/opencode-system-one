@@ -344,16 +344,18 @@ glyph (`✓` ok, `!` warn, `✗` error, `?` info); emoji are avoided because
 double-width glyphs break column alignment. Filter, selection, and
 expanded-row state live in the panel's host-owned `jev-audit-view` memory
 store, so the keymap layer and the JSX tree observe the same reactive runtime;
-opening the panel clears a previous selection. Screen audit rows use the
-screened tool as `SUBJECT` and carry the tool-call descriptor as
-`Screened output of: <call>` in `DETAIL` (command, URL, or path: redacted and
-capped), making clear the verdict applies to the tool's output, not the call
-itself; approvals likewise carry action/resource. Flagged and unsafe screens
-additionally carry a redacted, capped result preview shown in the expanded
-row; passing screens stay content-free. The ring is TUI-side, so entries start
-when the TUI is running; the config fault is replayed through `configFault`.
-The retired `/jev-screen-history` view is now `/jev-audit` with the `s`
-filter.
+opening the panel clears a previous selection. Screen events are generic
+(`tool` plus a redacted, capped `call` descriptor), so webfetch is not a
+special case; the display label is derived as `call || tool`, with `label`
+kept only as a deprecated fallback for older TUI halves. Screen audit rows use
+the screened tool as `SUBJECT` and carry `Screened output of: <call>` in
+`DETAIL` (command, URL, or path), making clear the verdict applies to the
+tool's output, not the call itself; approvals likewise carry action/resource.
+Flagged and unsafe screens additionally carry a redacted, capped result
+preview shown in the expanded row; passing screens stay content-free. The ring
+is TUI-side, so entries start when the TUI is running; the config fault is
+replayed through `configFault`. The retired `/jev-screen-history` view is now
+`/jev-audit` with the `s` filter.
 
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.

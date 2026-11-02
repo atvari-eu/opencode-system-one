@@ -366,6 +366,13 @@ describe("screenEventItemOf", () => {
     expect(screenEventItemOf({ label: "webfetch", verdict: "pass" })?.verdict).toBe("pass")
   })
 
+  test("derives the display label from tool and call", () => {
+    expect(
+      screenEventItemOf({ tool: "webfetch", call: "https://example.test/a", verdict: "pass" })?.label,
+    ).toBe("https://example.test/a")
+    expect(screenEventItemOf({ tool: "shell", verdict: "pass" })?.label).toBe("shell")
+  })
+
   test("malformed payloads are dropped, never rendered as a verdict", () => {
     expect(screenEventItemOf(undefined)).toBeUndefined()
     expect(screenEventItemOf({})).toBeUndefined()
