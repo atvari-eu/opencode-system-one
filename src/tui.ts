@@ -32,12 +32,14 @@ import {
   type ScreenVerdictItem,
 } from "./logic"
 import { jevRpcClientOf, subscribeJevEvents, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
+import { AUDIT_STORE_KEY, appendAudit, auditEntryOf, type AuditEntry, type AuditKind } from "./audit"
 // Static imports: the TUI loader compiles these TSX modules with its Solid
 // transform. Dynamic `import("./…tsx")` is resolved by Bun instead, which
 // cannot see the runtime-provided `solid-js` ("Cannot find package
 // 'solid-js'"). Static imports also let one module graph share the host's
 // Solid instance.
 import screenPanel from "./screen-panel.tsx"
+import auditPanel from "./audit-panel.tsx"
 import footerMarker from "./footer-marker.tsx"
 import footerModel, { sessionHolder } from "./footer-jev-model.tsx"
 
@@ -170,12 +172,30 @@ export default {
       })
     }
 
+    const auditStore = context.storage.store<{ items: AuditEntry[] }>(AUDIT_STORE_KEY, {
+      initial: { items: [] },
+    })
+    const recordAudit = (kind: AuditKind, data: any): void => {
+      const entry = auditEntryOf(kind, data)
+      if (!entry) return
+      try {
+        auditStore[1]((draft: { items: AuditEntry[] }) => {
+          const last = draft.items[draft.items.length - 1]
+          // Reconnect/config replay can repeat the same fault; keep one row.
+          if (kind === "config" && last?.kind === "config" && last.summary === entry.summary) return
+          draft.items = appendAudit(draft.items, entry)
+        })
+      } catch {}
+    }
+
     const statusHandlers: Record<string, (data: any) => void> = {
       screen: (data) => {
+        recordAudit("screen", data)
         const item = screenEventItemOf(data)
         if (item) recordScreen(item)
       },
       error: (data) => {
+        recordAudit("error", data)
         const message = typeof data?.message === "string" ? data.message : ""
         if (!message) return
         context.ui.toast.show({
@@ -186,8 +206,12 @@ export default {
           ...(typeof data?.sessionID === "string" ? { sessionID: data.sessionID } : {}),
         })
       },
-      config: (data) => showConfigFault(data?.message),
+      config: (data) => {
+        recordAudit("config", data)
+        showConfigFault(data?.message)
+      },
       scrub: (data) => {
+        recordAudit("scrub", data)
         const hits = typeof data?.hits === "number" ? data.hits : 0
         if (hits <= 0) return
         const where = data.kind === "prompt" ? "the prompt" : (data.tool ?? "a tool input")
@@ -200,6 +224,7 @@ export default {
         })
       },
       approval: (data) => {
+        recordAudit("approval", data)
         const outcome = typeof data?.outcome === "string" ? data.outcome : ""
         // Auto-allow/ask are the quiet, delegated path; refusals and
         // judgment failures are the ones a human needs to see.
@@ -224,7 +249,10 @@ export default {
       try {
         const jev = await jevRpcClientOf(context)
         const status = await jev?.configFault?.({})
-        if (status?.fault?.message) showConfigFault(status.fault.message)
+        if (status?.fault?.message) {
+          recordAudit("config", status.fault)
+          showConfigFault(status.fault.message)
+        }
       } catch {}
     }
     const connectStatus = async (): Promise<void> => {
@@ -249,22 +277,32 @@ export default {
       const text = typeof event?.text === "string" ? event.text : ""
       if (text.startsWith(JEV_CONFIG_ERROR_MARK)) {
         // Dedupe against the event/RPC replay: one config toast per message.
-        showConfigFault(text.slice(JEV_CONFIG_ERROR_MARK.length))
+        const message = text.slice(JEV_CONFIG_ERROR_MARK.length)
+        recordAudit("config", { message })
+        showConfigFault(message)
         return
       }
       if (text.startsWith(SCREEN_NOTICE_MARK)) {
         // Legacy rows only; the event channel carries this on current hosts.
         if (rpcEventsActive) return
         const item = parseScreenNotice(text)
-        if (item) recordScreen(item)
+        if (item) {
+          recordAudit("screen", item)
+          recordScreen(item)
+        }
         return
       }
       if (!text.startsWith(JEVS_ERROR_MARK)) return
       // The event already toasted this failure on hosts that emit it.
       if (rpcEventsActive) return
+      const message = text.slice(JEVS_ERROR_MARK.length)
+      recordAudit("error", {
+        message,
+        ...(typeof event?.sessionID === "string" ? { sessionID: event.sessionID } : {}),
+      })
       context.ui.toast.show({
         title: "jev",
-        message: text.slice(JEVS_ERROR_MARK.length),
+        message,
         variant: "error",
         duration: 10_000,
         ...(typeof event?.sessionID === "string" ? { sessionID: event.sessionID } : {}),
@@ -282,6 +320,18 @@ export default {
     } catch (err) {
       panelError = String((err as Error)?.message ?? err)
       console.log(`[jev] tui: screen panel unavailable: ${panelError}`)
+    }
+
+    // -- audit panel: all UI-only RPC events in one log --
+    let auditPanelLoaded = false
+    let auditPanelError = ""
+    try {
+      const auditCleanup = await auditPanel.setup(context)
+      cleanups.push(auditCleanup)
+      auditPanelLoaded = true
+    } catch (err) {
+      auditPanelError = String((err as Error)?.message ?? err)
+      console.log(`[jev] tui: audit panel unavailable: ${auditPanelError}`)
     }
 
     // /jev-screen-history: open the recent screening-verdicts panel. Always
@@ -316,6 +366,33 @@ export default {
               return
             }
             context.ui.panel.open("jev-screen")
+          },
+        },
+        {
+          id: "jev.audit",
+          title: "Jev event audit",
+          description: "Open the Jev RPC event log (screen, errors, config, scrub, approvals)",
+          group: "jev",
+          palette: true,
+          slash: { name: "jev-audit" },
+          run: () => {
+            if (!auditPanelLoaded) {
+              context.ui.toast.show({
+                title: "jev",
+                message: auditPanelError
+                  ? `audit panel unavailable: ${auditPanelError}`
+                  : "audit panel unavailable - check the TUI log for the load error",
+                variant: "warning",
+                duration: 10_000,
+              })
+              return
+            }
+            const current = context.ui.panel?.current?.()
+            if (current?.name === "jev-audit") {
+              context.ui.panel.close?.()
+              return
+            }
+            context.ui.panel.open("jev-audit")
           },
         },
         {

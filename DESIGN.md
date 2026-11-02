@@ -327,6 +327,17 @@ owns the screen subscription and writes the shared verdict store, so a stale
 or unavailable `./rpc` export can never stop the panel module from loading
 (that failure mode took `/jev-screen-history` down on a pin update).
 
+## TUI audit panel
+
+`tui.ts` records every UI-only RPC event - screen verdicts, failed calls,
+config faults, scrub hits, and approval resolutions - into a durable
+200-entry `jev-audit` ring; `audit-panel.tsx` is a pure renderer. `/jev-audit`
+toggles the panel: `a/s/e/p/r/x` filter by kind, `j/k` scroll, `g/G` jump,
+`c` copies the filtered view via OSC52, `esc/q` close, `f` fullscreen. The
+ring is TUI-side, so entries start when the TUI is running; the config fault
+is replayed through `configFault`, and `/jev-screen-history` remains the
+screen-specific view.
+
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.
 Instead it is hard-bounded - `awaitingUserInput` stands down when the newest

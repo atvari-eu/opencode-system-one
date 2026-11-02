@@ -1,0 +1,85 @@
+import { describe, expect, test } from "bun:test"
+import {
+  AUDIT_CAP,
+  appendAudit,
+  auditEntryOf,
+  filterAudit,
+  type AuditEntry,
+} from "../src/audit"
+
+const at = 1_700_000_000_000
+const entry = (kind: AuditEntry["kind"], summary = "x"): AuditEntry => ({ at, kind, summary, tone: "info" })
+
+describe("auditEntryOf", () => {
+  test("screen verdicts carry numbers, label, and tone", () => {
+    const pass = auditEntryOf("screen", {
+      label: "shell",
+      verdict: "pass",
+      junk: 0.1,
+      injection: 0.2,
+      secret: 0.3,
+    }, at)
+    expect(pass?.kind).toBe("screen")
+    expect(pass?.tone).toBe("ok")
+    expect(pass?.summary).toContain("pass: shell")
+    expect(pass?.summary).toContain("junk=0.10")
+    expect(pass?.summary).toContain("injection=0.20")
+    expect(pass?.summary).toContain("secret=0.30")
+    expect(pass?.at).toBe(at)
+
+    expect(auditEntryOf("screen", { label: "read", verdict: "flagged" })?.tone).toBe("warn")
+    expect(auditEntryOf("screen", { label: "read", verdict: "unsafe" })?.tone).toBe("error")
+    expect(auditEntryOf("screen", { label: "read", verdict: "error" })?.tone).toBe("error")
+  })
+
+  test("errors and config faults are error-toned and require a message", () => {
+    const err = auditEntryOf("error", { message: "no credential", sessionID: "ses_1" }, at)
+    expect(err?.tone).toBe("error")
+    expect(err?.sessionID).toBe("ses_1")
+    expect(auditEntryOf("error", {})).toBeUndefined()
+    expect(auditEntryOf("config", { message: "deployment fault" })?.tone).toBe("error")
+    expect(auditEntryOf("config", {})).toBeUndefined()
+  })
+
+  test("scrub hits are warn-toned and count-only", () => {
+    const tool = auditEntryOf("scrub", { kind: "tool", tool: "shell", hits: 2 }, at)
+    expect(tool?.tone).toBe("warn")
+    expect(tool?.summary).toBe("removed 2 secret-like token(s) from shell")
+    const prompt = auditEntryOf("scrub", { kind: "prompt", hits: 1 }, at)
+    expect(prompt?.summary).toContain("the prompt")
+    expect(auditEntryOf("scrub", { kind: "tool", hits: 0 })).toBeUndefined()
+  })
+
+  test("approval outcomes map to tones, including delegated allow/ask", () => {
+    const allow = auditEntryOf("approval", { action: "shell", outcome: "allow", resource: "git status" }, at)
+    expect(allow?.tone).toBe("ok")
+    expect(allow?.summary).toBe("allow: shell git status")
+    expect(auditEntryOf("approval", { action: "shell", outcome: "ask" })?.tone).toBe("info")
+    expect(auditEntryOf("approval", { action: "shell", outcome: "deny" })?.tone).toBe("error")
+    expect(auditEntryOf("approval", { action: "shell", outcome: "gate" })?.tone).toBe("error")
+    expect(auditEntryOf("approval", { action: "shell", outcome: "fail" })?.tone).toBe("warn")
+  })
+
+  test("malformed payloads are dropped", () => {
+    expect(auditEntryOf("screen", undefined)).toBeUndefined()
+    expect(auditEntryOf("screen", {})).toBeDefined() // defaults to ?: tool
+    expect(auditEntryOf("error", null)).toBeUndefined()
+  })
+})
+
+describe("appendAudit + filterAudit", () => {
+  test("keeps the newest cap rows", () => {
+    expect(AUDIT_CAP).toBe(200)
+    let items: AuditEntry[] = []
+    for (let i = 0; i < 5; i++) items = appendAudit(items, entry("screen", String(i)), 3)
+    expect(items.map((i) => i.summary)).toEqual(["2", "3", "4"])
+  })
+
+  test("filter selects by kind or all", () => {
+    const items = [entry("screen"), entry("error"), entry("approval"), entry("screen")]
+    expect(filterAudit(items, "all")).toHaveLength(4)
+    expect(filterAudit(items, "screen")).toHaveLength(2)
+    expect(filterAudit(items, "approval")).toHaveLength(1)
+    expect(filterAudit(items, "scrub")).toHaveLength(0)
+  })
+})

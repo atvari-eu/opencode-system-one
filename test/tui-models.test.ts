@@ -8,6 +8,7 @@ import { JEV_MODEL_STORE_KEY, type JevModelStore } from "../src/rpc"
 const sessionHolder = { current: undefined as string | undefined }
 const noopModule = { default: { id: "stub", setup: async () => async () => {} } }
 mock.module("../src/screen-panel.tsx", () => noopModule)
+mock.module("../src/audit-panel.tsx", () => noopModule)
 mock.module("../src/footer-marker.tsx", () => noopModule)
 mock.module("../src/footer-jev-model.tsx", () => ({
   default: { id: "stub.model", setup: async () => async () => {} },
