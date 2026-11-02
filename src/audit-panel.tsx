@@ -114,7 +114,8 @@ function filterName(filter: AuditFilter): string {
 }
 
 function panelText(entries: readonly AuditEntry[], filter: AuditFilter): string {
-  const lines = [`jev audit — ${entries.length} ${filter === "all" ? "entries" : filterName(filter) + " entries"}`]
+  const noun = entries.length === 1 ? "entry" : "entries"
+  const lines = [`jev audit — ${entries.length} ${filter === "all" ? noun : filterName(filter) + " " + noun}`]
   for (const entry of entries) {
     lines.push(`${toneGlyph(entry.tone)} ${timeOf(entry)} ${entry.kind} ${decisionOf(entry)} ${subjectOf(entry)}`.trimEnd())
     lines.push(`  ${detailBlock(entry).replace(/\n/g, "\n  ")}`)
@@ -353,7 +354,9 @@ function Panel(props: {
   return (
     <box flexDirection="column" flexGrow={1} height="100%" minHeight={0} paddingLeft={1} paddingRight={1} selectable={false}>
       <box flexShrink={0} flexDirection="row" gap={1} marginBottom={1}>
-        <text flexShrink={0} selectable={false}>{`jev audit — ${total()} entries · filter: ${filterLabel()} ·`}</text>
+        {() => (
+          <text flexShrink={0} selectable={false}>{`jev audit — ${total()} entries · filter: ${filterLabel()} ·`}</text>
+        )}
         {() => {
           const current = view().filter
           return FILTER_KEYS.map((item) => (
@@ -368,7 +371,7 @@ function Panel(props: {
           ))
         }}
       </box>
-      <text flexShrink={0} selectable={false} fg={muted()}>{headerRow(width())}</text>
+      {() => <text flexShrink={0} selectable={false} fg={muted()}>{headerRow(width())}</text>}
       <scrollbox
         ref={(value: ScrollBoxRenderable) => {
           list = value
@@ -415,16 +418,20 @@ function Panel(props: {
         }}
       </scrollbox>
       <box flexShrink={0} flexDirection="row" paddingTop={1}>
-        <text flexGrow={1} minWidth={0} wrapMode="none" truncate selectable={false} fg={muted()}>
-          {following()
-            ? "following newest · click a row to select"
-            : entries().some((entry) => moreThanRow(entry, width()))
-              ? "▸ click or enter to expand"
-              : "selected"}
-        </text>
-        <text flexShrink={0} wrapMode="none" truncate selectable={false} fg={muted()}>
-          {navigationHints()}
-        </text>
+        {() => (
+          <text flexGrow={1} minWidth={0} wrapMode="none" truncate selectable={false} fg={muted()}>
+            {following()
+              ? "following newest · click a row to select"
+              : entries().some((entry) => moreThanRow(entry, width()))
+                ? "▸ click or enter to expand"
+                : "selected"}
+          </text>
+        )}
+        {() => (
+          <text flexShrink={0} wrapMode="none" truncate selectable={false} fg={muted()}>
+            {navigationHints()}
+          </text>
+        )}
       </box>
     </box>
   )
