@@ -9,10 +9,10 @@ Jev is a decision model: it answers typed questions about content with calibrate
 | **Screening** | Tool results are checked for junk and prompt injection before they enter context; unsafe content is withheld (fail-closed). `webfetch` and `websearch` by default, every tool optional. | on |
 | **Secret scrubbing** | Known secret formats (`sk-…`, `ghp_…`, PEM keys, JWTs, …) are redacted from tool inputs and prompts - deterministic regex, never a model call. | on |
 | **Jev tools** | The agent gets `jev_decide`, `jev_judge_many`, and `jev_screen` for verification, ranking, bounded choices, and scoring, with a durable answer cache. | on |
-| **Commands** | `/jev-screen`, `/jev-done-check`, `/jev-compact`, `/jev-approval-stats`, and the `/jev-audit` panel with every UI-only event. | on |
+| **Commands** | `/jev-screen`, `/jev-done-check`, `/jev-compact`, `/jev-approval-stats`, `/jev-models`, and the `/jev-audit` panel with every UI-only event. | on |
 | **Model routing** | Before a turn, jev picks the model and reasoning effort it runs on - trivial prompts get the cheaper model. Engages only while the session sits on the `Auto` picker entry. | entry on, effort off |
 | **Done-check** | At session idle, a completion probe notices if the agent stopped early - capped per user message and per session, silent when the turn is done. | off |
-| **Semantic search** | `jev_find` answers "where is this *discussed*?" - a jev cascade over the codebase for questions grep cannot phrase. | off |
+| **Semantic search** | `jev_find` answers "where is this *discussed*?" - a jev cascade over the codebase for questions grep cannot phrase. | on |
 | **Approvals** | Permission requests are vetted (reversible? on-task? harmful?): routine work auto-runs, clearly harmful work is refused, you see only the uncertain middle. | off |
 | **Compaction** | Context compaction keeps, truncates, or drops each tool call by jev verdict instead of summarizing - user and assistant text stays verbatim. | off |
 

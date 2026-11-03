@@ -28,6 +28,7 @@ Replies for identical (endpoint, model, state, questions) are served from durabl
 | `/jev-done-check` | completion self-check over the recent session transcript (see [Done-check](done-check.md)) |
 | `/jev-compact` | compacts the session now with jev decisions only, never falling back to the built-in summarizer (see [Compaction](compaction.md)) |
 | `/jev-approval-stats` | lists which command patterns trigger approvals and how they resolve, so recurring asks can become explicit permission rules (see [Approvals](approvals.md)) |
+| `/jev-models [<id> \| reset]` | pins the System One judgment model for this session; every pick is ping-verified before it sticks (see [Provider](provider.md)) |
 | `/jev-audit` | opens the audit side panel with every UI-only event |
 
 ## The audit panel (`/jev-audit`)
