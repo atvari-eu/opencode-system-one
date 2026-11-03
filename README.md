@@ -1,27 +1,27 @@
-# OpenCode plugin for System One decision models
+# OpenCode plugin for decision models
 
-An [OpenCode](https://opencode.ai) plugin that wires System One judgments into OpenCode automatically - no companion skill, no prompt plumbing.
+An [OpenCode](https://opencode.ai) plugin that wires decision-model judgments - System One, with Jev as the default model - into OpenCode automatically, with no companion skill and no prompt plumbing.
 
-A **decision model** answers typed questions about content with calibrated probabilities instead of generating text. **System One** is the decision-model family, and **Jev** (`jev-1.13`, `jev-1.13-free`) is its default model - the plugin works with any System One model you point it at, pinned per deployment (`model` option, `JEV_MODEL`) or per session (`/jev-models`). It puts those judgments at the judgment-shaped moments of an agent session:
+A **decision model** answers typed questions about content with calibrated probabilities instead of generating text. **System One** is the decision-model family this plugin speaks today, and **Jev** (`jev-1.13`, `jev-1.13-free`) is its default model - point it at any System One model per deployment (`model` option, `JEV_MODEL`) or per session (`/jev-models`). Tool and command names keep their historical `jev_` / `jev-` prefixes whatever model judges. The plugin puts those judgments at the judgment-shaped moments of an agent session:
 
 | Feature | What it does | Default |
 | --- | --- | --- |
 | **Screening** | Tool results are checked for junk and prompt injection before they enter context; unsafe content is withheld (fail-closed). `webfetch` and `websearch` by default, every tool optional. | on |
 | **Secret scrubbing** | Known secret formats (`sk-…`, `ghp_…`, PEM keys, JWTs, …) are redacted from tool inputs and prompts - deterministic regex, never a model call. | on |
-| **Jev tools** | The agent gets `jev_decide`, `jev_judge_many`, and `jev_screen` for verification, ranking, bounded choices, and scoring, with a durable answer cache. | on |
+| **Judgment tools** | The agent gets `jev_decide`, `jev_judge_many`, and `jev_screen` for verification, ranking, bounded choices, and scoring, with a durable answer cache. | on |
 | **Commands** | `/jev-screen`, `/jev-done-check`, `/jev-compact`, `/jev-approval-stats`, `/jev-models`, and the `/jev-audit` panel with every UI-only event. | on |
-| **Model routing** | Before a turn, jev picks the model and reasoning effort it runs on - trivial prompts get the cheaper model. Engages only while the session sits on the `Auto` picker entry. | entry on, effort off |
+| **Model routing** | Before a turn, the decision model picks the model and reasoning effort it runs on - trivial prompts get the cheaper model. Engages only while the session sits on the `Auto` picker entry. | entry on, effort off |
 | **Done-check** | At session idle, a completion probe notices if the agent stopped early - capped per user message and per session, silent when the turn is done. | off |
-| **Semantic search** | `jev_find` answers "where is this *discussed*?" - a jev cascade over the codebase for questions grep cannot phrase. | on |
+| **Semantic search** | `jev_find` answers "where is this *discussed*?" - a decision-model cascade over the codebase for questions grep cannot phrase. | on |
 | **Approvals** | Permission requests are vetted (reversible? on-task? harmful?): routine work auto-runs, clearly harmful work is refused, you see only the uncertain middle. | off |
-| **Compaction** | Context compaction keeps, truncates, or drops each tool call by jev verdict instead of summarizing - user and assistant text stays verbatim. | off |
+| **Compaction** | Context compaction keeps, truncates, or drops each tool call by decision-model verdict instead of summarizing - user and assistant text stays verbatim. | off |
 
 Clean verdicts cost nothing: a passing screen, a delegated approval, or a likely-done probe writes nothing to the transcript and stays UI-only.
 
 ## Requirements
 
 - [OpenCode 2](https://opencode.ai/v2/docs)
-- Access to a System One deployment. With the default Console endpoint, credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY`, then your `opencode auth login` session, then the legacy auth store. Other deployments resolve from your provider config at startup. Paid models bill the responsible deployment's account (402 on empty funds, never retried elsewhere).
+- Access to a decision-model deployment; the plugin speaks the System One interface. With the default Console endpoint, credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY`, then your `opencode auth login` session, then the legacy auth store. Other deployments resolve from your provider config at startup. Paid models bill the responsible deployment's account (402 on empty funds, never retried elsewhere).
 - No specific model provider is required; the plugin only adds tools and guards around your existing setup.
 
 The deployment is ping-verified at plugin start, and faults fail every judged feature closed. Details: [Provider & credentials](docs/provider.md).
@@ -65,7 +65,7 @@ opencode-decisions = pkgs.fetchFromGitHub {
   hash = "<pin-hash>";
 };
 
-home.file.".config/opencode/jev-plugin/index.ts".source =
+home.file.".config/opencode/opencode-decisions/index.ts".source =
   "${opencode-decisions}/src/index.ts";
 ```
 
@@ -73,7 +73,7 @@ home.file.".config/opencode/jev-plugin/index.ts".source =
 // opencode.json(c)
 {
   "plugins": [
-    { "package": "~/.config/opencode/jev-plugin" }
+    { "package": "~/.config/opencode/opencode-decisions" }
   ],
 }
 ```
@@ -118,7 +118,7 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 | `auto` | entry registered; routes only on the `Auto` entry | [Model routing](docs/routing.md) |
 | `effort` | off | [Model routing](docs/routing.md) |
 | `doneCheck` | off | [Done-check](docs/done-check.md) |
-| `find` | on | [jev_find](docs/find.md) |
+| `find` | on | [Semantic search](docs/find.md) |
 | `approvals` | off | [Approvals](docs/approvals.md) |
 | `compaction` | off | [Compaction](docs/compaction.md) |
 | `toasts` | `error` floor for every event | [Event toasts](docs/tools.md#event-toasts-toasts) |
@@ -137,12 +137,12 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 | Page | Covers |
 | --- | --- |
 | [Screening & scrubbing](docs/screening.md) | screen modes, thresholds, secret formats |
-| [Jev tools & commands](docs/tools.md) | the three tools, the answer cache, commands, `/jev-audit` |
+| [Judgment tools & commands](docs/tools.md) | the three tools, the answer cache, commands, `/jev-audit` |
 | [Model routing](docs/routing.md) | the `Auto` entry, effort routing, candidate sources |
 | [Done-check](docs/done-check.md) | the idle completion probe |
-| [jev_find](docs/find.md) | semantic code search |
+| [Semantic search](docs/find.md) | semantic code search |
 | [Approvals](docs/approvals.md) | vetted permissions, gates, the host/plugin permission split |
-| [Compaction](docs/compaction.md) | jev compaction, modes, idle triggers |
+| [Compaction](docs/compaction.md) | decision-model compaction, modes, idle triggers |
 | [Provider & credentials](docs/provider.md) | deployments, credential chains, error surfacing |
 
 For other agents (no plugin), the standalone `jev` CLI plus the portable skills in [`atvari-eu/skills`](https://github.com/atvari-eu/skills) are the path - see [docs/tools.md#skills](docs/tools.md#skills).
