@@ -77,9 +77,7 @@ Auto model routing and the older auto effort feature share one engine
 OpenCode-side I/O the outcome declares (catalog lookups, `session.switchModel`,
 pin storage). Rationale worth remembering when extending it:
 
-- **Pair mode**: when `effort.auto` and an entry route, the
-  prompt hook asks one `(model, level)` question over the candidates that
-  support variants, not two stacked judgments. Two separate calls would
+- **Pair mode**: `effort.mode` defaults to `"pair"`: effort routing is on for a routing entry and a hand-picked model is left alone. `"always"` extends it to a hand-picked model and `"off"` disables it everywhere; the old boolean `effort.auto` is a deprecated alias (`true` → `"always"`, `false` → `"off"`). When it is on and candidates exist, the `(model, level)` question is asked over those candidates, not two stacked judgments. Two separate calls would
   race each other's switches and double the latency; one call also lets
   the criteria state the cheaper-model-preference coherently.
 - **Record of entries, disjoint default pools**: `routes` is a record parsed
@@ -132,7 +130,7 @@ pin storage). Rationale worth remembering when extending it:
   later rename folded the whole group under `auto` when the engagement
   gate changed (see below), and a third rename moved it to `routes` while
   the `auto` key kept working as an alias; that last change keeps the record
-  distinct from the `effort.auto` boolean and the picker name.
+  distinct from the `effort.mode` setting and the picker name.
 - **Candidate sources** (`routes.<id>.favorites`, `routes.<id>.pool`): an
   entry may extend past the static `candidates` list with what the session
   itself knows - TUI favorites (`~/.local/state/opencode/model.json` under

@@ -505,6 +505,31 @@ export function parseRouteEntries(raw: unknown, legacy: RouteAliases = {}): Pars
   return { entries, warnings }
 }
 
+export type EffortMode = "pair" | "always" | "off"
+
+/** Parses `effort.mode`. `"pair"` (the default) pairs model and level on the
+ * plugin's routing entries and leaves a hand-picked model alone; `"always"`
+ * also routes the effort variant of a hand-picked model; `"off"` disables
+ * effort routing everywhere. Unknown values fall back to pair mode. */
+export function parseEffortMode(raw: unknown): EffortMode {
+  return raw === "always" || raw === "off" ? raw : "pair"
+}
+
+/** Maps the deprecated `effort.auto` boolean onto the mode: `true` meant
+ * routing the effort variant of the current model, which is `"always"`. */
+export function effortModeFromLegacy(raw: unknown): EffortMode | undefined {
+  if (raw === true) return "always"
+  if (raw === false) return "off"
+  return undefined
+}
+
+/** Decides whether a turn routes effort for the given mode. */
+export function effortRoutingEnabled(mode: EffortMode, atEntry: boolean): boolean {
+  if (mode === "off") return false
+  if (mode === "always") return true
+  return atEntry
+}
+
 // ---------------------------------------------------------------------------
 // Agent profiles (`agents`): the session's active OpenCode agent refines a
 // routing turn. The agent is the stance the user already chose, so it can

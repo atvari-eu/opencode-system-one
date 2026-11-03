@@ -118,6 +118,9 @@ import {
   doneVerdict,
   effectiveJevModel,
   emergencyRealModel,
+  effortModeFromLegacy,
+  effortRoutingEnabled,
+  type EffortMode,
   idleSessionID,
   idleCompactionDue,
   idleCompactionSkip,
@@ -129,6 +132,7 @@ import {
   mergeApprovalStats,
   parseAuthExport,
   parseAgentProfiles,
+  parseEffortMode,
   parseRouteEntries,
   parseCandidates,
   parseGates,
@@ -1595,7 +1599,24 @@ export default Plugin.define({
     const toolsEnabled = o.tools !== false
     const commandsEnabled = o.commands !== false
     const cacheEnabled = o.cache !== false
-    const effortAuto = o.effort?.auto === true
+    // `effort.mode` is `"pair"` (the default: entries pair model and level,
+    // hand-picked models are left alone), `"always"` (also route a
+    // hand-picked model's effort), or `"off"`. The deprecated boolean
+    // `effort.auto` still maps onto it (`true` → always, `false` → off);
+    // `mode` wins when both are present.
+    const effortModeRaw = (o as any).effort?.mode
+    const legacyEffortAuto = (o as any).effort?.auto
+    const effortMode: EffortMode =
+      effortModeRaw !== undefined
+        ? parseEffortMode(effortModeRaw)
+        : (effortModeFromLegacy(legacyEffortAuto) ?? "pair")
+    if (effortModeRaw !== undefined && parseEffortMode(effortModeRaw) !== effortModeRaw) {
+      console.log(`[jev] effort: "mode" must be "pair", "always", or "off" - using "pair"`)
+    }
+    if (legacyEffortAuto !== undefined) {
+      console.log(`[jev] effort: "auto" is deprecated - use "mode"`)
+    }
+    const effortAlways = effortMode === "always"
     const effortMinConfidence =
       typeof o.effort?.minConfidence === "number" && Number.isFinite(o.effort.minConfidence)
         ? o.effort.minConfidence
@@ -2024,7 +2045,7 @@ export default Plugin.define({
       rows.push({ name: "tools", state: toolsEnabled ? "on" : "off" })
       rows.push({ name: "commands", state: commandsEnabled ? "on" : "off" })
       rows.push({ name: "cache", state: cacheEnabled ? "on" : "off" })
-      rows.push({ name: "effort.auto", state: effortAuto ? "on" : "off" })
+      rows.push({ name: "effort.mode", state: effortMode })
       for (const entry of allRouteEntries) {
         if (!entry.enable) {
           rows.push({ name: entry.modelID, state: `off · "routes.${entry.key}" disabled` })
@@ -2239,10 +2260,11 @@ export default Plugin.define({
     // the auto and auto-review pseudo-models; any other configured key
     // registers its own. Routing engages ONLY while the session is parked on
     // one of those entries; on any real model the plugin leaves the turn
-    // untouched (plain effort.auto is the separate, still opt-in per-variant
-    // feature).
+    // untouched unless `effort.mode: "always"`. Entry turns pair the model
+    // with an effort level by default; `effort.mode: "off"` keeps them
+    // model-only.
 
-    if (effortAuto || routeEntries.length > 0) {
+    if (effortAlways || routeEntries.length > 0) {
       // Register the pseudo-model entries so they appear in the TUI picker.
       // They list no variants, their base URL points at a closed port so a
       // direct invocation fails fast (fail-visible: the plugin routes away
@@ -2520,11 +2542,15 @@ export default Plugin.define({
             : null
           // The auto model feature engages only where the user parked the
           // session on one of the plugin's entries. On any real model it must
-          // not touch the turn at all (unless plain effort.auto is opted in) -
-          // the manual pick IS the stand-down, no pin bookkeeping needed.
+          // not touch the turn at all unless `effort.mode: "always"` - the
+          // manual pick IS the stand-down, no pin bookkeeping needed.
           const entry = pseudoEntryFor(routeEntries, model)
           const atAutoEntry = !!entry
-          if (!atAutoEntry && !effortAuto) return
+          if (!atAutoEntry && !effortAlways) return
+          // Entries pair model and effort by default; `"always"` also routes
+          // a hand-picked model's effort, and `"off"` keeps entries
+          // model-only.
+          const effortEnabled = effortRoutingEnabled(effortMode, atAutoEntry)
 
           const currentRef = {
             providerID: model.providerID,
@@ -2707,7 +2733,7 @@ export default Plugin.define({
 
           const outcome: any = await routeTurn(
             {
-              effort: effortAuto,
+              effort: effortEnabled,
               model: atAutoEntry && usableCandidates.length > 0,
               candidates: usableCandidates,
               effortMinConfidence,
@@ -4151,7 +4177,7 @@ export default Plugin.define({
     // touched: a manual pick sleeps through resets until the user returns to
     // their resting point. Best effort: without a usable idle subscription
     // the session stays on the last pick until the next prompt re-routes it.
-    if (routeEntries.length > 0 || effortAuto) {
+    if (routeEntries.length > 0 || effortAlways) {
       const restingInflight = new Set<string>()
       const resetResting = async (sessionID: string): Promise<void> => {
         if (restingInflight.has(sessionID)) return
@@ -4811,7 +4837,7 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} routes=${
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortMode} routes=${
         routeEntries.length > 0
           ? routeEntries
               .map((entry) =>

@@ -1,8 +1,8 @@
 # Auto model routing
 
-Jev can pick how each turn runs: the reasoning effort and, optionally, the model. Model routing engages only while the session sits on one of the plugin's picker entries: `Auto` or `Auto Review` (both registered by default), so a manual model pick always wins. `effort.auto` (off by default) is independent of that gate: it routes the effort variant of whatever model is current, including a hand-picked one.
+Jev can pick how each turn runs: the reasoning effort and, optionally, the model. Model routing engages only while the session sits on one of the plugin's picker entries: `Auto` or `Auto Review` (both registered by default), so a manual model pick always wins. On those entries effort routing is on by default (`effort.mode: "pair"`): the turn is routed to a `(model, level)` pair. For a hand-picked model it is opt-in via `effort.mode: "always"`, which then routes only that model's effort variant.
 
-- `effort.auto` routes the reasoning variant of the current model (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - the levels the UI's effort picker offers).
+- Reasoning levels are the model's effort variants (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - the levels the UI's effort picker offers). Entry turns route them by default (`"pair"`); `effort.mode: "always"` extends that to a hand-picked model, and `"off"` keeps entry turns model-only.
 - `routes` is a record of routing meta models. `routes.default` ("Auto") and `routes.review` ("Auto Review") are built in and on by default; any other key registers an extra entry (`routes.triage`), which appears in the picker as `opencode-decisions/triage`. Each entry routes the model itself from its `candidates`: `provider/model` strings or `{ providerID, id }` objects. Typically a cheap fast model alongside the expensive one.
 - An entry with `kind: "review"` (the built-in `routes.review`) routes from its own pool with review-oriented criteria, and can never offer a model that the `routes.default` pool holds.
 - `agents` is a record of **agent profiles**. `agents.build`, `agents.plan`, and `agents.explore` are built in; any other key registers a profile for that agent or subagent id. The session's active agent refines the routing question for its turn: a profile can replace the stance text, raise the Console pool's context floor, and keep the offered effort levels inside a band ([Agent profiles](#agent-profiles)). Routing still happens only through an entry; an agent with no profile changes nothing.
@@ -45,7 +45,7 @@ Its pool is **always disjoint from the `default` entry's pool**, whatever the co
 
 ## Agent profiles
 
-Routing also reads the session's **active agent** (`Session.Info.agent`): `build`, `plan`, `explore`, or any custom subagent id. The agent is the stance the user already chose, so a profile can refine the question without changing which entry or pool the turn routes through. A child session that inherits the `Auto` entry is routed with its own agent id (`explore`, or a custom subagent), so the same mechanism covers subagents; a child session on a model of its own is left alone unless `effort.auto` is on, and an agent with no profile (for example `general`) keeps the entry's criteria.
+Routing also reads the session's **active agent** (`Session.Info.agent`): `build`, `plan`, `explore`, or any custom subagent id. The agent is the stance the user already chose, so a profile can refine the question without changing which entry or pool the turn routes through. A child session that inherits the `Auto` entry is routed with its own agent id (`explore`, or a custom subagent), so the same mechanism covers subagents; a child session on a model of its own is left alone unless `effort.mode` is `"always"`, and an agent with no profile (for example `general`) keeps the entry's criteria.
 
 Built-in profiles (`agents` is a record of profiles keyed by agent id; three are built in):
 
@@ -59,7 +59,7 @@ Each field is optional:
 
 - `criteria` replaces the entry kind's instruction text for this turn. It is the full stance, not a sentence appended to the kind's text. A `@name` value references a named stance (`@review`, `@plan`, `@explore`) instead of pasting its text; `@default` or `@build` restores the entry kind's baseline text.
 - `minContext` is an additional context floor applied to the Console pool cut. It only raises the entry's own floor (a lower value never weakens the entry's cut), and it has no effect on explicit `candidates`, which are pinned as written.
-- `effort` bands the offered `(model, level)` options. `{ "min": "medium" }` keeps medium and above, `{ "max": "low" }` keeps low and below, and `{ "min": "medium", "max": "high" }` keeps both ends. A single level string (`"effort": "high"`) is shorthand for a floor. Options outside the band are not offered, so the judge cannot pick them. When a model lists no level inside the band, its nearest level survives rather than the model dropping out. The band also applies when only `effort.auto` is on (no model routing).
+- `effort` bands the offered `(model, level)` options. `{ "min": "medium" }` keeps medium and above, `{ "max": "low" }` keeps low and below, and `{ "min": "medium", "max": "high" }` keeps both ends. A single level string (`"effort": "high"`) is shorthand for a floor. Options outside the band are not offered, so the judge cannot pick them. When a model lists no level inside the band, its nearest level survives rather than the model dropping out. The band also applies when effort routing runs without model routing (no usable candidates).
 
 Agents are matched by exact id from the live session; stances are never inferred from names. An absent or unmapped agent leaves routing exactly as configured. Add any other agent or subagent the same way, for example a custom review agent:
 
@@ -138,7 +138,7 @@ The window and the picks inside it are built in this order:
 | `agents.<id>.criteria` | `@build` for `build`, `@plan` for `plan`, `@explore` for `explore`, `@default` for other ids | Full routing instruction text for the agent's turns; replaces the entry kind's criteria. Each built-in defaults to its own named stance, and any other id defaults to `@default`; both `@build` and `@default` are the baseline, so the entry's text applies. A `@name` value references a named stance (`@review`, `@plan`, `@explore`); `@default`/`@build` restores the baseline. |
 | `agents.<id>.minContext` | `0` (`200000` for `plan`) | Additional Console pool context floor; only raises the entry's floor. |
 | `agents.<id>.effort` | none (`{ "min": "medium" }` for `plan`, `{ "min": "low", "max": "medium" }` for `explore`) | Effort band for offered options: `{ min, max }` or a level string (a floor). `false` clears it. |
-| `effort.auto` | `false` | Routes the plain per-variant thinking level of the current model; pairs with auto inside the loop. |
+| `effort.mode` | `"pair"` | Effort routing. `"pair"` pairs the model with a level on entry turns and leaves a hand-picked model alone; `"always"` also routes the effort variant of a hand-picked model; `"off"` turns effort routing off everywhere. |
 | `effort.minConfidence` | `0.45` | Minimum confidence required to switch the reasoning variant. |
 
 The routing options live under `routes` because `model` is the judgment-model override (a string); one key must never carry a string and an object meaning.
@@ -148,6 +148,7 @@ The routing options live under `routes` because `model` is the judgment-model ov
 These still load, but each logs a one-line notice; use the documented shape instead.
 
 - `auto`: alias for `routes`. Ignored when `routes` is set.
+- `effort.auto` (boolean): alias for `effort.mode`; `true` maps to `"always"`, `false` to `"off"`. `mode` wins when both are set.
 - A flat legacy object (the old per-entry fields directly under `auto`, or directly under `routes`) is read as `routes.default`.
 - `pools` (top-level): removed. Pool shapes are inlined on `routes.<id>.pool`, so there is no shared registry to select from.
 - `routes.<id>.pool` as a string (`"big"`): named pools are gone. The string warns and fails closed; inline the cut as an object, or use `true` for the kind's built-in cut.

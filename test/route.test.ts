@@ -13,6 +13,9 @@ import {
   buildPairOptions,
   candidateKey,
   type Candidate,
+  effortModeFromLegacy,
+  effortRoutingEnabled,
+  parseEffortMode,
   emergencyRealModel,
   isAvailableModel,
   MAX_OPTIONS,
@@ -800,5 +803,43 @@ describe("emergencyRealModel", () => {
       emergencyRealModel([{ type: "model-switched", model: { providerID: "acme", modelID: "fast" } }], PSEUDO),
     ).toEqual({ providerID: "acme", modelID: "fast" })
     expect(emergencyRealModel([], PSEUDO, undefined)).toBeUndefined()
+  })
+})
+
+describe("parseEffortMode", () => {
+  test("defaults to pair mode", () => {
+    expect(parseEffortMode(undefined)).toBe("pair")
+    expect(parseEffortMode("pair")).toBe("pair")
+    expect(parseEffortMode("bogus")).toBe("pair")
+  })
+
+  test("accepts the string modes", () => {
+    expect(parseEffortMode("always")).toBe("always")
+    expect(parseEffortMode("off")).toBe("off")
+  })
+})
+
+describe("effortModeFromLegacy", () => {
+  test("maps the deprecated effort.auto boolean", () => {
+    expect(effortModeFromLegacy(true)).toBe("always")
+    expect(effortModeFromLegacy(false)).toBe("off")
+    expect(effortModeFromLegacy(undefined)).toBeUndefined()
+  })
+})
+
+describe("effortRoutingEnabled", () => {
+  test("pair routes effort on entry turns only", () => {
+    expect(effortRoutingEnabled("pair", true)).toBe(true)
+    expect(effortRoutingEnabled("pair", false)).toBe(false)
+  })
+
+  test("always routes effort everywhere", () => {
+    expect(effortRoutingEnabled("always", true)).toBe(true)
+    expect(effortRoutingEnabled("always", false)).toBe(true)
+  })
+
+  test("off opts every turn out", () => {
+    expect(effortRoutingEnabled("off", true)).toBe(false)
+    expect(effortRoutingEnabled("off", false)).toBe(false)
   })
 })
