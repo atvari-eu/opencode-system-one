@@ -1705,7 +1705,7 @@ export function inlineScreenFailure(tool: string): boolean {
 // timeline-rendered. Accepted ambiguity: a MANUAL pick chosen while the
 // session rested at the auto entry has the same {picked, previous: auto}
 // shape as the plugin's grab and will also show the marker.
-export const AUTO_PROVIDER = "opencode-system-one"
+export const AUTO_PROVIDER = "opencode-decisions"
 
 export function footerAutoMarker(
   current: { providerID: string; modelID: string; variant?: string } | undefined,

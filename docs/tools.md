@@ -1,4 +1,6 @@
-# Jev tools, commands & the audit panel
+# System One tools, commands & the audit panel
+
+The `jev_` tool prefix and `/jev-` command prefix are historical: they are the same names whatever System One model judges, so the guidance below applies whether you run `jev-1.13` or another model in the family.
 
 ## The judgment tools
 

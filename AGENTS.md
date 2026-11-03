@@ -95,7 +95,7 @@ them here.
   escalation path.
 - Option keys: `model` is the judgment-model override (a string); per-turn
   model routing lives under `auto` (`auto.enable` default true, engages
-  only while the session sits on the `opencode-system-one/auto` entry) —
+  only while the session sits on the `opencode-decisions/auto` entry) —
   one key must never carry both a string and an object meaning.
 
 ## Conventions

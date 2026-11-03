@@ -1,8 +1,8 @@
-# OpenCode plugin for the System One decision layer
+# OpenCode plugin for System One decision models
 
-An [OpenCode](https://opencode.ai) plugin that wires System One (Jev) judgments into OpenCode automatically - no companion skill, no prompt plumbing.
+An [OpenCode](https://opencode.ai) plugin that wires System One judgments into OpenCode automatically - no companion skill, no prompt plumbing.
 
-Jev is a decision model: it answers typed questions about content with calibrated probabilities instead of generating text. The plugin points it at the judgment-shaped moments of an agent session:
+A **decision model** answers typed questions about content with calibrated probabilities instead of generating text. **System One** is the decision-model family, and **Jev** (`jev-1.13`, `jev-1.13-free`) is its default model - the plugin works with any System One model you point it at, pinned per deployment (`model` option, `JEV_MODEL`) or per session (`/jev-models`). It puts those judgments at the judgment-shaped moments of an agent session:
 
 | Feature | What it does | Default |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Add the plugin to `plugins` in `opencode.json(c)` - global (`~/.config/opencode/
 ### From GitHub (recommended)
 
 ```console
-$ opencode plugin add github:atvari-eu/opencode-system-one
+$ opencode plugin add github:atvari-eu/opencode-decisions
 ```
 
 Installs it globally under CLI management (`opencode plugin list` to inspect, `opencode plugin update` to pull new commits). Pin a fixed revision by appending a full commit hash (`#<hash>`). Restart a running OpenCode afterwards (`opencode service restart`) so the shared service picks it up.
@@ -45,7 +45,7 @@ Installs it globally under CLI management (`opencode plugin list` to inspect, `o
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
-    { "package": "/absolute/path/to/opencode-system-one" }
+    { "package": "/absolute/path/to/opencode-decisions" }
   ],
 }
 ```
@@ -58,15 +58,15 @@ Pin the repository and copy the entrypoint to a stable path:
 
 ```nix
 # in your home-manager configuration (e.g. home.nix)
-opencode-system-one = pkgs.fetchFromGitHub {
+opencode-decisions = pkgs.fetchFromGitHub {
   owner = "atvari-eu";
-  repo = "opencode-system-one";
+  repo = "opencode-decisions";
   rev = "<pin>";
   hash = "<pin-hash>";
 };
 
 home.file.".config/opencode/jev-plugin/index.ts".source =
-  "${opencode-system-one}/src/index.ts";
+  "${opencode-decisions}/src/index.ts";
 ```
 
 ```jsonc
@@ -87,7 +87,7 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 {
   "plugins": [
     {
-      "package": "github:atvari-eu/opencode-system-one",
+      "package": "github:atvari-eu/opencode-decisions",
       "options": {
         "model": "jev-1.13",           // judgment model (default: jev-1.13-free, or JEV_MODEL)
         "auto": {                      // model routing

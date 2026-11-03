@@ -1,6 +1,6 @@
 # Provider & credentials
 
-The `provider` option selects the System One deployment jev judges against; it is resolved once at plugin start.
+The `provider` option selects the System One deployment judgments run against; it is resolved once at plugin start. Any model in the System One family works - `jev-1.13` and `jev-1.13-free` are the defaults the Console deployments offer.
 
 - **`"opencode"`** (default) - the Console pay-as-you-go deployment: `jev-1.13` (bills Console credits) and `jev-1.13-free` (zero-cost, OpenCode clients only). The endpoint comes from the models.dev decision catalog, with a baked fallback for boots where the catalog is unreachable.
 - **`"opencode-go"`** - the OpenCode Go subscription deployment; credentials via `OPENCODE_GO_API_KEY` and the legacy store's `"opencode-go"` entry.
@@ -22,7 +22,7 @@ Example: point jev at an inference provider you already registered for chat, so 
   },
   "plugins": [
     {
-      "package": "github:atvari-eu/opencode-system-one",
+      "package": "github:atvari-eu/opencode-decisions",
       "options": { "provider": "acme", "model": "acme-ai/decider-v1.2" }
     }
   ]

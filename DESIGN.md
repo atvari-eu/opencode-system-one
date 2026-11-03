@@ -131,7 +131,7 @@ pin storage). Rationale worth remembering when extending it:
   `price.perMillion.input`, bare number) that feeds a per-Mtok hint into
   option criteria; missing data simply yields no hint.
 - **The auto entry** (`auto.enable`): OpenCode has no "auto" model
-  concept, so the plugin registers `opencode-system-one/auto` itself via
+  concept, so the plugin registers `opencode-decisions/auto` itself via
   `ctx.provider.transform` (Provider.Info.empty + Model.Info.default, a
   closed-port base URL so a direct invocation fails fast instead of
   hanging - fail-visible, never fail-silent). The entry is only ever a

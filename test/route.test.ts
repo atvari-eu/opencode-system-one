@@ -701,7 +701,7 @@ describe("isAvailableModel", () => {
 // ---------------------------------------------------------------------------
 
 describe("emergencyRealModel", () => {
-  const PSEUDO = "opencode-system-one"
+  const PSEUDO = "opencode-decisions"
 
   test("prefers the pin's parked-from ref (id spelling drops default variant)", () => {
     const rows = [{ type: "model-switched", model: { providerID: "zeta", id: "flagship" } }]

@@ -78,7 +78,7 @@ The same file shows both halves:
 
   "plugins": [
     {
-      "package": "github:atvari-eu/opencode-system-one",
+      "package": "github:atvari-eu/opencode-decisions",
       "options": {
         "provider": "opencode",
         "model": "jev-1.13",

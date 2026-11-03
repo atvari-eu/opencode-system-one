@@ -11,7 +11,7 @@ Jev can pick how each turn runs: the reasoning effort and, optionally, the model
 
 ## The `Auto` entry
 
-`opencode-system-one/auto` is a pseudo-model registered in the picker. Selecting it is the only way routing engages; each prompt is routed to a real `(model, effort)` pair and the session returns to `auto` at idle (only plugin-made switches are reset - a manual pick stays put).
+`opencode-decisions/auto` is a pseudo-model registered in the picker. Selecting it is the only way routing engages; each prompt is routed to a real `(model, effort)` pair and the session returns to `auto` at idle (only plugin-made switches are reset - a manual pick stays put).
 
 - `auto.name` sets the display name; `auto.aliases` adds search aliases (shown in the name, e.g. `Auto (Jev)`), because the picker search only matches model and provider names.
 - `auto.fallback` names the real model used when an auto-entry turn cannot be routed. Without it, the session's last-used model is the fallback; a fresh session falls back to its first named candidate.
@@ -31,7 +31,7 @@ Sources are off unless enabled, additive to `candidates`, and fail open when the
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `auto.enable` | `true` | Register the `opencode-system-one/auto` entry and enable per-turn routing. Auto engages only while the session sits on the entry; `false` drops the entry and all routing. |
+| `auto.enable` | `true` | Register the `opencode-decisions/auto` entry and enable per-turn routing. Auto engages only while the session sits on the entry; `false` drops the entry and all routing. |
 | `auto.candidates` | `[]` | Models jev may route to (`provider/model` strings or `{ providerID, id }`). |
 | `auto.sources.favorites` | `false` | Merge your TUI-favorite models into the routing pool. |
 | `auto.sources.opencode` | `off` | Merge OpenCode's most-used models (30 d local usage): `true` or `{ "plan": "zen" \| "go", "popular": true \| count }`; plan defaults to `zen`, count to 10 (1-40). |

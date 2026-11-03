@@ -20,7 +20,7 @@ process.env.OPENCODE_BIN = "/bin/false"
 // (bun caches homedir(), so the XDG path pin is the effective one)
 process.env.XDG_DATA_HOME = `/tmp/jev-nostore-${process.pid}`
 
-const AUTO = { providerID: "opencode-system-one", id: "auto" }
+const AUTO = { providerID: "opencode-decisions", id: "auto" }
 
 function makeHost(opts: { catalogAfterMs: number; catalog: any[]; candidates?: string[]; rejectSwitchTo?: string }) {
   const startedAt = Date.now()
