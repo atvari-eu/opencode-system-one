@@ -503,14 +503,14 @@ describe("modelFactsBlock", () => {
     ).toBe("")
   })
 
-  test("the row and character caps bound the block", () => {
+  test("every offered model keeps its row; long rows are trimmed", () => {
     const table = new Map(Array.from({ length: 20 }, (_, i) => [`acme/m${i}`, facts(`m${i}`)]))
     const models = modelsFor(Array.from({ length: 20 }, (_, i) => `acme/m${i}`))
     const rows = (block: string) => block.split("\n").filter((line) => line.startsWith("- ")).length
     expect(rows(modelFactsBlock(models, (p, m) => table.get(`${p}/${m}`)))).toBe(MODEL_FACTS_MAX_ROWS)
-    const tiny = rows(modelFactsBlock(models, (p, m) => table.get(`${p}/${m}`), 80))
-    expect(tiny).toBeGreaterThan(0)
-    expect(tiny).toBeLessThan(MODEL_FACTS_MAX_ROWS)
+    const tight = modelFactsBlock(models, (p, m) => table.get(`${p}/${m}`), 12)
+    expect(rows(tight)).toBe(MODEL_FACTS_MAX_ROWS)
+    expect(tight).toContain("- acme/m0...")
   })
 })
 

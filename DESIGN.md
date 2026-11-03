@@ -243,8 +243,10 @@ pin storage). Rationale worth remembering when extending it:
   session catalog plus the `LEADERBOARD_*` / `BENCHMARK_SCORES` snapshots.
   No new fetch and no object state: the string shape stays. The adapter
   whitelists fields, so host `headers`/`body`/`settings` overlays can never
-  leave the process. Caps are 8 rows / 1200 chars, rows dropped before
-  fields. Missing metadata omits the field and never fails the turn; a
+  leave the process. Every offered model gets a row (up to `MAX_OPTIONS`, one
+  per option model) and an over-long row is trimmed at a field boundary
+  instead of dropped, so the judge never compares a model without its facts.
+  Missing metadata omits the field and never fails the turn; a
   benchmark score is emitted only when `strengthDetails` reports usable
   groups, so the output-price fallback is never presented as measured
   strength. Screening, generic judging, and the tools deliberately carry no

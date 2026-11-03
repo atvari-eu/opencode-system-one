@@ -1227,11 +1227,11 @@ export function strongestModels(
     .slice(0, Math.max(0, n))
 }
 
-/** Caps for the `<candidate-models>` block: eight rows, ~300 tokens worst
- * case. Rows are dropped before fields, in option order, so the set the judge
- * weighs stays complete even when the tail loses detail. */
-export const MODEL_FACTS_MAX_ROWS = 8
-export const MODEL_FACTS_MAX_CHARS = 1200
+/** Caps for the `<candidate-models>` block: one row per model the question can
+ * offer (`MAX_OPTIONS`), so no option is judged without its facts. An
+ * over-long row is trimmed at a field boundary; rows are never dropped. */
+export const MODEL_FACTS_MAX_ROWS = 12
+export const MODEL_FACTS_MAX_ROW_CHARS = 240
 
 const fmtFactTokens = (value: number): string => {
   if (value >= 1_000_000) {
@@ -1272,19 +1272,33 @@ const modelFactsRow = (facts: ModelFacts, strength: { score: number; groups: num
   return `- ${facts.providerID}/${facts.modelID}: ${parts.join("; ")}`
 }
 
+/** Trims a facts row to `max` characters at a `; ` field boundary, so a long
+ * catalog entry loses trailing detail instead of a sibling model losing its
+ * row. A single oversized field is hard-sliced. */
+function trimFactsRow(row: string, max: number): string {
+  if (row.length <= max) return row
+  const head = row.slice(0, max)
+  const boundary = head.lastIndexOf("; ")
+  if (boundary > 0) return `${head.slice(0, boundary)} ...`
+  return `${head.slice(0, Math.max(0, max - 3))}...`
+}
+
 /** A tagged block of catalog facts for the models a routing question offers,
  * or "" when no model has any. Keyed by `providerID/modelID`, which is the
  * prefix of every option key (`model` or `model#level`), so pair mode does not
  * repeat facts per effort level.
  *
- * Strength is computed over the offered set only and emitted solely when the
- * model reports usable benchmark groups: `strengthDetails` returning a price
- * percentile is not benchmark strength, and presenting it as such would
- * mislead the judge. A throwing `factsOf` drops that row (fail-open). */
+ * Every offered model gets a row: the block exists so the judge can compare
+ * the options, and a silently missing row biases the pick toward whichever
+ * models came first. Strength is computed over the offered set only and
+ * emitted solely when the model reports usable benchmark groups:
+ * `strengthDetails` returning a price percentile is not benchmark strength,
+ * and presenting it as such would mislead the judge. A throwing `factsOf`
+ * drops that row (fail-open). */
 export function modelFactsBlock(
   models: ReadonlyArray<{ providerID: string; modelID: string }>,
   factsOf: (providerID: string, modelID: string) => ModelFacts | undefined,
-  maxChars: number = MODEL_FACTS_MAX_CHARS,
+  maxRowChars: number = MODEL_FACTS_MAX_ROW_CHARS,
 ): string {
   const rows: ModelFacts[] = []
   const seen = new Set<string>()
@@ -1311,15 +1325,11 @@ export function modelFactsBlock(
     })),
   )
   const lines: string[] = []
-  let chars = 0
   for (const facts of rows) {
     const key = candidateKey(facts)
     const groups = strength.groups.get(key)
     const detail = groups !== undefined ? { score: strength.scores.get(key) ?? 0.5, groups } : undefined
-    const row = modelFactsRow(facts, detail)
-    if (lines.length > 0 && chars + row.length + 1 > maxChars) break
-    lines.push(row)
-    chars += row.length + 1
+    lines.push(trimFactsRow(modelFactsRow(facts, detail), maxRowChars))
   }
   return `<candidate-models>\nRelative strength is over the models listed here; a missing field means unknown.\n${lines.join("\n")}\n</candidate-models>`
 }
@@ -1563,7 +1573,8 @@ export function routeDecision(
 
 // Kept at 12 so every option stays inside one distribution window; each
 // option is a full (model, level) rubric, so beyond that the probabilities
-// thin out and the confidence signal degrades.
+// thin out and the confidence signal degrades. The candidate-facts block caps
+// its rows at the same number (`MODEL_FACTS_MAX_ROWS`).
 export const MAX_OPTIONS = 12
 
 export interface ModelOption {
