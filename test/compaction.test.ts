@@ -11,7 +11,7 @@ import {
   messageChars,
   DEFAULTS,
 } from "../src/compaction"
-import { IDLE_SKIP_GROWTH_MIN, idleCompactionDue, parseIdleAuto } from "../src/logic"
+import { IDLE_SKIP_GROWTH_MIN, idleCompactionDue, idleCompactionSkip, isIdleCompactionSkip, parseIdleAuto } from "../src/logic"
 
 const message = (role: "user" | "assistant" | "system", text: string): any => ({
   role,
@@ -247,6 +247,15 @@ describe("parseIdleAuto", () => {
     expect(parseIdleAuto({ share: 2 })).toEqual({ tokens: 0, share: 0.95 })
     expect(parseIdleAuto({ tokens: -5 })).toEqual({ tokens: 0, share: 0 })
     expect(parseIdleAuto({})).toEqual({ tokens: 0, share: 0 })
+  })
+})
+
+describe("idle compaction skip marker", () => {
+  test("a skip is recognized, and ordinary errors are not", () => {
+    expect(isIdleCompactionSkip(idleCompactionSkip("nothing stale"))).toBe(true)
+    expect(isIdleCompactionSkip(new Error("nothing stale"))).toBe(false)
+    expect(isIdleCompactionSkip(undefined)).toBe(false)
+    expect(isIdleCompactionSkip("nothing stale")).toBe(false)
   })
 })
 

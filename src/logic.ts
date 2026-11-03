@@ -62,6 +62,22 @@ export function idleCompactionDue(
   return estimated >= skippedAt + growth
 }
 
+/** Marker property on an idle-compaction skip. The hook has to throw to keep
+ * the built-in summarizer from running on an idle trigger, but a skip is not a
+ * failure: neither the hook nor the watcher may surface it, and the watcher
+ * must retry on growth rather than on the failure backoff. */
+const IDLE_SKIP_MARK = "jevIdleCompactionSkip"
+
+export function idleCompactionSkip(message: string): Error {
+  const err = new Error(message)
+  ;(err as any)[IDLE_SKIP_MARK] = true
+  return err
+}
+
+export function isIdleCompactionSkip(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as any)[IDLE_SKIP_MARK] === true
+}
+
 // ---------------------------------------------------------------------------
 // Event toast filtering (toasts)
 // ---------------------------------------------------------------------------

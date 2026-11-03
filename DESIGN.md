@@ -1010,7 +1010,12 @@ skip, at least 4000 tokens). The marker also moved to *before* the
 `session.compact` request: the hook runs inside that call, so the old
 write-after ordering made idle-origin passes look native - a skip fell
 through to the built-in summarizer instead of aborting, and the yield-window
-bookkeeping misfired. The hysteresis itself holds because v2's
+bookkeeping misfired. Skips also stopped surfacing as failures (2026-11): a
+guard shortfall or a duplicate idle request throws an `idleCompactionSkip`
+marked error. The hook has to throw so the built-in summarizer does not run on
+an idle trigger, but the hook and watcher only log the skip - no toast, no
+transcript row, no 120 s failure backoff - and the growth gate handles the
+retry. The hysteresis itself holds because v2's
 `session.context` returns the active messages after the last compaction, not
 the stored history; the idle estimate therefore resets on a successful pass
 while earlier messages stay on disk.

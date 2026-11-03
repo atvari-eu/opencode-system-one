@@ -120,8 +120,10 @@ import {
   emergencyRealModel,
   idleSessionID,
   idleCompactionDue,
+  idleCompactionSkip,
   isAvailableModel,
   isBuiltinAllowRule,
+  isIdleCompactionSkip,
   isShellAction,
   matchesPatterns,
   mergeApprovalStats,
@@ -4551,7 +4553,7 @@ export default Plugin.define({
               // A duplicate idle request queued just after a completed pass:
               // nothing to do - failing keeps idle-triggered compactions
               // jev-only (no built-in summarizer run).
-              throw new Error(
+              throw idleCompactionSkip(
                 "jev idle compaction skipped: a jev pass ran moments ago",
               )
             } else {
@@ -4596,7 +4598,7 @@ export default Plugin.define({
               IDLE_SKIPPED.set(sid, idlePosted.estimate)
               if (IDLE_SKIPPED.size > 1000) IDLE_SKIPPED.clear()
             }
-            throw new Error(
+            throw idleCompactionSkip(
               plan.keepMessages
                 ? "jev idle compaction skipped: summary guards failed - retried once the transcript grows"
                 : "jev idle compaction skipped: nothing stale enough to act on - retried once the transcript grows",
@@ -4628,17 +4630,23 @@ export default Plugin.define({
             console.log("[jev] compaction: nothing stale enough to act on - built-in compaction continues")
           }
         } catch (err: any) {
-          await surfaceJev(err?.message, event?.sessionID)
+          const skip = isIdleCompactionSkip(err)
+          // A skip is a normal outcome (nothing stale enough, guard shortfall,
+          // duplicate idle request), not a diagnostic: surfacing it toasts an
+          // error and can wake a turn, which ends in the next idle.
+          if (!skip) await surfaceJev(err?.message, event?.sessionID)
           if (idleOrigin) {
             // Idle-triggered request: no jev judgment means no compaction at
-            // all. Throwing fails the compaction (marked as failed in the
-            // transcript); a later idle retries - growth-gated when the earlier
-            // pass reported a skip, straight away when it was a real failure
-            // (IDLE_FAIL_UNTIL in the watcher covers repeats) - and OpenCode's
-            // native near-full auto trigger remains the no-jev-needed backstop.
-            throw new Error(
-              `jev idle compaction failed: ${String(err?.message ?? err)}`,
+            // all. Throwing aborts the compaction so the built-in summarizer
+            // does not run; a real failure backs off in the watcher, while a
+            // skip parks its estimate for the growth gate.
+            const message = String(err?.message ?? err)
+            if (skip) console.log(`[jev] compaction: ${message}`)
+            const wrapped = new Error(
+              skip ? message : `jev idle compaction failed: ${message}`,
             )
+            if (skip) (wrapped as any).jevIdleCompactionSkip = true
+            throw wrapped
           }
           if (manualOrigin) {
             // /jev-compact is the explicit "no built-in summarizer" ask: a
@@ -4758,6 +4766,16 @@ export default Plugin.define({
               }
               IDLE_FAIL_UNTIL.delete(sessionID)
             } catch (err: any) {
+              // The host may re-wrap the hook's error, dropping the marker, so
+              // the message prefix is a second signal.
+              const skipped =
+                isIdleCompactionSkip(err) || /idle compaction skipped:/i.test(String(err?.message ?? ""))
+              if (skipped) {
+                // Benign skip: the hook already parked the estimate for the
+                // growth gate. No backoff, no surfaced diagnostic.
+                console.log(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
+                return
+              }
               IDLE_FAIL_UNTIL.set(sessionID, Date.now() + IDLE_FAIL_BACKOFF_MS)
               await surfaceJev(err?.message, sessionID)
               console.error(`[jev] idle-compaction: skipped (${String(err?.message ?? err)})`)
