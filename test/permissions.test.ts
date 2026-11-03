@@ -3,7 +3,16 @@
 // last match wins; unmatched requests fall through to jev.
 
 import { describe, expect, test } from "bun:test"
-import { lookupPermission, globMatches, parsePermissions } from "../src/logic"
+import {
+  lookupPermission,
+  globMatches,
+  parsePermissions,
+  parseNestedSessionPolicy,
+  isBuiltinAllowRule,
+  nestedSessionDecision,
+  approvalRules,
+  DEFAULT_ALLOW_RULES,
+} from "../src/logic"
 
 const shellGit = [
   {
@@ -118,6 +127,49 @@ describe("parsePermissions", () => {
   test("non-arrays yield no rules", () => {
     expect(parsePermissions(undefined)).toEqual([])
     expect(parsePermissions("git push *")).toEqual([])
+  })
+})
+
+describe("parseNestedSessionPolicy", () => {
+  test("valid values pass through", () => {
+    expect(parseNestedSessionPolicy("ask")).toBe("ask")
+    expect(parseNestedSessionPolicy("deny")).toBe("deny")
+    expect(parseNestedSessionPolicy("allow")).toBe("allow")
+  })
+
+  test("unknown and malformed values fall back to ask", () => {
+    expect(parseNestedSessionPolicy(undefined)).toBe("ask")
+    expect(parseNestedSessionPolicy("nope")).toBe("ask")
+    expect(parseNestedSessionPolicy(42)).toBe("ask")
+    expect(parseNestedSessionPolicy(null)).toBe("ask")
+  })
+})
+
+describe("isBuiltinAllowRule", () => {
+  test("identifies the default prefix by identity, not shape", () => {
+    const rules = approvalRules([{ action: "subagent", resource: "*", effect: "allow" }])
+    for (let i = 0; i < DEFAULT_ALLOW_RULES.length; i++) {
+      expect(isBuiltinAllowRule(rules[i]!)).toBe(true)
+    }
+    // The operator entry has the same shape as the built-in subagent allow,
+    // but is a different object - so it wins and is not treated as a default.
+    const operator = rules[rules.length - 1]!
+    expect(operator).toEqual(DEFAULT_ALLOW_RULES.find((rule) => rule.action === "subagent")!)
+    expect(isBuiltinAllowRule(operator)).toBe(false)
+  })
+})
+
+describe("nestedSessionDecision", () => {
+  test("only child sessions and escalation actions are affected", () => {
+    expect(nestedSessionDecision("ask", false, "subagent")).toBeNull()
+    expect(nestedSessionDecision("deny", true, "webfetch")).toBeNull()
+    expect(nestedSessionDecision("allow", true, "shell")).toBeNull()
+  })
+
+  test("a child gets the configured policy", () => {
+    expect(nestedSessionDecision("ask", true, "subagent")).toBe("ask")
+    expect(nestedSessionDecision("deny", true, "question")).toBe("deny")
+    expect(nestedSessionDecision("allow", true, "subagent")).toBe("allow")
   })
 })
 

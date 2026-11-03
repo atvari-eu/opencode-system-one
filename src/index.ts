@@ -104,6 +104,9 @@ import {
   normalizeWorkspacePath,
   parseApprovalsPolicy,
   parseMinConfidence,
+  parseNestedSessionPolicy,
+  nestedSessionDecision,
+  NESTED_SESSION_ACTIONS,
   taskFromMessages,
   doneCheckStandDown,
   doneNudgeCapReached,
@@ -117,6 +120,7 @@ import {
   idleSessionID,
   idleCompactionDue,
   isAvailableModel,
+  isBuiltinAllowRule,
   isShellAction,
   matchesPatterns,
   mergeApprovalStats,
@@ -1325,6 +1329,12 @@ export default Plugin.define({
     // any entry in approvals.permissions can put a default-allowed action
     // back under judgment.
     const approvalsRules = approvalRules(approvalsObj.permissions)
+    // Child-session escalations (approvals.nestedSessions): the built-in
+    // allows for `subagent`/`question` assume a top-level request, but the
+    // host's catch-all downgrades the agents' own denies inside a child
+    // session. Default "ask" holds such a request at the prompt, "deny"
+    // refuses it, "allow" keeps the documented built-in allow everywhere.
+    const approvalsNestedSessions = parseNestedSessionPolicy(approvalsObj.nestedSessions)
     // Deterministic gate toggles (approvals.gates): defaults are
     // secrets=true (secret-path gate on) and readonlyBypass=true (read-only
     // shell commands skip the destructive-string check).
@@ -2295,8 +2305,10 @@ export default Plugin.define({
               ...(typeof event0.confidence === "number" ? { confidence: event0.confidence } : {}),
               ...(event0.readonly ? { readonly: true } : {}),
               // Rule resolutions carry their `reason/rule-*` tag here too, so
-              // the audit panel can label them like the read-only fast path.
-              ...(typeof event0.reason === "string" && event0.reason.startsWith("rule-")
+              // the audit panel can label them like the read-only fast path;
+              // `nested` labels the child-session policy the same way.
+              ...(typeof event0.reason === "string" &&
+              (event0.reason.startsWith("rule-") || event0.reason === "nested")
                 ? { reason: event0.reason }
                 : {}),
             })
@@ -2342,6 +2354,33 @@ export default Plugin.define({
 
         // Session+hint keys already posted once (bounded).
         const hinted = new Set<string>()
+
+        // Child-session depth cache for approvals.nestedSessions: `session.get`
+        // runs at most once per session per process (bounded). The lookup
+        // fails OPEN - a plugin-side read must never deny a tool call the host
+        // allowed - so a fault is treated as "primary" and logged once.
+        const childSessions = new Map<string, boolean>()
+        let childLookupFaultLogged = false
+        const childSession = async (sessionID?: string): Promise<boolean> => {
+          if (!sessionID) return false
+          const cached = childSessions.get(sessionID)
+          if (cached !== undefined) return cached
+          try {
+            const info: any = unwrapEnvelope(await (ctx as any).session.get({ sessionID }))
+            const isChild = Boolean(info?.parentID)
+            if (childSessions.size >= 500) childSessions.clear()
+            childSessions.set(sessionID, isChild)
+            return isChild
+          } catch (err: any) {
+            if (!childLookupFaultLogged) {
+              childLookupFaultLogged = true
+              console.log(
+                `[jev] approvals: nested-session lookup failed (${String(err?.message ?? err)}) - treating as primary`,
+              )
+            }
+            return false
+          }
+        }
 
         await permissionApi.hook("evaluate", async (event: any) => {
           // Bound outside the try so the catch block can still log stats:
@@ -2415,6 +2454,33 @@ export default Plugin.define({
                   text: `[jev-approval] hint: ${text}`,
                 })
               } catch {}
+            }
+
+            // A child session asking for a built-in-allowed `subagent` or
+            // `question` is an escalation the operator did not initiate at
+            // the top level: hold it at the prompt (default), refuse it, or
+            // keep the built-in allow. Operator rules still win - `matched`
+            // only identifies a default by object identity, and a parsed
+            // operator entry of the same shape is a different object.
+            if (matched && isBuiltinAllowRule(matched) && NESTED_SESSION_ACTIONS.has(action)) {
+              const isChild = await childSession(event?.sessionID)
+              const decision = nestedSessionDecision(approvalsNestedSessions, isChild, action)
+              if (decision === "deny") {
+                event.effect = "deny"
+                event.message = "[jev] approval: nested subagent/question denied (approvals.nestedSessions)"
+                console.log(`[jev] approval: nested ${action} denied (approvals.nestedSessions)`)
+                await recordApprovalStat(action, resources, { outcome: "deny", reason: "nested" }, event?.sessionID)
+                await postHint("deny")
+                return
+              }
+              if (decision === "ask") {
+                // Leave the host prompt as-is; never hand a nested escalation
+                // to jev.
+                console.log(`[jev] approval: nested ${action} held at the prompt (approvals.nestedSessions)`)
+                await recordApprovalStat(action, resources, { outcome: "ask", reason: "nested" }, event?.sessionID)
+                await postHint("ask")
+                return
+              }
             }
 
             // Matched requests resolve from their config rule before jev:

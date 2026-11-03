@@ -2718,6 +2718,40 @@ export function approvalRules(raw: unknown): PermissionRule[] {
   return [...DEFAULT_ALLOW_RULES, ...parsePermissions(raw)]
 }
 
+/** Child-session policy for the actions the plugin allows by default: a
+ * nested `subagent`/`question` request is an escalation the operator did not
+ * initiate at the top level. `"ask"` holds it at the host prompt (default),
+ * `"deny"` refuses it, `"allow"` keeps the built-in allow. */
+export type NestedSessionPolicy = "ask" | "deny" | "allow"
+
+export const NESTED_SESSION_POLICY_DEFAULT: NestedSessionPolicy = "ask"
+
+export function parseNestedSessionPolicy(raw: unknown): NestedSessionPolicy {
+  return raw === "ask" || raw === "deny" || raw === "allow" ? raw : NESTED_SESSION_POLICY_DEFAULT
+}
+
+/** Only these built-in allows turn into an escalation when a child session
+ * asks for them; `webfetch`, `websearch`, and `skill` keep their defaults. */
+export const NESTED_SESSION_ACTIONS: ReadonlySet<string> = new Set(["subagent", "question"])
+
+/** True for one of the built-in default rules - identity, not shape, so a
+ * parsed operator rule of the same shape is not mistaken for a default and
+ * still wins. `approvalRules()` spreads the same objects. */
+export function isBuiltinAllowRule(rule: PermissionRule): boolean {
+  return DEFAULT_ALLOW_RULES.includes(rule)
+}
+
+/** What a child request enacts: the policy when affected, `null` when the
+ * request is primary-session or outside `NESTED_SESSION_ACTIONS` (unchanged). */
+export function nestedSessionDecision(
+  policy: NestedSessionPolicy,
+  isChild: boolean,
+  action: string,
+): NestedSessionPolicy | null {
+  if (!isChild || !NESTED_SESSION_ACTIONS.has(action)) return null
+  return policy
+}
+
 // Per-entry context passed to the judge: like a permission rule minus the
 // effect - matching requests get the remark verbatim into the state. Unlike
 // the plugin-level ruleset applies, with optional context for system-one.
@@ -3063,7 +3097,8 @@ export interface ApprovalInput {
  * deterministic `approvals.permissions` rule that resolved before any
  * judgment. Recorded into the stats bands (`reason/...`) so tuning can see
  * which check - or which rule - not just which score band, produced the
- * outcome. */
+ * outcome. `"nested"` tags a child-session `subagent`/`question` request
+ * resolved by `approvals.nestedSessions` before any judgment. */
 export type ApprovalReason =
   | "refuse-bar-met"
   | "hold-refuse"
@@ -3078,6 +3113,7 @@ export type ApprovalReason =
   | "rule-allow"
   | "rule-ask"
   | "rule-deny"
+  | "nested"
 
 export interface ApprovalOutcome {
   /** What the caller applies: allow auto-runs, deny refuses, ask prompts. */

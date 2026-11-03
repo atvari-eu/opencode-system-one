@@ -59,7 +59,12 @@ function makeCtx(options: Record<string, any> = {}) {
     command: async () => ({}),
     compact: async () => ({}),
     context: async () => [],
-    get: async () => null,
+    get: async ({ sessionID }: any = {}) => {
+      if (sessionID === "ses_child") return { parentID: "ses_parent" }
+      if (sessionID === "ses_primary") return {}
+      if (sessionID === "ses_lookup_fault") throw new Error("session store unavailable")
+      return null
+    },
     create: async () => ({}),
   }
   const tool: any = {
@@ -373,6 +378,102 @@ describe("plugin runtime harness", () => {
     expect(rows.every((e) => typeof e.data.action === "string")).toBe(true)
     // compact UI payloads: no full command bodies ride the event
     expect(rows.every((e) => JSON.stringify(e.data).length < 500)).toBe(true)
+  })
+
+  test("nested subagent/question: default asks in a child session", async () => {
+    const before = events.length
+    const event: any = {
+      effect: "ask",
+      action: "subagent",
+      resources: ["explore"],
+      sessionID: "ses_child",
+    }
+    await hooks.get("permission:evaluate")!(event)
+    // the host prompt is untouched - no jev judgment, no allow
+    expect(event.effect).toBe("ask")
+    const row = events.slice(before).filter((e) => e.name === "approval").pop()
+    expect(row?.data.outcome).toBe("ask")
+    expect(row?.data.reason).toBe("nested")
+  })
+
+  test("nestedSessions deny refuses a child question and names the option", async () => {
+    const plugin = await loadSetup()
+    const built = makeCtx({
+      ...APPROVALS_OPTIONS,
+      approvals: { ...APPROVALS_OPTIONS.approvals, nestedSessions: "deny" },
+    })
+    await plugin.setup(built.ctx)
+    const event: any = {
+      effect: "ask",
+      action: "question",
+      resources: ["*"],
+      sessionID: "ses_child",
+    }
+    await built.hooks.get("permission:evaluate")!(event)
+    expect(event.effect).toBe("deny")
+    expect(event.message ?? "").toContain("nestedSessions")
+  })
+
+  test("nestedSessions allow preserves today's built-in allow for a child subagent", async () => {
+    const plugin = await loadSetup()
+    const built = makeCtx({
+      ...APPROVALS_OPTIONS,
+      approvals: { ...APPROVALS_OPTIONS.approvals, nestedSessions: "allow" },
+    })
+    await plugin.setup(built.ctx)
+    const event: any = {
+      effect: "ask",
+      action: "subagent",
+      resources: ["explore"],
+      sessionID: "ses_child",
+    }
+    await built.hooks.get("permission:evaluate")!(event)
+    expect(event.effect).toBe("allow")
+  })
+
+  test("an explicit operator allow rule wins over the ask default", async () => {
+    const plugin = await loadSetup()
+    const built = makeCtx({
+      ...APPROVALS_OPTIONS,
+      approvals: {
+        ...APPROVALS_OPTIONS.approvals,
+        permissions: [
+          ...APPROVALS_OPTIONS.approvals.permissions,
+          { action: "subagent", resource: "*", effect: "allow" },
+        ],
+      },
+    })
+    await plugin.setup(built.ctx)
+    const event: any = {
+      effect: "ask",
+      action: "subagent",
+      resources: ["explore"],
+      sessionID: "ses_child",
+    }
+    await built.hooks.get("permission:evaluate")!(event)
+    expect(event.effect).toBe("allow")
+  })
+
+  test("primary-session subagent keeps the built-in allow", async () => {
+    const event: any = {
+      effect: "ask",
+      action: "subagent",
+      resources: ["explore"],
+      sessionID: "ses_primary",
+    }
+    await hooks.get("permission:evaluate")!(event)
+    expect(event.effect).toBe("allow")
+  })
+
+  test("a session lookup fault fails open and never throws", async () => {
+    const event: any = {
+      effect: "ask",
+      action: "subagent",
+      resources: ["explore"],
+      sessionID: "ses_lookup_fault",
+    }
+    await hooks.get("permission:evaluate")!(event)
+    expect(event.effect).toBe("allow")
   })
 
   test("session prompt hooks tolerate malformed events", async () => {

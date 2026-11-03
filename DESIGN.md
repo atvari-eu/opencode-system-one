@@ -609,6 +609,22 @@ operator entry (last match wins) puts any of them back under judgment; a bare
 over, not introduced: the host sends `grep`'s resource as the regex and
 `glob`'s as the pattern, so the secret-path gate cannot see a grep search root.
 
+Nested escalations (2026-11). In a child session the host's catch-all
+downgrades the built-in agents' own `deny` rules, so `subagent`/`question`
+rode the plugin's built-in allow with no prompt, no judgment, and no gate.
+`approvals.nestedSessions` (default `"ask"`, also `"deny"`/`"allow"`) now
+resolves those two actions when the session has a `parentID`: `"ask"` leaves
+the host prompt untouched (never judged), `"deny"` refuses naming the option,
+`"allow"` restores the old built-in allow. The policy applies only while the
+matched rule is one of the built-in defaults (identity: `approvalRules()`
+spreads the same objects), so an operator entry still wins; primary sessions
+and `webfetch`/`websearch`/`skill` are unchanged. The `parentID` lookup fails
+open (treated as primary, logged once): a plugin-side read must never deny a
+tool call the host allowed. `"ask"` is the default rather than `"deny"`
+because nesting can be legitimate in custom agents; strict setups opt into
+`"deny"`. Outcomes carry `reason/nested` in the stats bands and the RPC
+approval event.
+
 ## Credential self-heal: re-read on worn-key diagnostics
 
 Long sessions can ride a stale CLI-store credential: the plugin (and the

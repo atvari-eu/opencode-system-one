@@ -146,6 +146,18 @@ describe("auditEntryOf", () => {
     expect(judged?.detail).toBe("")
   })
 
+  test("nested-session policies are labeled separately", () => {
+    const ask = auditEntryOf("approval", { action: "subagent", outcome: "ask", resource: "explore", reason: "nested" }, at)
+    expect(ask?.decision).toBe("ask/nested")
+    expect(ask?.tone).toBe("info")
+    expect(ask?.summary).toContain("nested-session policy")
+    expect(ask?.detail).toContain("nested-session policy (no judgment)")
+
+    const deny = auditEntryOf("approval", { action: "question", outcome: "deny", reason: "nested" }, at)
+    expect(deny?.decision).toBe("deny/nested")
+    expect(deny?.tone).toBe("error")
+  })
+
   test("malformed payloads are dropped", () => {
     expect(auditEntryOf("screen", undefined)).toBeUndefined()
     expect(auditEntryOf("screen", {})).toBeDefined() // defaults to ?: tool
