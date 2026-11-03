@@ -65,6 +65,12 @@ function clockOf(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`
 }
 
+/** Local date and time, for timestamps that can be on another day. */
+function localStamp(at: number): string {
+  const date = new Date(at)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${clockOf(at)}`
+}
+
 function joined(values: readonly string[], empty = "none"): string {
   return values.length > 0 ? values.join(", ") : empty
 }
@@ -87,6 +93,7 @@ function poolLines(pool: JevStatusPool): StatusLine[] {
   if (pool.fallback) lines.push({ text: `  fallback: ${pool.fallback}`, muted: true })
   if (pool.usable.length === 0) {
     lines.push({ text: "  no usable candidates - routing stays off for this entry", muted: true })
+    if (pool.reason) lines.push({ text: `  reason: ${pool.reason}`, muted: true })
   }
   return lines
 }
@@ -104,6 +111,22 @@ export function statusSections(
     { text: `endpoint: ${status.endpoint}`, muted: true },
   ]
   if (status.pick) current.push({ text: `chain: ${status.model}`, muted: true })
+  if (status.session) {
+    current.push({
+      text: `session: ${status.session.model} · routing ${status.session.routing}`,
+      muted: true,
+    })
+    if (status.session.entry) {
+      const title = status.session.entryTitle ? `${status.session.entryTitle} (${status.session.entry})` : status.session.entry
+      current.push({ text: `  entry: ${title}`, muted: true })
+    }
+    const agent = [status.session.agent, status.session.profile ? `profile ${status.session.profile}` : ""]
+      .filter(Boolean)
+      .join(" · ")
+    if (agent) current.push({ text: `  agent: ${agent}`, muted: true })
+  } else {
+    current.push({ text: "session: unknown (no active session)", muted: true })
+  }
 
   const models: StatusLine[] =
     status.models.length === 0
@@ -121,13 +144,42 @@ export function statusSections(
         ? "deployment: ok (init ping)"
         : `deployment: FAULT - ${status.health.fault ?? "unknown"}`,
     },
+  ]
+  if (status.health.checkedAt) {
+    const checked = Date.parse(status.health.checkedAt)
+    if (Number.isFinite(checked)) {
+      health.push({ text: `deployment check: ${localStamp(checked)}`, muted: true })
+    }
+  }
+  health.push(
     { text: `decision catalog: ${status.catalog}`, muted: true },
     {
       text: `event channel: ${status.health.events ? "on (jev-config rpc)" : "unavailable (toasts fall back to rows)"}`,
       muted: true,
     },
-    { text: `snapshot: ${clockOf(at)}`, muted: true },
-  ]
+  )
+  const auth = status.auth
+  if (auth) {
+    const kind = auth.type ? ` ${auth.type}` : ""
+    const expiresAt = auth.expires ? Date.parse(auth.expires) : NaN
+    const expires = Number.isFinite(expiresAt) ? ` · expires ${localStamp(expiresAt)}` : ""
+    health.push({ text: `credential: ${auth.source}${kind}${expires}`, muted: true })
+    if (auth.endpointOverride) {
+      health.push({
+        text: "endpoint override: JEV_ENDPOINT (CLI credential store skipped)",
+        muted: true,
+      })
+    }
+  } else {
+    health.push({ text: "credential: not resolved yet (no judged call this process)", muted: true })
+  }
+  if (status.version) {
+    health.push({
+      text: `plugin ${status.version}${status.host ? ` · host opencode ${status.host}` : ""}`,
+      muted: true,
+    })
+  }
+  health.push({ text: `snapshot: ${clockOf(at)}`, muted: true })
 
   const stats = eventStats(items)
   const events: StatusLine[] = [

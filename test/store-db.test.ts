@@ -45,7 +45,7 @@ describe("extractStoredCredential", () => {
         },
         "opencode",
       ),
-    ).toEqual({ type: "oauth", material: "st_test_access_0123456789abcdef" })
+    ).toEqual({ type: "oauth", material: "st_test_access_0123456789abcdef", expiresAt: FUTURE })
   })
 
   test("flat row shapes carry the material directly", () => {
@@ -109,6 +109,7 @@ describe("readStoreDbCredential", () => {
       expect(readStoreDbCredential(path, "opencode")).toEqual({
         type: "oauth",
         material: "st_test_access_0123456789abcdef",
+        expiresAt: FUTURE,
       })
     } finally {
       rmSync(path)
@@ -174,6 +175,7 @@ describe("readStoreDbCredential", () => {
       expect(readStoreDbCredential(path, "opencode")).toEqual({
         type: "oauth",
         material: "st_test_access_0123456789abcdef",
+        expiresAt: FUTURE,
       })
       rmSync(path)
     } finally {

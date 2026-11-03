@@ -49,6 +49,33 @@ export interface JevStatusPool {
   excluded: string[]
   usable: string[]
   fallback?: string
+  /** Why the pool has no usable candidate (absent when it has one). */
+  reason?: string
+}
+
+/** Live routing context for the session the panel was opened from. */
+export interface JevStatusSession {
+  /** The session's current chat model, `provider/id`. */
+  model: string
+  /** "model + effort", "model", "effort only", or "off". */
+  routing: string
+  /** Picker id of the routing entry the session is parked on. */
+  entry?: string
+  entryTitle?: string
+  /** The session's active agent id. */
+  agent?: string
+  /** The agent profile that applies to that agent, when one is configured. */
+  profile?: string
+}
+
+/** How the last judged call authenticated. Provenance only, never material. */
+export interface JevStatusAuth {
+  source: "env" | "cli-store" | "auth-json" | "none"
+  type?: "key" | "oauth"
+  /** OAuth session expiry, ISO timestamp, when the store exposes one. */
+  expires?: string
+  /** JEV_ENDPOINT is set, so the CLI credential store is skipped. */
+  endpointOverride: boolean
 }
 
 /** One read-only snapshot for the /jev-status panel. */
@@ -61,11 +88,21 @@ export interface JevStatusInfo {
   /** Session pin; the effective model is `pick || model`. */
   pick?: string
   catalog: "live" | "snapshot" | "none" | "unknown"
+  /** Plugin version (best effort; "unknown" when no package.json is reachable). */
+  version?: string
+  /** Detected OpenCode host version, without the `opencode/` UA prefix. */
+  host?: string
+  /** The session this snapshot was taken for. */
+  session?: JevStatusSession
+  /** Credential provenance for the last resolved key. */
+  auth?: JevStatusAuth
   health: {
     ok: boolean
     fault?: string
     /** The jev-config event surface is available. */
     events: boolean
+    /** When the cached deployment verdict was taken (ISO). */
+    checkedAt?: string
   }
   models: Array<{ id: string; fault?: string }>
   features: Array<{ name: string; state: string }>
@@ -167,12 +204,39 @@ const methods = {
         model: STRING,
         pick: STRING,
         catalog: { type: "string", enum: ["live", "snapshot", "none", "unknown"] },
+        version: STRING,
+        host: STRING,
+        session: {
+          type: "object",
+          properties: {
+            model: STRING,
+            routing: STRING,
+            entry: STRING,
+            entryTitle: STRING,
+            agent: STRING,
+            profile: STRING,
+          },
+          required: ["model", "routing"],
+          additionalProperties: false,
+        },
+        auth: {
+          type: "object",
+          properties: {
+            source: { type: "string", enum: ["env", "cli-store", "auth-json", "none"] },
+            type: { type: "string", enum: ["key", "oauth"] },
+            expires: STRING,
+            endpointOverride: { type: "boolean" },
+          },
+          required: ["source", "endpointOverride"],
+          additionalProperties: false,
+        },
         health: {
           type: "object",
           properties: {
             ok: { type: "boolean" },
             fault: STRING,
             events: { type: "boolean" },
+            checkedAt: STRING,
           },
           required: ["ok", "events"],
           additionalProperties: false,
@@ -210,6 +274,7 @@ const methods = {
               excluded: { type: "array", items: STRING },
               usable: { type: "array", items: STRING },
               fallback: STRING,
+              reason: STRING,
             },
             required: ["id", "review", "enabled", "explicit", "sourced", "excluded", "usable"],
             additionalProperties: false,

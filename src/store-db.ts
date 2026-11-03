@@ -57,7 +57,7 @@ export function storeDbCandidates(dataDirs?: string[]): string[] {
 export function readStoreDbCredential(
   path: string,
   integrationID: string,
-): { type: "key" | "oauth"; material: string } | undefined {
+): { type: "key" | "oauth"; material: string; expiresAt?: number } | undefined {
   let db: InstanceType<typeof Database> | undefined
   try {
     db = new Database(path, { readonly: true })
@@ -80,7 +80,7 @@ export function readStoreDbCredential(
 function readCredentialFrom(
   db: InstanceType<typeof Database>,
   integrationID: string,
-): { type: "key" | "oauth"; material: string } | undefined {
+): { type: "key" | "oauth"; material: string; expiresAt?: number } | undefined {
   const tables = (db.query("SELECT name FROM sqlite_master WHERE type='table' LIMIT 40").all() as Array<{
     name: string
   }>)
@@ -100,7 +100,7 @@ function readCredentialFrom(
     } catch {
       continue // unreadable/virtual table - next
     }
-    const found: Array<{ type: "key" | "oauth"; material: string }> = []
+    const found: Array<{ type: "key" | "oauth"; material: string; expiresAt?: number }> = []
     for (const row of rows) {
       if (row === null || typeof row !== "object") continue
       try {

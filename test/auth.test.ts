@@ -2,7 +2,7 @@
 // Pure logic, no plugin host, no live jev, no subprocess.
 
 import { describe, expect, test } from "bun:test"
-import { credentialRejected, jevAuthError, parseAuthExport } from "../src/logic"
+import { credentialRejected, jevAuthError, parseAuthExport, parseAuthExportMeta } from "../src/logic"
 
 const OTHER_ENTRY = {
   id: "cred_o",
@@ -119,6 +119,37 @@ describe("parseAuthExport", () => {
     expect(parseAuthExport(null)).toBeUndefined()
     expect(parseAuthExport({})).toBeUndefined()
     expect(parseAuthExport([null, 42 as any, "x"])).toBeUndefined()
+  })
+})
+
+describe("parseAuthExportMeta", () => {
+  test("reports the selected entry's type and oauth expiry, never its material", () => {
+    const exported = [
+      OTHER_ENTRY,
+      {
+        id: "cred_o",
+        integrationID: "opencode",
+        active: true,
+        value: { type: "oauth", access: "st_x", expires: 1793898473131 },
+      },
+    ]
+    expect(parseAuthExportMeta(exported)).toEqual({ type: "oauth", expiresAt: 1793898473131 })
+    expect(JSON.stringify(parseAuthExportMeta(exported))).not.toContain("st_x")
+  })
+
+  test("a key entry has no expiry; malformed input is undefined", () => {
+    expect(
+      parseAuthExportMeta([
+        {
+          id: "cred_k",
+          integrationID: "opencode",
+          active: true,
+          value: { type: "key", key: "sk_x" },
+        },
+      ]),
+    ).toEqual({ type: "key" })
+    expect(parseAuthExportMeta(undefined)).toBeUndefined()
+    expect(parseAuthExportMeta([null, 42 as any])).toBeUndefined()
   })
 })
 

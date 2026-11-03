@@ -119,6 +119,51 @@ describe("statusSections", () => {
     expect(text).toContain("last error:")
   })
 
+  test("shows session routing, credential provenance, versions, and pool reasons", () => {
+    const text = statusText(
+      {
+        ...STATUS,
+        version: "0.1.0",
+        host: "2.0.30",
+        session: {
+          model: "opencode-decisions/auto",
+          routing: "model + effort",
+          entry: "auto",
+          entryTitle: "Auto",
+          agent: "plan",
+          profile: "plan",
+        },
+        auth: {
+          source: "cli-store",
+          type: "oauth",
+          expires: "2026-11-04T12:00:00.000Z",
+          endpointOverride: false,
+        },
+        health: { ok: true, events: true, checkedAt: "2026-11-04T11:00:00.000Z" },
+        pools: [
+          {
+            id: "auto",
+            review: false,
+            enabled: true,
+            explicit: [],
+            sourced: [],
+            excluded: [],
+            usable: [],
+            reason: "the Console pool lists no opencode/opencode-go chat models in this session",
+          },
+        ],
+      },
+      [],
+    )
+    expect(text).toContain("session: opencode-decisions/auto · routing model + effort")
+    expect(text).toContain("entry: Auto (auto)")
+    expect(text).toContain("agent: plan · profile plan")
+    expect(text).toContain("deployment check:")
+    expect(text).toContain("credential: cli-store oauth · expires ")
+    expect(text).toContain("plugin 0.1.0 · host opencode 2.0.30")
+    expect(text).toContain("reason: the Console pool lists no opencode/opencode-go chat models")
+  })
+
   test("an unregistered entry and an empty pool are explicit", () => {
     const sections = statusSections(
       {

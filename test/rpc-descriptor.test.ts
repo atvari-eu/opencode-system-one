@@ -26,7 +26,11 @@ describe("makeJevRpc", () => {
     expect(poolSchema.properties.name).toBeDefined()
     expect(poolSchema.properties.shape).toBeDefined()
     expect(poolSchema.required).not.toContain("shape")
+    expect(poolSchema.properties.reason).toBeDefined()
     expect(definition.methods.status.output.properties.health.required).toEqual(["ok", "events"])
+    expect(definition.methods.status.output.properties.health.properties.checkedAt).toBeDefined()
+    expect(definition.methods.status.output.properties.session).toBeDefined()
+    expect(definition.methods.status.output.properties.auth).toBeDefined()
   })
 
   test("declares the transcript-free screen event", async () => {

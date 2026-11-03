@@ -32,7 +32,7 @@ Replies for identical (endpoint, model, state, questions) are served from durabl
 | `/jev-approval-stats` | lists which command patterns trigger approvals and how they resolve, so recurring asks can become explicit permission rules (see [Approvals](approvals.md)) |
 | `/jev-models [<id> \| reset]` | pins the System One judgment model for this session; every pick is ping-verified before it sticks (see [Provider](provider.md)) |
 | `/jev-audit` | opens the audit side panel with every UI-only event |
-| `/jev-status` | opens the status panel: decision model and candidates, routing pools, deployment health, enabled features, recent event severity |
+| `/jev-status` | opens the status panel: decision model, session routing and agent, candidates, routing pools, deployment health and credential provenance, enabled features, recent event severity |
 
 ## The audit panel (`/jev-audit`)
 
@@ -50,11 +50,11 @@ The panel carries every UI-only event - screen verdicts, errors, config faults, 
 
 One read-only snapshot of the plugin, in sections:
 
-- **decision model** - the model that actually judges this session (a `/jev-models` pin wins over the chain default), the provider, and the endpoint;
+- **decision model** - the model that actually judges this session (a `/jev-models` pin wins over the chain default), the provider, and the endpoint; the session's chat model, whether routing is engaged (`model + effort`, `model`, `effort only`, or `off`), the routing entry it is parked on, the active agent, and the agent profile applying to it;
 - **available decision models** - the picker candidates, with cached deployment faults (`✗ 401 unauthorized`) and a marker on the current one;
-- **model pools** - every routing entry separately (`auto`, `auto-review`, and any custom meta model): how many candidates are usable, what the config declared, what the sources merged in, what review disjointness excluded, the fallback, and the default-pool shape when it applies;
-- **health** - the cached init/pick deployment verdict (the panel never pings), the decision-catalog source (`live`/`snapshot`/`none`), and whether the `jev-config` event channel is available;
-- **features** - every feature with its resolved options: screen mode/annotation/tools, scrub, tools, commands, cache, effort.mode, both routing entries, done-check, find, approvals policy, compaction mode;
+- **model pools** - every routing entry separately (`auto`, `auto-review`, and any custom meta model): how many candidates are usable, what the config declared, what the sources merged in, what review disjointness excluded, the fallback, the default-pool shape when it applies, and why a pool has no usable candidate (nothing declared or sourced, no Console chat models listed, every candidate shared with the default pool, or none available in the session catalog). A pool preview applies the active agent's context floor, so it matches what that agent's turn would be offered;
+- **health** - the cached init/pick deployment verdict and when it was taken (the panel never pings), the decision-catalog source (`live`/`snapshot`/`none`), whether the `jev-config` event channel is available, the credential provenance (env / CLI store / legacy store, key or OAuth, OAuth expiry, and whether `JEV_ENDPOINT` overrides the store), and the plugin plus detected host version;
+- **features** - every feature with its resolved options: screen mode/annotation/tools and verdict thresholds, scrub, tools, commands, cache (with process-local hit/miss counters), effort.mode and its confidence floor, both routing entries and their confidence floors, agent profiles, done-check and its nudge count, find, approvals policy and bars, compaction mode, and the per-event toast floors;
 - **recent events** - ok/warn/error/info counts and per-kind counts folded from the `/jev-audit` ring, plus the newest error.
 
 `r` refreshes the snapshot, `c` copies it as text, `f` toggles fullscreen, `esc`/`q` closes, and running `/jev-status` again toggles the panel. Event statistics update live while the panel is open; the other sections refresh on `r` or the next open. Mouse selection is disabled in the panel.

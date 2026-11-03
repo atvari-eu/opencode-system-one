@@ -506,13 +506,17 @@ replayed through `configFault`. The retired `/jev-screen-history` view is now
 `/jev-status` is the read-only counterweight to the audit trail. The server
 half computes one snapshot over the existing `jev-config` rpc (`status`):
 deployment health for the effective decision model (cached init/pick
-verdicts only - the panel never pings), the picker candidates with cached
-faults, every enabled feature with its resolved options, and both routing
-pools after source merging, review disjointness, and availability
-filtering. The pool step is assigned by the auto block, so it shares the
-prompt path's helpers and cannot drift from what routing would actually
-offer. The snapshot load is lazy: it may wait for the one-per-process
-leaderboard fetch, but never for a model call.
+verdicts only, with their check time - the panel never pings), the picker
+candidates with cached faults, the session's live routing context (chat
+model, engaged entry, active agent and its profile), credential provenance
+(source/type/expiry, never material), every enabled feature with its
+resolved options and thresholds, and both routing pools after source
+merging, review disjointness, and availability filtering, with the reason a
+pool is empty. The pool step is assigned by the auto block, so it shares the
+prompt path's helpers; it receives the active agent's context floor, so an
+agent turn's preview matches what routing would actually offer. The snapshot
+load is lazy: it may wait for the one-per-process leaderboard fetch, but
+never for a model call.
 
 Like the audit panel, `status-panel.tsx` is a **pure renderer**: `tui.ts`
 owns the rpc call, the durable `jev-status` store, and the refresh trigger

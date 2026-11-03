@@ -112,6 +112,8 @@ import {
   doneCheckStandDown,
   doneNudgeCapReached,
   DONE_NUDGE_CAP,
+  DEFAULT_TOAST_FILTER,
+  TOAST_EVENTS,
   awaitingUserInput,
   describeModelRows,
   doneTranscript,
@@ -131,6 +133,8 @@ import {
   matchesPatterns,
   mergeApprovalStats,
   parseAuthExport,
+  parseAuthExportMeta,
+  parseToastFilters,
   parseAgentProfiles,
   parseEffortMode,
   parseRouteEntries,
@@ -197,8 +201,15 @@ import {
   unwrapEnvelope,
   userRowCount,
 } from "./logic"
-import { type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type AgentRouteProfile, type ParsedRouteEntry, type PoolModel, type ProviderOption, type TokenCost, type TrainingConsent } from "./logic"
-import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
+import { BUILTIN_AGENT_PROFILES, type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type AgentRouteProfile, type ParsedRouteEntry, type PoolModel, type ProviderOption, type TokenCost, type TrainingConsent } from "./logic"
+import {
+  SCREEN_FLAGGED_BAND,
+  SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED,
+  SCREEN_SECRET_THRESHOLD,
+  SCREEN_UNSAFE_BAND,
+  runScreen,
+  secretScoreNormalized,
+} from "./screen"
 import { makeJevRpc, type JevModelsInfo, type JevScreenEvent, type JevSetResult, type JevStatusInfo } from "./rpc"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -290,6 +301,24 @@ interface Credential {
    * was there (console credentials come from "opencode" even for the
    * opencode-go option); used for cache invalidation on worn credentials. */
   cliIntegration?: string
+  /** Provenance only (never the material): an API key or an OAuth session. */
+  type?: "key" | "oauth"
+  /** OAuth expiry, ms since epoch, when the store exposes one. */
+  expiresAt?: number
+}
+
+/** What the last credential resolution used, for /jev-status. Metadata only -
+ * the key never leaves resolveKey. */
+interface AuthProvenance {
+  source: Credential["source"] | "none"
+  type?: "key" | "oauth"
+  expiresAt?: number
+}
+
+let LAST_AUTH: AuthProvenance | undefined
+
+function rememberAuth(auth: AuthProvenance): void {
+  LAST_AUTH = auth
 }
 
 // Credential cache, keyed by integration id; module-level so the
@@ -316,9 +345,17 @@ async function loadCliStoreCredential(integration: string): Promise<Credential |
     try {
       // stdout only; stderr and the key itself are never logged or persisted
       const out = await execText(bin, ["auth", "export"])
-      const key = parseAuthExport(JSON.parse(out), integration)
+      const exported = JSON.parse(out)
+      const key = parseAuthExport(exported, integration)
       if (key) {
-        CLI_CREDENTIALS[integration] = { key, source: "cli-store", integration }
+        const meta = parseAuthExportMeta(exported, integration)
+        CLI_CREDENTIALS[integration] = {
+          key,
+          source: "cli-store",
+          integration,
+          ...(meta?.type ? { type: meta.type } : {}),
+          ...(meta?.expiresAt ? { expiresAt: meta.expiresAt } : {}),
+        }
         return CLI_CREDENTIALS[integration]
       }
       // the CLI ran, but yields no usable entry for this integration -
@@ -334,7 +371,13 @@ async function loadCliStoreCredential(integration: string): Promise<Credential |
   for (const path of storeDbCandidates()) {
     const found = readStoreDbCredential(path, integration)
     if (found) {
-      CLI_CREDENTIALS[integration] = { key: found.material, source: "cli-store", integration }
+      CLI_CREDENTIALS[integration] = {
+        key: found.material,
+        source: "cli-store",
+        integration,
+        type: found.type,
+        ...(found.expiresAt ? { expiresAt: found.expiresAt } : {}),
+      }
       return CLI_CREDENTIALS[integration]
     }
   }
@@ -353,7 +396,8 @@ async function resolveKey(): Promise<Credential | undefined> {
   for (const envName of chain.envKeys) {
     const value = process.env[envName]
     if (typeof value === "string" && value.trim() !== "") {
-      return { key: value, source: "env", integration: chain.legacyId ?? "custom" }
+      rememberAuth({ source: "env", type: "key" })
+      return { key: value, source: "env", integration: chain.legacyId ?? "custom", type: "key" }
     }
   }
   // The CLI credential store holds the operator's own login (Console
@@ -367,6 +411,11 @@ async function resolveKey(): Promise<Credential | undefined> {
   if (!process.env.JEV_ENDPOINT && chain.cliIntegration) {
     const store = await loadCliStoreCredential(chain.cliIntegration)
     if (store) {
+      rememberAuth({
+        source: store.source,
+        ...(store.type ? { type: store.type } : {}),
+        ...(store.expiresAt ? { expiresAt: store.expiresAt } : {}),
+      })
       return {
         ...store,
         integration: chain.legacyId ?? chain.cliIntegration,
@@ -384,12 +433,14 @@ async function resolveKey(): Promise<Credential | undefined> {
       // "opencode-go", or the host provider id for hand-planted keys).
       const key = auth?.[legacyId]?.key
       if (typeof key === "string" && key.length > 0) {
-        return { key, source: "auth-json", integration: legacyId }
+        rememberAuth({ source: "auth-json", type: "key" })
+        return { key, source: "auth-json", integration: legacyId, type: "key" }
       }
     } catch {
       // no legacy store - fall through to "no credential"
     }
   }
+  rememberAuth({ source: "none" })
   return undefined
 }
 
@@ -427,7 +478,7 @@ let LATE_RESOLVE_INFLIGHT: Promise<boolean> | undefined = undefined
 // "unresolved" verdict for other models simply stops matching, because
 // theirs are keyed on the (endpoint, model) pair that only exists once the
 // endpoint resolved.
-type DeployVerdict = { ok: boolean; fault?: DeploymentFault }
+type DeployVerdict = { ok: boolean; fault?: DeploymentFault; at?: string }
 const DEPLOY_VERDICTS = new Map<string, DeployVerdict>()
 // One inflight ping per fingerprint: concurrent judged calls and picker
 // switches share the deployment check instead of racing it.
@@ -435,6 +486,24 @@ const DEPLOY_INFLIGHT = new Map<string, Promise<DeployVerdict>>()
 // Fingerprint of the resolved chain deployment (endpoint + chain model); sets
 // the once-per-session error-row scope for calls that never had a sessionID.
 let DEPLOY_FINGERPRINT = ""
+
+// Judgment-cache counters since process start, for /jev-status. The durable
+// cache itself lives in plugin storage; these only summarize its use.
+const JUDGMENT_CACHE_STATS = { hits: 0, misses: 0 }
+
+/** Best-effort plugin version for /jev-status. The single-file Nix install has
+ * no package.json beside the entrypoint, so a miss reads as "unknown". */
+let PLUGIN_VERSION: string | undefined
+function pluginVersion(): string {
+  if (PLUGIN_VERSION !== undefined) return PLUGIN_VERSION
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+    PLUGIN_VERSION = typeof pkg?.version === "string" && pkg.version ? pkg.version : "unknown"
+  } catch {
+    PLUGIN_VERSION = "unknown"
+  }
+  return PLUGIN_VERSION ?? "unknown"
+}
 
 /** Human-readable rendering of the selected provider option for logs. */
 function providerOptionText(option: ProviderOption): string {
@@ -1270,8 +1339,8 @@ async function deployVerdict(model: string): Promise<DeployVerdict> {
   if (!RESOLVED_ENDPOINT) {
     const attempted = await checkDeployState(model)
     const verdict: DeployVerdict = attempted.ok
-      ? { ok: true }
-      : { ok: false, fault: attempted.fault }
+      ? { ok: true, at: new Date().toISOString() }
+      : { ok: false, fault: attempted.fault, at: new Date().toISOString() }
     DEPLOY_VERDICTS.set(attempted.fingerprint, verdict)
     return verdict
   }
@@ -1281,8 +1350,8 @@ async function deployVerdict(model: string): Promise<DeployVerdict> {
     try {
       const attempted = await checkDeployState(model)
       const verdict: DeployVerdict = attempted.ok
-        ? { ok: true }
-        : { ok: false, fault: attempted.fault }
+        ? { ok: true, at: new Date().toISOString() }
+        : { ok: false, fault: attempted.fault, at: new Date().toISOString() }
       DEPLOY_VERDICTS.set(attempted.fingerprint, verdict)
       return verdict
     } catch (err) {
@@ -1293,6 +1362,7 @@ async function deployVerdict(model: string): Promise<DeployVerdict> {
           model,
           detail: String((err as Error)?.message ?? err),
         }),
+        at: new Date().toISOString(),
       }
       DEPLOY_VERDICTS.set(fingerprint, verdict)
       return verdict
@@ -1554,7 +1624,9 @@ export default Plugin.define({
     DEPLOY_FINGERPRINT = deployCheck.fingerprint
     DEPLOY_VERDICTS.set(
       deployCheck.fingerprint,
-      deployCheck.ok ? { ok: true } : { ok: false, fault: deployCheck.fault },
+      deployCheck.ok
+        ? { ok: true, at: new Date().toISOString() }
+        : { ok: false, fault: deployCheck.fault, at: new Date().toISOString() },
     )
     // Buffered init fault: the deployment check runs before the RPC
     // registration exists, so its message is delivered event-first below.
@@ -1880,7 +1952,9 @@ export default Plugin.define({
           DEPLOY_FINGERPRINT = deployCheck.fingerprint
           DEPLOY_VERDICTS.set(
             deployCheck.fingerprint,
-            deployCheck.ok ? { ok: true } : { ok: false, fault: deployCheck.fault },
+            deployCheck.ok
+              ? { ok: true, at: new Date().toISOString() }
+              : { ok: false, fault: deployCheck.fault, at: new Date().toISOString() },
           )
           return deployCheck.ok
         } finally {
@@ -1896,6 +1970,10 @@ export default Plugin.define({
     // a pinless session costs one storage read per process, not per call.
     // Set/reset write through to storage; this process is the only writer.
     const MODEL_PINS = new Map<string, string>()
+    // Last agent id seen per session, so /jev-status can name the routing
+    // stance on host builds that leave Session.Info.agent empty (the prompt
+    // event still carries it).
+    const SESSION_AGENTS = new Map<string, string>()
     const pinKeyOf = (sessionID: string): string => `jev-model-pin/${sessionID}`
     // pins compat: hosts without storage.remove leave a durable record that
     // still loads empty-weight; the in-memory delete is what matters here.
@@ -1940,9 +2018,11 @@ export default Plugin.define({
         .digest("hex")}`
       const hit = await (ctx as any).storage.get(key)
       if (hit && hit.answers && typeof hit.answers === "object") {
+        JUDGMENT_CACHE_STATS.hits += 1
         return { reply: hit as JevReply, cached: true }
       }
       const reply = await jevJudge(questions, state, signal, model)
+      JUDGMENT_CACHE_STATS.misses += 1
       await (ctx as any).storage.set(key, reply)
       return { reply, cached: false }
     }
@@ -2031,9 +2111,9 @@ export default Plugin.define({
     // The panel is a pure renderer; this half computes the snapshot on demand
     // (no judged calls, no network beyond the one-per-process leaderboard
     // fetch). The pool builder is assigned by the auto block below.
-    let poolSnapshot: (() => Promise<JevStatusInfo["pools"]>) | undefined = undefined
+    let poolSnapshot: ((agentFloor?: number) => Promise<JevStatusInfo["pools"]>) | undefined = undefined
 
-    const statusFeatures = (): JevStatusInfo["features"] => {
+    const statusFeatures = (doneNudges?: number): JevStatusInfo["features"] => {
       const rows: JevStatusInfo["features"] = []
       const compactionOn = o.compaction?.enabled === true
       const idle = parseIdleAuto(o.compaction?.auto)
@@ -2041,11 +2121,20 @@ export default Plugin.define({
         name: "screen",
         state: `${screenEnabled ? "on" : "off"} · ${screenMode}/${screenAnnotation} · ${screenTools === "all" ? "all tools" : screenTools.join(",")}`,
       })
+      rows.push({
+        name: "screen.thresholds",
+        state: `flag junk/injection >= ${SCREEN_FLAGGED_BAND.junk}/${SCREEN_FLAGGED_BAND.injection} · secret >= ${screenSecretThreshold.toFixed(2)} · unsafe junk/injection >= ${SCREEN_UNSAFE_BAND.junk}/${SCREEN_UNSAFE_BAND.injection}`,
+      })
       rows.push({ name: "scrub", state: scrubEnabled ? "on" : "off" })
       rows.push({ name: "tools", state: toolsEnabled ? "on" : "off" })
       rows.push({ name: "commands", state: commandsEnabled ? "on" : "off" })
-      rows.push({ name: "cache", state: cacheEnabled ? "on" : "off" })
-      rows.push({ name: "effort.mode", state: effortMode })
+      rows.push({
+        name: "cache",
+        state: cacheEnabled
+          ? `on · hits ${JUDGMENT_CACHE_STATS.hits} / misses ${JUDGMENT_CACHE_STATS.misses} (this process)`
+          : "off",
+      })
+      rows.push({ name: "effort.mode", state: `${effortMode} · min ${effortMinConfidence.toFixed(2)}` })
       for (const entry of allRouteEntries) {
         if (!entry.enable) {
           rows.push({ name: entry.modelID, state: `off · "routes.${entry.key}" disabled` })
@@ -2061,19 +2150,46 @@ export default Plugin.define({
           name: entry.modelID,
           state:
             parts.length > 0
-              ? `on · ${parts.join(" + ")}${entry.fallback ? " + fallback" : ""}`
-              : "on · no candidates (default pool off)",
+              ? `on · ${parts.join(" + ")}${entry.fallback ? " + fallback" : ""} · min ${entry.minConfidence.toFixed(2)}`
+              : `on · no candidates (default pool off) · min ${entry.minConfidence.toFixed(2)}`,
         })
+      }
+      if (agentProfiles.size === 0) {
+        rows.push({ name: "agents", state: "off" })
+      } else {
+        for (const profile of agentProfiles.values()) {
+          const band = profile.effort
+            ? profile.effort.min && profile.effort.max
+              ? `${profile.effort.min}..${profile.effort.max}`
+              : profile.effort.min
+                ? `>= ${profile.effort.min}`
+                : `<= ${profile.effort.max}`
+            : ""
+          const builtin = BUILTIN_AGENT_PROFILES[profile.id]?.criteria
+          const criteria = profile.criteria
+            ? builtin && profile.criteria === builtin
+              ? "built-in criteria"
+              : "custom criteria"
+            : ""
+          const parts = [
+            criteria,
+            band ? `effort ${band}` : "",
+            profile.minContext ? `min ctx ${profile.minContext}` : "",
+          ].filter(Boolean)
+          rows.push({ name: `agents.${profile.id}`, state: parts.join(" · ") || "baseline" })
+        }
       }
       rows.push({
         name: "doneCheck",
-        state: doneCheckAuto ? `auto · notify < ${notifyBelow.toFixed(2)}` : "off",
+        state: doneCheckAuto
+          ? `auto · notify < ${notifyBelow.toFixed(2)}${doneNudges !== undefined ? ` · nudges ${doneNudges}/${DONE_NUDGE_CAP}` : ""}`
+          : "off",
       })
       rows.push({ name: "find", state: findEnabled ? "on" : "off" })
       rows.push({
         name: "approvals",
         state: approvalsEnabled
-          ? `on · ${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? " · sandbox" : ""} · stats ${approvalsStats ? "on" : "off"} · ro ${approvalsReadonlyAllow ? "allow" : "judge"}`
+          ? `on · ${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? " · sandbox" : ""} · bars ${approvalsMinConfidence.approve.toFixed(2)}/${approvalsMinConfidence.refuse.toFixed(2)} · stats ${approvalsStats ? "on" : "off"} · ro ${approvalsReadonlyAllow ? "allow" : "judge"}`
           : "off",
       })
       rows.push({
@@ -2081,6 +2197,14 @@ export default Plugin.define({
         state: compactionOn
           ? `${o.compaction?.mode === "clean" ? "clean" : "replace"}${idle.tokens > 0 || idle.share > 0 ? ` · idle ${idle.tokens > 0 ? `${idle.tokens}tok` : `${idle.share}x window`}` : ""}`
           : "off",
+      })
+      const toastFilters = parseToastFilters((o as any).toasts)
+      rows.push({
+        name: "toasts",
+        state: TOAST_EVENTS.map((event) => {
+          const filter = toastFilters[event] ?? DEFAULT_TOAST_FILTER
+          return `${event}:${filter === true ? "all" : filter === false ? "off" : filter}`
+        }).join(" · "),
       })
       return rows
     }
@@ -2142,7 +2266,46 @@ export default Plugin.define({
               const pick = sessionID ? await pinOf(sessionID) : undefined
               const effective = pick || resolveModel()
               const verdict = DEPLOY_VERDICTS.get(fingerprintOfModel(effective))
-              const computed = poolSnapshot ? await poolSnapshot() : []
+              let session: JevStatusInfo["session"] | undefined
+              let doneNudges: number | undefined
+              let agentFloor = 0
+              if (sessionID) {
+                try {
+                  const info: any = unwrapEnvelope(
+                    await (ctx as any).session.get({ sessionID }),
+                  )
+                  const model = info?.model
+                  if (model?.providerID && model?.id) {
+                    const entry = pseudoEntryFor(routeEntries, model)
+                    const agentID = [info?.agent, SESSION_AGENTS.get(sessionID)].find(
+                      (value): value is string => typeof value === "string" && value.trim() !== "",
+                    )?.trim()
+                    const profile = agentID ? agentProfiles.get(agentID) : undefined
+                    if (profile?.minContext) agentFloor = profile.minContext
+                    const routing = entry
+                      ? effortRoutingEnabled(effortMode, true)
+                        ? "model + effort"
+                        : "model"
+                      : effortAlways
+                        ? "effort only"
+                        : "off"
+                    session = {
+                      model: `${model.providerID}/${model.id}`,
+                      routing,
+                      ...(entry ? { entry: entry.modelID, entryTitle: entry.title } : {}),
+                      ...(agentID ? { agent: agentID } : {}),
+                      ...(profile ? { profile: profile.id } : {}),
+                    }
+                  }
+                } catch {}
+                if (doneCheckAuto) {
+                  try {
+                    const seen: any = await (ctx as any).storage.get(`done-check/${sessionID}`)
+                    doneNudges = typeof seen?.nudges === "number" ? seen.nudges : 0
+                  } catch {}
+                }
+              }
+              const computed = poolSnapshot ? await poolSnapshot(agentFloor) : []
               const byID = new Map(computed.map((pool) => [pool.id, pool]))
               const pools: JevStatusInfo["pools"] = []
               for (const entry of allRouteEntries) {
@@ -2159,15 +2322,34 @@ export default Plugin.define({
                   },
                 )
               }
+              const host = (await hostClientUA())?.replace(/^opencode\//, "")
+              const expiresAt = LAST_AUTH?.expiresAt
+              const expires =
+                expiresAt !== undefined && Number.isFinite(new Date(expiresAt).getTime())
+                  ? new Date(expiresAt).toISOString()
+                  : undefined
+              const auth: JevStatusInfo["auth"] | undefined = LAST_AUTH
+                ? {
+                    source: LAST_AUTH.source,
+                    ...(LAST_AUTH.type ? { type: LAST_AUTH.type } : {}),
+                    ...(expires ? { expires } : {}),
+                    endpointOverride: !!process.env.JEV_ENDPOINT,
+                  }
+                : undefined
               return {
                 provider: OPTIONS_PROVIDER ? providerOptionText(OPTIONS_PROVIDER) : "opencode",
                 endpoint: resolveEndpoint(),
                 model: resolveModel(),
                 ...(pick ? { pick } : {}),
                 catalog: DECISION_SOURCE ?? "unknown",
+                version: pluginVersion(),
+                ...(host ? { host } : {}),
+                ...(session ? { session } : {}),
+                ...(auth ? { auth } : {}),
                 health: {
                   ok: verdict?.ok === true,
                   events: typeof (rpcRegistration as any)?.events?.emit === "function",
+                  ...(verdict?.at ? { checkedAt: verdict.at } : {}),
                   ...(verdict && !verdict.ok && verdict.fault?.message
                     ? { fault: verdict.fault.message }
                     : !verdict
@@ -2178,7 +2360,7 @@ export default Plugin.define({
                   const cached = DEPLOY_VERDICTS.get(fingerprintOfModel(id))
                   return cached && !cached.ok ? cached.fault?.message : undefined
                 }),
-                features: statusFeatures(),
+                features: statusFeatures(doneNudges),
                 pools,
               }
             },
@@ -2459,7 +2641,7 @@ export default Plugin.define({
       // On-demand snapshot for /jev-status: the same merge/disjoint/filter
       // steps the prompt hook runs, minus the boot-lag waiting. Read-only -
       // it lists refs and never judges or switches.
-      poolSnapshot = async (): Promise<JevStatusInfo["pools"]> => {
+      poolSnapshot = async (agentFloor = 0): Promise<JevStatusInfo["pools"]> => {
         await refreshListIndex()
         await loadConsoleConsent()
         if (sourceNeedsLeaderboard) await loadLeaderboard(ctx)
@@ -2469,7 +2651,7 @@ export default Plugin.define({
           const sourced = (await resolveRouteSources(entry)) ?? []
           const declared = [
             ...entry.candidates,
-            ...(entry.usePool ? defaultCandidates(entry) : []),
+            ...(entry.usePool ? defaultCandidates(entry, agentFloor) : []),
             ...sourced,
           ]
           let combined = uniqueCandidates(declared)
@@ -2498,6 +2680,21 @@ export default Plugin.define({
             const info = await modelInfo(candidate.providerID, candidate.modelID)
             if (info && isAvailableModel(info)) usable.push(candidate)
           }
+          let reason: string | undefined
+          if (usable.length === 0) {
+            if (declared.length === 0) {
+              reason =
+                entry.usePool && consolePool().length === 0
+                  ? "the Console pool lists no opencode/opencode-go chat models in this session"
+                  : "no candidates declared or sourced"
+            } else if (combined.length === 0) {
+              reason = entry.review
+                ? "every candidate is shared with the default pool"
+                : "no candidates left after filtering"
+            } else {
+              reason = `none of the ${combined.length} candidate(s) resolve as available in this session`
+            }
+          }
           rows.push({
             id: entry.modelID,
             review: entry.review,
@@ -2511,6 +2708,7 @@ export default Plugin.define({
               ? { shape: poolShapeFor(entry) }
               : {}),
             ...(entry.fallback ? { fallback: candidateKey(entry.fallback) } : {}),
+            ...(reason ? { reason } : {}),
           })
         }
         return rows
@@ -2537,6 +2735,7 @@ export default Plugin.define({
           const agentID = [session?.agent, event?.agent].find(
             (value): value is string => typeof value === "string" && value.trim() !== "",
           )
+          if (agentID) SESSION_AGENTS.set(event.sessionID, agentID.trim())
           const agentProfile: AgentRouteProfile | null = agentID
             ? (agentProfiles.get(agentID.trim()) ?? null)
             : null

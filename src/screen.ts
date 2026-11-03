@@ -46,6 +46,11 @@ export const SCREEN_QUESTIONS: ScreenQuestion[] = [
 // exit path, the flag tells the human what regex could not see.
 export const SCREEN_SECRET_THRESHOLD = 0.6
 
+/** Probability bands behind the verdict; exported so /jev-status can show the
+ * thresholds a user is tuning against without duplicating the numbers. */
+export const SCREEN_UNSAFE_BAND = { injection: 0.7, junk: 0.85 } as const
+export const SCREEN_FLAGGED_BAND = { injection: 0.5, junk: 0.5 } as const
+
 export const SCREEN_SAMPLE_CHARS = 12000
 
 export function screenVerdictText(verdict: "pass" | "flagged" | "unsafe"): string {
@@ -108,11 +113,11 @@ export async function runScreen(
   const secret = secretScoreNormalized(reply?.answers?.secret)
   const secretFlag = typeof secret === "number" && secret >= secretThreshold
   const unsafe =
-    (typeof injection === "number" && injection >= 0.7) ||
-    (typeof junk === "number" && junk >= 0.85)
+    (typeof injection === "number" && injection >= SCREEN_UNSAFE_BAND.injection) ||
+    (typeof junk === "number" && junk >= SCREEN_UNSAFE_BAND.junk)
   const mid =
-    (typeof injection === "number" && injection >= 0.5) ||
-    (typeof junk === "number" && junk >= 0.5) ||
+    (typeof injection === "number" && injection >= SCREEN_FLAGGED_BAND.injection) ||
+    (typeof junk === "number" && junk >= SCREEN_FLAGGED_BAND.junk) ||
     secretFlag
   const verdict = unsafe ? "unsafe" : mid ? "flagged" : "pass"
   return {

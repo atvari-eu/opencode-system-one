@@ -3645,11 +3645,38 @@ export function parseAuthExport(json: unknown, integrationID = "opencode"): stri
   return undefined
 }
 
+/** Provenance for the credential parseAuthExport selects: its type and, for an
+ * OAuth session, the stored expiry. Never returns the material. */
+export interface AuthExportMeta {
+  type: "key" | "oauth"
+  /** ms since epoch, present only when the entry carries a usable expires. */
+  expiresAt?: number
+}
+
+export function parseAuthExportMeta(
+  json: unknown,
+  integrationID = "opencode",
+): AuthExportMeta | undefined {
+  if (!Array.isArray(json)) return undefined
+  for (const entry of json as Array<any>) {
+    if (entry?.integrationID !== integrationID || entry?.active !== true) continue
+    const v = entry?.value
+    if (v?.type === "key" && typeof v.key === "string" && v.key) return { type: "key" }
+    if (v?.type === "oauth" && typeof v.access === "string" && v.access) {
+      const expires = Number(v.expires)
+      return Number.isFinite(expires) ? { type: "oauth", expiresAt: expires } : { type: "oauth" }
+    }
+  }
+  return undefined
+}
+
 /** Internal candidate keeping the selection order (oauth before key). */
 interface StoredCandidate {
   type: "key" | "oauth"
   material: string
   preference: number
+  /** OAuth expiry, ms since epoch, when the stored node carries one. */
+  expiresAt?: number
 }
 
 const STORED_MATERIAL_MIN = 16
@@ -3666,11 +3693,14 @@ function storedMaterialNode(node: unknown): StoredCandidate | undefined {
   if (obj.type === "oauth") {
     const access = obj.access
     if (typeof access !== "string" || access.length < STORED_MATERIAL_MIN) return undefined
-    if ("expires" in obj) {
-      const expires = Number(obj.expires)
-      if (Number.isFinite(expires) && expires <= Date.now()) return undefined
+    const expires = "expires" in obj ? Number(obj.expires) : undefined
+    if (expires !== undefined && Number.isFinite(expires) && expires <= Date.now()) return undefined
+    return {
+      type: "oauth",
+      material: access,
+      preference: 0,
+      ...(expires !== undefined && Number.isFinite(expires) ? { expiresAt: expires } : {}),
     }
-    return { type: "oauth", material: access, preference: 0 }
   }
   if (obj.type === "key") {
     const key = obj.key
@@ -3752,7 +3782,7 @@ function storedCandidates(
 export function extractStoredCredential(
   json: unknown,
   integrationID: string,
-): { type: "key" | "oauth"; material: string } | undefined {
+): { type: "key" | "oauth"; material: string; expiresAt?: number } | undefined {
   const out: StoredCandidate[] = []
   try {
     storedCandidates(json, integrationID, 0, out)
@@ -3762,7 +3792,11 @@ export function extractStoredCredential(
   out.sort((a, b) => a.preference - b.preference)
   const first = out[0]
   if (!first) return undefined
-  return { type: first.type, material: first.material }
+  return {
+    type: first.type,
+    material: first.material,
+    ...(first.expiresAt !== undefined ? { expiresAt: first.expiresAt } : {}),
+  }
 }
 
 /**

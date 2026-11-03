@@ -489,7 +489,7 @@ export default {
           id: "jev.status",
           title: "Jev plugin status",
           description:
-            "Open the status panel: decision model and candidates, routing pools, deployment health, enabled features, recent event severity",
+            "Open the status panel: decision model, session routing and agent, candidates, routing pools, deployment health and credentials, enabled features, recent event severity",
           group: "jev",
           palette: true,
           slash: { name: "jev-status" },
