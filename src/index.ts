@@ -128,6 +128,7 @@ import {
   matchesPatterns,
   mergeApprovalStats,
   parseAuthExport,
+  parseAgentProfiles,
   parseRouteEntries,
   parseCandidates,
   parseGates,
@@ -192,7 +193,7 @@ import {
   unwrapEnvelope,
   userRowCount,
 } from "./logic"
-import { type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type ParsedRouteEntry, type PoolModel, type ProviderOption, type TokenCost, type TrainingConsent } from "./logic"
+import { type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type AgentRouteProfile, type ParsedRouteEntry, type PoolModel, type ProviderOption, type TokenCost, type TrainingConsent } from "./logic"
 import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
 import { makeJevRpc, type JevModelsInfo, type JevScreenEvent, type JevSetResult, type JevStatusInfo } from "./rpc"
 import { execFile } from "node:child_process"
@@ -1615,6 +1616,12 @@ export default Plugin.define({
       auto: (o as any).auto,
     })
     for (const warning of parsedRoutes.warnings) console.log(`[jev] routes: ${warning}`)
+    // Agent profiles refine a routing turn for the session's active agent
+    // (`build`, `plan`, `explore`, or a user-defined subagent). Built-in
+    // stances apply unless overridden; `agents: false` disables all of them.
+    const parsedAgents = parseAgentProfiles((o as any).agents)
+    for (const warning of parsedAgents.warnings) console.log(`[jev] agents: ${warning}`)
+    const agentProfiles = new Map(parsedAgents.profiles.map((profile) => [profile.id, profile]))
     const allRouteEntries = parsedRoutes.entries
     const routeEntries = allRouteEntries.filter((entry) => entry.enable)
     // A kind's built-in cut comes from that kind's built-in entry, so inlining
@@ -2356,7 +2363,7 @@ export default Plugin.define({
       // review keeps the best models; an entry that inlines its own shape gets
       // an independent cut. Empty when the session has no Console chat
       // provider; the pool never ranks another provider's models.
-      const defaultCandidates = (entry: ParsedRouteEntry): Candidate[] => {
+      const defaultCandidates = (entry: ParsedRouteEntry, agentFloor = 0): Candidate[] => {
         if (!entry.usePool) return []
         const pool = consolePool()
         if (pool.length === 0) {
@@ -2368,13 +2375,20 @@ export default Plugin.define({
           }
           return []
         }
-        const cfg = entry.poolConfig ?? DEFAULT_POOL_SPLITS[entry.kind]
+        // An agent profile can only raise the floor: a stance may demand a
+        // broader context, never a smaller one than the entry already allows.
+        const withFloor = (cfg: PoolSplitConfig): PoolSplitConfig =>
+          agentFloor > cfg.minContext ? { ...cfg, minContext: agentFloor } : cfg
+        const cfg = withFloor(entry.poolConfig ?? DEFAULT_POOL_SPLITS[entry.kind])
         if (entry.sources.pool === "own" && entry.key !== entry.kind) {
           return poolCandidates(poolCut(pool, LEADERBOARD, cfg, { consent: CONSOLE_CONSENT }))
         }
         const split = defaultPoolSplit(pool, LEADERBOARD, {
-          default: kindPoolConfig("default"),
-          review: kindPoolConfig("review"),
+          // The floor applies to the split this entry draws from; the sibling
+          // split keeps its own cut, so one kind's stance never re-shuffles
+          // the other kind's picks.
+          default: entry.kind === "default" ? withFloor(kindPoolConfig("default")) : kindPoolConfig("default"),
+          review: entry.kind === "review" ? withFloor(kindPoolConfig("review")) : kindPoolConfig("review"),
           consent: CONSOLE_CONSENT,
         })
         return poolCandidates(split[entry.kind])
@@ -2494,6 +2508,16 @@ export default Plugin.define({
           )
           const model = session?.model
           if (!model?.providerID || !model?.id) return
+          // The active agent is the user's stance signal (plan vs build vs a
+          // custom subagent). Read it from the session; the prompt event's own
+          // `agent` field is accepted as a fallback across host builds. An
+          // unmapped or absent agent changes nothing (fail-open).
+          const agentID = [session?.agent, event?.agent].find(
+            (value): value is string => typeof value === "string" && value.trim() !== "",
+          )
+          const agentProfile: AgentRouteProfile | null = agentID
+            ? (agentProfiles.get(agentID.trim()) ?? null)
+            : null
           // The auto model feature engages only where the user parked the
           // session on one of the plugin's entries. On any real model it must
           // not touch the turn at all (unless plain effort.auto is opted in) -
@@ -2527,7 +2551,7 @@ export default Plugin.define({
             if (sourceNeedsBenchmarks) void loadBenchmarks(ctx, widestPoolTopK())
             let combined = uniqueCandidates([
               ...entry.candidates,
-              ...(entry.usePool ? defaultCandidates(entry) : []),
+              ...(entry.usePool ? defaultCandidates(entry, agentProfile?.minContext ?? 0) : []),
             ])
             const sourced = await resolveRouteSources(entry)
             if (sourced && sourced.length > 0) {
@@ -2697,6 +2721,7 @@ export default Plugin.define({
               pin: pin ?? null,
               autoEntry: entry ?? null,
               review: entry?.review === true,
+              profile: agentProfile,
               // Transcript tail so the judge weighs the turn's actual work
               // (files touched, prior failures), not the often-brief prompt.
               digest: doneTranscript(rows, {

@@ -96,6 +96,26 @@ pin storage). Rationale worth remembering when extending it:
   a route pin records the parked-from entry so the idle reset restores the
   right one. The deprecated `auto` key and the legacy flat object are parsed
   into the same record with a one-line notice.
+- **Agent profiles** (`agents`): the session's active agent (`build`, `plan`,
+  `explore`, or a custom subagent id) is the stance signal the user already
+  chose, so routing reads `Session.Info.agent` on every prompt. A profile can
+  replace the entry kind's instruction text, raise the Console pool's context
+  floor, and band the offered effort levels. The entry still owns the pool and
+  candidates - a profile never adds or removes models. The floor only raises (a
+  stance can demand more context, never less than the entry allows) and is
+  applied while candidates are built, so it cannot fight the pool cut; the
+  effort band filters the built option set instead of clamping the answer, so a
+  pick can never name a level the model does not list, and a model with nothing
+  inside the band keeps its nearest level rather than dropping out. Built-ins
+  cover `plan` (planning criteria, 200k floor, at least medium effort) and
+  `explore` (cheapest model, low-to-medium effort); `build` is the explicit
+  baseline. Unmapped agents change nothing, which keeps custom subagents
+  opt-in. `agents: false` is the process-wide escape hatch. `criteria`
+  accepts a named stance (`@review`, `@plan`, `@explore`) that resolves to the
+  canonical text, or `@default`/`@build` to clear back to the entry kind's
+  text, so a user-defined review agent references the review stance
+  (`REVIEW_AGENT_CRITERIA`) instead of copying it; a named stance is never an
+  implicit profile, so it cannot make an unknown agent id route.
 - **The stand-down lattice** (in priority order for any prompt): a foreign
   manual pick (newest `model-switched` not matching the session pin) wins
   over everything; a return to the recorded base model re-arms auto; a

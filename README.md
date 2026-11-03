@@ -10,7 +10,7 @@ A **decision model** answers typed questions about content with calibrated proba
 | **Secret scrubbing** | Known secret formats (`sk-…`, `ghp_…`, PEM keys, JWTs, …) are redacted from tool inputs and prompts - deterministic regex, never a model call. | on |
 | **Judgment tools** | The agent gets `jev_decide`, `jev_judge_many`, and `jev_screen` for verification, ranking, bounded choices, and scoring, with a durable answer cache. | on |
 | **Commands** | `/jev-screen`, `/jev-done-check`, `/jev-compact`, `/jev-approval-stats`, `/jev-models`, the `/jev-audit` panel with every UI-only event, and the `/jev-status` panel. | on |
-| **Model routing** | Before a turn, the decision model picks the model and reasoning effort it runs on - trivial prompts get the cheaper model. Engages only while the session sits on the `Auto` or `Auto Review` picker entry; both default to a pool drawn from the Console catalog and ranked by the public usage statistics behind [opencode.ai/data](https://opencode.ai/data). | Auto and Review on; effort off |
+| **Model routing** | Before a turn, the decision model picks the model and reasoning effort it runs on. Engages only on the `Auto` or `Auto Review` picker entry; agent profiles tune `plan` and `explore` turns. | Auto and Review on; effort off |
 | **Done-check** | At session idle, a completion probe notices if the agent stopped early - capped per user message and per session, silent when the turn is done. | off |
 | **Semantic search** | `jev_find` answers "where is this *discussed*?" - a decision-model cascade over the codebase for questions grep cannot phrase. | on |
 | **Approvals** | Permission requests are vetted (reversible? on-task? harmful?): routine work auto-runs, clearly harmful work is refused, you see only the uncertain middle. | off |
@@ -101,6 +101,9 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
             "fallback": "anthropic/claude-opus-4"
           }
         },
+        "agents": {                    // per-agent routing stance (build/plan/explore are built in)
+          "review": { "criteria": "@review", "effort": { "min": "medium" } }
+        },
         "effort": { "auto": true },    // per-prompt thinking level
         "doneCheck": { "auto": true }, // idle completion probe
         "find": { "enabled": true },   // semantic code search (on by default; false removes it)
@@ -122,6 +125,7 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 | `model` | `JEV_MODEL` env / `jev-1.13-free` | [Provider](docs/provider.md) |
 | `provider` | `"opencode"` (Console) | [Provider](docs/provider.md) |
 | `routes` | `{ "default": {}, "review": {} }`; extra keys become picker entries; each entry's Console cut inlines under `pool` | [Model routing](docs/routing.md) |
+| `agents` | `{ "build": {}, "plan": {}, "explore": {} }`; extra keys become agent profiles | [Model routing](docs/routing.md#agent-profiles) |
 | `auto` | deprecated alias for `routes` | [Model routing](docs/routing.md) |
 | `effort` | off | [Model routing](docs/routing.md) |
 | `doneCheck` | off | [Done-check](docs/done-check.md) |

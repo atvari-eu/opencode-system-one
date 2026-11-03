@@ -5,6 +5,7 @@ Jev can pick how each turn runs: the reasoning effort and, optionally, the model
 - `effort.auto` routes the reasoning variant of the current model (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - the levels the UI's effort picker offers).
 - `routes` is a record of routing meta models. `routes.default` ("Auto") and `routes.review` ("Auto Review") are built in and on by default; any other key registers an extra entry (`routes.triage`), which appears in the picker as `opencode-decisions/triage`. Each entry routes the model itself from its `candidates`: `provider/model` strings or `{ providerID, id }` objects. Typically a cheap fast model alongside the expensive one.
 - An entry with `kind: "review"` (the built-in `routes.review`) routes from its own pool with review-oriented criteria, and can never offer a model that the `routes.default` pool holds.
+- `agents` is a record of **agent profiles**. `agents.build`, `agents.plan`, and `agents.explore` are built in; any other key registers a profile for that agent or subagent id. The session's active agent refines the routing question for its turn: a profile can replace the stance text, raise the Console pool's context floor, and keep the offered effort levels inside a band ([Agent profiles](#agent-profiles)). Routing still happens only through an entry; an agent with no profile changes nothing.
 - Left unconfigured, an entry routes from a **default pool**: the OpenCode Console models your session currently lists (`opencode`/`opencode-go`, enabled, chat, tool-capable), ranked by the public usage statistics behind [opencode.ai/data](https://opencode.ai/data). Both default pools skip models the Console gates behind a data-training opt-in: free tiers (`-free` ids or a $0 price) and `-contributor` models (`muse-spark-*-contributor`, `iceman-contributor-free`). Those answer with a data-policy error unless the matching Privacy switch is on, so list them under `candidates` to route to them with consent enabled. The review kind takes the most-used model plus the two strongest of the top 18 by benchmark score. The default kind is a union of three signals over the remainder: the lowest real cost, the highest public usage, and the next strongest. Cost ranks by observed per-session cost, then by cache-adjusted token cost (measured token prices where reported, else list and cache-read prices weighted by the measured cache ratio); strength reads the benchmark results on each model's opencode.ai/data page (one small fetch per window model, cached for a day), keeps every 0-100 pass rate, scores a model's best run per benchmark and version relative to the best model in that group, and averages the groups it reports, pulling models with thin coverage toward the neutral midpoint. A model reporting nothing sits at that midpoint; when no group has three models, strength falls back to the measured output price, then the list price. The default kind's picks are restricted to models with a large context window (at least 500k tokens); the filter falls back to the full remainder when it would leave the pool empty. The two built-in splits are always disjoint; a cut inlined on another entry is independent (see below). Nothing is baked in; with no Console chat provider the pool is empty and routing stays off. The pool never ranks another provider's models: name those under `candidates` or `favorites`. Leaderboard ids are matched structurally (free-tier alias, dated build suffix, `canonical_id` when the registry exposes it), never by a hard-coded model list, so an id the catalog cannot agree on is simply skipped.
 - With both on, an entry turn is one combined `(model, level)` question, not two competing decisions.
 - The routing question carries a `<candidate-models>` block: per offered model, context window, output limit, list token prices, measured cache-hit share, public usage rank, relative benchmark strength (only when the model reports usable benchmarks), release month, and tool/image-input flags. The values come from the live model catalog and the opencode.ai/data snapshots the pools already use, with missing values omitted rather than guessed; no extra request is made for them.
@@ -41,6 +42,44 @@ Its pool is **always disjoint from the `default` entry's pool**, whatever the co
 - `routes.review` is on by default; set `"routes": { "review": false }` to drop the entry.
 - Selecting `Auto Review` engages review routing; the idle reset returns the session to `auto-review` (the route pin records which entry it came from, so entries never restore into each other).
 - A review turn with no unique candidates left falls back exactly like the default entry: configured fallback, then the session's last-used real model, then the first pool entry.
+
+## Agent profiles
+
+Routing also reads the session's **active agent** (`Session.Info.agent`): `build`, `plan`, `explore`, or any custom subagent id. The agent is the stance the user already chose, so a profile can refine the question without changing which entry or pool the turn routes through. A child session that inherits the `Auto` entry is routed with its own agent id (`explore`, or a custom subagent), so the same mechanism covers subagents; a child session on a model of its own is left alone unless `effort.auto` is on, and an agent with no profile (for example `general`) keeps the entry's criteria.
+
+Built-in profiles (`agents` is a record of profiles keyed by agent id; three are built in):
+
+| Agent | Stance | Effort band | Context floor |
+| --- | --- | --- | --- |
+| `build` | baseline: the entry kind's criteria | none | the entry's own |
+| `plan` | scoping, decomposition, unknowns and risks before code | at least `medium` | 200k (applied only when above the entry's floor) |
+| `explore` | search and read; cheapest model that follows instructions | `low` to `medium` | the entry's own |
+
+Each field is optional:
+
+- `criteria` replaces the entry kind's instruction text for this turn. It is the full stance, not a sentence appended to the kind's text. A `@name` value references a named stance (`@review`, `@plan`, `@explore`) instead of pasting its text; `@default` or `@build` restores the entry kind's baseline text.
+- `minContext` is an additional context floor applied to the Console pool cut. It only raises the entry's own floor (a lower value never weakens the entry's cut), and it has no effect on explicit `candidates`, which are pinned as written.
+- `effort` bands the offered `(model, level)` options. `{ "min": "medium" }` keeps medium and above, `{ "max": "low" }` keeps low and below, and `{ "min": "medium", "max": "high" }` keeps both ends. A single level string (`"effort": "high"`) is shorthand for a floor. Options outside the band are not offered, so the judge cannot pick them. When a model lists no level inside the band, its nearest level survives rather than the model dropping out. The band also applies when only `effort.auto` is on (no model routing).
+
+Agents are matched by exact id from the live session; stances are never inferred from names. An absent or unmapped agent leaves routing exactly as configured. Add any other agent or subagent the same way, for example a custom review agent:
+
+```jsonc
+"agents": {
+  "review": {
+    "criteria": "@review",
+    "effort": { "min": "medium" }
+  },
+  "my-planner": { "criteria": "@plan", "minContext": 320000 }
+}
+```
+
+`@review` is a named stance, not an agent the plugin defines: OpenCode ships no `review` agent, so nothing acts on it until you create that agent yourself. The text it resolves to reads:
+
+> This is a REVIEW turn: the assistant is inspecting a change for defects. Prioritize correctness, thoroughness, and subtle problems over speed and price: pick the model with the strongest reasoning and enough context to hold the whole diff and the code it touches, and use enough effort to catch what a quick skim misses.
+
+The other named stances are the built-in texts of `plan` and `explore`, so a custom plan-like subagent can share the plan wording without copying it. `@default` and its alias `@build` are baselines rather than texts: they clear the profile's criteria so the entry kind's own text applies, which is how a built-in stance is turned off again (`"plan": { "criteria": "@default" }`). An unknown `@name` logs a warning and leaves the profile's criteria unchanged.
+
+`"agents": { "<id>": false }` drops one profile (including a built-in), and `"agents": false` disables every profile. A user entry merges over the built-in for the same id, so overriding just `effort` keeps the built-in criteria and floor. Precedence: the entry owns the pool and candidates; the agent profile owns the stance text, the added context floor, and the effort band. When both apply, the profile wins on those three.
 
 ## Candidate sources
 
@@ -95,6 +134,10 @@ The window and the picks inside it are built in this order:
 | `routes.<id>.pool.minContext` | `500000` (`0` for `review`) | Context floor for the cut; `0` disables it. |
 | `routes.<id>.minConfidence` | `0.45` | Minimum confidence required to switch model; clamped 0.25-0.99. Pair mode splits probability across many options, so a pick needs a lower bar than a simple verdict would. |
 | `routes.<id>.fallback` | - | Real model (`provider/model`) switched to when a turn on this entry cannot be routed; without it the session's last-used model is the fallback. |
+| `agents` | `{ "build": {}, "plan": {}, "explore": {} }` | Record of agent profiles keyed by OpenCode agent id. Omitted or `true` uses the built-in set; `false` disables every profile. Built-in keys `build`, `plan`, and `explore` carry the stances above; any other key registers a profile for that agent or subagent id. |
+| `agents.<id>.criteria` | `@build` for `build`, `@plan` for `plan`, `@explore` for `explore`, `@default` for other ids | Full routing instruction text for the agent's turns; replaces the entry kind's criteria. Each built-in defaults to its own named stance, and any other id defaults to `@default`; both `@build` and `@default` are the baseline, so the entry's text applies. A `@name` value references a named stance (`@review`, `@plan`, `@explore`); `@default`/`@build` restores the baseline. |
+| `agents.<id>.minContext` | `0` (`200000` for `plan`) | Additional Console pool context floor; only raises the entry's floor. |
+| `agents.<id>.effort` | none (`{ "min": "medium" }` for `plan`, `{ "min": "low", "max": "medium" }` for `explore`) | Effort band for offered options: `{ min, max }` or a level string (a floor). `false` clears it. |
 | `effort.auto` | `false` | Routes the plain per-variant thinking level of the current model; pairs with auto inside the loop. |
 | `effort.minConfidence` | `0.45` | Minimum confidence required to switch the reasoning variant. |
 

@@ -506,6 +506,197 @@ export function parseRouteEntries(raw: unknown, legacy: RouteAliases = {}): Pars
 }
 
 // ---------------------------------------------------------------------------
+// Agent profiles (`agents`): the session's active OpenCode agent refines a
+// routing turn. The agent is the stance the user already chose, so it can
+// replace the entry kind's instruction text, raise the Console pool's context
+// floor, and band the offered effort levels. An entry still owns the pool and
+// candidates; a profile never adds or removes models.
+// ---------------------------------------------------------------------------
+
+export interface AgentEffortBand {
+  /** Lowest effort level to offer. */
+  min?: string
+  /** Highest effort level to offer. */
+  max?: string
+}
+
+export interface AgentRouteProfile {
+  /** Agent id the profile is declared under (`build`, `plan`, `explore`, or a
+   * user-defined subagent id). */
+  id: string
+  /** Full instruction text for the routing question, replacing the entry
+   * kind's stance. Absent keeps the kind's text. */
+  criteria?: string
+  /** Additional context floor for the Console pool cut. Only ever raises the
+   * entry's own floor; explicit candidates are untouched. */
+  minContext?: number
+  /** Effort band applied to the options offered for this turn. */
+  effort?: AgentEffortBand
+}
+
+/** Built-in stances for OpenCode's own agents. `build` is the baseline and
+ * deliberately carries no overrides; it is listed so the config surface is
+ * discoverable and `agents.build.<field>` has something to override. */
+export const BUILTIN_AGENT_PROFILES: Record<string, Omit<AgentRouteProfile, "id">> = {
+  build: {},
+  plan: {
+    criteria:
+      "This is a PLANNING turn: the assistant is scoping the work, decomposing it into steps, and surfacing unknowns, risks, and dependencies before code is written. Prefer the model with the strongest reasoning and the broadest context; do not trade capability for price, because a wrong plan costs the whole implementation.",
+    minContext: 200_000,
+    effort: { min: "medium" },
+  },
+  explore: {
+    criteria:
+      "This is an EXPLORATION turn: the assistant is searching, reading, and mapping the codebase. Prefer the cheapest model that can follow instructions reliably and keep reasoning effort low; escalate only when the material is genuinely hard to interpret.",
+    effort: { min: "low", max: "medium" },
+  },
+}
+
+/** Canonical review stance. OpenCode ships no agent id `review`, so the plugin
+ * registers no profile for one; a user-defined review agent points at this
+ * text with `"criteria": "@review"` instead of copying it. */
+export const REVIEW_AGENT_CRITERIA =
+  "This is a REVIEW turn: the assistant is inspecting a change for defects. Prioritize correctness, thoroughness, and subtle problems over speed and price: pick the model with the strongest reasoning and enough context to hold the whole diff and the code it touches, and use enough effort to catch what a quick skim misses."
+
+/** Named stances `agents.<id>.criteria` can reference as `@<name>`. `default`
+ * and `build` are baselines, not texts: they clear the profile's criteria so
+ * the entry kind's own text applies. */
+const AGENT_STANCE_PRESETS: Record<string, string | undefined> = {
+  review: REVIEW_AGENT_CRITERIA,
+  plan: BUILTIN_AGENT_PROFILES.plan?.criteria,
+  explore: BUILTIN_AGENT_PROFILES.explore?.criteria,
+}
+
+const AGENT_STANCE_BASELINES = new Set(["default", "build"])
+
+/** Resolves a `criteria` value: a `@name` reference becomes the named stance,
+ * any other text is the stance itself. `@default`/`@build` return null (clear
+ * to the entry kind's text). An unknown reference warns and returns undefined,
+ * which leaves the profile's current criteria in place. */
+function resolveAgentStance(text: string, id: string, warnings: string[]): string | null | undefined {
+  if (!text.startsWith("@")) return text
+  const name = text.slice(1).trim().toLowerCase()
+  if (AGENT_STANCE_BASELINES.has(name)) return null
+  const stance = AGENT_STANCE_PRESETS[name]
+  if (stance) return stance
+  warnings.push(
+    `"agents.${id}.criteria" references unknown stance "${text.slice(0, 40)}" - ignored (valid: @default, @build, @review, @plan, @explore)`,
+  )
+  return undefined
+}
+
+export interface ParsedAgentProfiles {
+  profiles: AgentRouteProfile[]
+  /** Ignored-field and dropped-profile notices for the host to log once. */
+  warnings: string[]
+}
+
+const AGENT_EFFORT = new Set(EFFORT_ORDER)
+
+const effortBound = (raw: unknown): string | undefined =>
+  typeof raw === "string" && AGENT_EFFORT.has(raw.trim()) ? raw.trim() : undefined
+
+/** Parses one `agents.<id>.effort` value: `{ min, max }`, a single level (a
+ * floor), or `false` to clear the profile's band. `undefined` means the field
+ * was absent; `null` means an explicit clear. Malformed bounds warn and leave
+ * the current value, so a typo never removes a stance. */
+function parseAgentEffort(
+  raw: unknown,
+  id: string,
+  warnings: string[],
+): AgentEffortBand | null | undefined {
+  if (raw === undefined) return undefined
+  if (raw === false) return null
+  if (typeof raw === "string") {
+    const level = effortBound(raw)
+    if (level) return { min: level }
+    warnings.push(`"agents.${id}.effort" is not a known effort level - ignored`)
+    return undefined
+  }
+  if (!isRouteObject(raw)) {
+    warnings.push(`"agents.${id}.effort" must be a level string, an object, or false - ignored`)
+    return undefined
+  }
+  const band: AgentEffortBand = {}
+  if ("min" in raw) {
+    const level = effortBound(raw.min)
+    if (level) band.min = level
+    else warnings.push(`"agents.${id}.effort.min" is not a known effort level - ignored`)
+  }
+  if ("max" in raw) {
+    const level = effortBound(raw.max)
+    if (level) band.max = level
+    else warnings.push(`"agents.${id}.effort.max" is not a known effort level - ignored`)
+  }
+  if (band.min && band.max && EFFORT_ORDER.indexOf(band.min) > EFFORT_ORDER.indexOf(band.max)) {
+    warnings.push(`"agents.${id}.effort.max" is below "min" - ignoring the maximum`)
+    delete band.max
+  }
+  if (!band.min && !band.max) return "min" in raw || "max" in raw ? undefined : null
+  return band
+}
+
+/** Parses the `agents` option: built-in stances merged with per-agent
+ * overrides. A profile value is an object (`criteria`, `minContext`,
+ * `effort`), or `false` to drop it; `"agents": false` disables every profile
+ * including the built-ins. Effort accepts `{ min, max }` or a single level
+ * (a floor). Malformed fields warn and leave the current value, so a typo
+ * never removes a stance. Never throws. */
+export function parseAgentProfiles(raw: unknown): ParsedAgentProfiles {
+  const warnings: string[] = []
+  const profiles = new Map<string, AgentRouteProfile>(
+    Object.entries(BUILTIN_AGENT_PROFILES).map(([id, profile]) => [id, { id, ...profile }]),
+  )
+  if (raw === false) return { profiles: [], warnings }
+  if (raw === undefined || raw === true) return { profiles: [...profiles.values()], warnings }
+  if (!isRouteObject(raw)) {
+    warnings.push(`"agents" must be an object or false - ignoring ${JSON.stringify(raw)}`)
+    return { profiles: [...profiles.values()], warnings }
+  }
+  for (const [id, value] of Object.entries(raw)) {
+    const key = id.trim()
+    if (key === "") {
+      warnings.push('"agents" has an empty key - ignored')
+      continue
+    }
+    if (value === false) {
+      profiles.delete(key)
+      continue
+    }
+    if (!isRouteObject(value)) {
+      warnings.push(`"agents.${key}" must be an object or false - ignored`)
+      continue
+    }
+    const profile: AgentRouteProfile = profiles.get(key) ?? { id: key }
+    if ("criteria" in value) {
+      if (typeof value.criteria === "string") {
+        const text = value.criteria.trim()
+        if (!text) delete profile.criteria
+        else {
+          const stance = resolveAgentStance(text, key, warnings)
+          if (stance === null) delete profile.criteria
+          else if (stance !== undefined) profile.criteria = stance
+        }
+      } else {
+        warnings.push(`"agents.${key}.criteria" must be a string - ignored`)
+      }
+    }
+    if ("minContext" in value) {
+      const n = value.minContext
+      if (typeof n === "number" && Number.isFinite(n) && n >= 0) profile.minContext = Math.floor(n)
+      else warnings.push(`"agents.${key}.minContext" must be a non-negative number - ignored`)
+    }
+    if ("effort" in value) {
+      const effort = parseAgentEffort(value.effort, key, warnings)
+      if (effort === null) delete profile.effort
+      else if (effort !== undefined) profile.effort = effort
+    }
+    profiles.set(key, profile)
+  }
+  return { profiles: [...profiles.values()], warnings }
+}
+
+// ---------------------------------------------------------------------------
 // Default routing pool: the Console catalog, ranked by public usage
 // ---------------------------------------------------------------------------
 
@@ -1596,6 +1787,41 @@ export interface PairOptionSource {
   levels: string[]
 }
 
+/** Keeps a model's listed effort levels inside an agent's band. An empty
+ * result would strand the model, so when none of its levels fit, the nearest
+ * one is kept (ties go to the stronger side when a floor is set, else to the
+ * cheaper side). Unknown levels - including the "default" pseudo-level of a
+ * model with no variants - pass through untouched. */
+export function clampEffortLevels(levels: readonly string[], band: AgentEffortBand | undefined): string[] {
+  const all = [...levels]
+  if (!band) return all
+  const lo = band.min ? EFFORT_ORDER.indexOf(band.min) : -1
+  const hi = band.max ? EFFORT_ORDER.indexOf(band.max) : -1
+  if (lo < 0 && hi < 0) return all
+  const loIdx = lo < 0 ? 0 : lo
+  const hiIdx = hi < 0 ? EFFORT_ORDER.length - 1 : hi
+  const known = all.filter((level) => EFFORT_ORDER.includes(level))
+  if (known.length === 0) return all
+  const inBand = all.filter((level) => {
+    const index = EFFORT_ORDER.indexOf(level)
+    return index < 0 || (index >= loIdx && index <= hiIdx)
+  })
+  if (inBand.length > 0) return inBand
+  const distance = (level: string): number => {
+    const index = EFFORT_ORDER.indexOf(level)
+    return index < loIdx ? loIdx - index : index > hiIdx ? index - hiIdx : 0
+  }
+  let best = known[0]!
+  for (const level of known.slice(1)) {
+    const d = distance(level)
+    const bestDistance = distance(best)
+    if (d < bestDistance || (d === bestDistance && lo >= 0 && EFFORT_ORDER.indexOf(level) > EFFORT_ORDER.indexOf(best))) {
+      best = level
+    }
+  }
+  return all.filter((level) => level === best || !EFFORT_ORDER.includes(level))
+}
+
 // Builds (model, level) options: current model's listed levels first, then
 // candidates in config order. A listed-variant-less candidate becomes a
 // single "default" pair (a plain model switch). Candidates are dropped whole
@@ -1785,6 +2011,10 @@ export interface RouteInput {
   autoEntry?: { providerID: string; modelID: string } | null
   /** Use the review criteria: this turn is on the auto-review entry. */
   review?: boolean
+  /** The active agent's stance. When set, `criteria` replaces the entry kind's
+   * instruction text and `effort` bands the offered levels; `minContext` is
+   * applied by the adapter when it builds the Console pool. */
+  profile?: AgentRouteProfile | null
   /** Optional per-model price hint for the option criteria. */
   tier?: (providerID: string, modelID: string) => string
   /** Catalog + public-stat facts for one offered model. Missing facts are
@@ -1838,7 +2068,10 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
 
   // ---- legacy effort-only flow (unchanged semantics, variant picks only) ----
   if (!config.model) {
-    const levels = await input.levelsFor(input.current.providerID, input.current.modelID)
+    const levels = clampEffortLevels(
+      await input.levelsFor(input.current.providerID, input.current.modelID),
+      input.profile?.effort,
+    )
     if (levels.length === 0) return { mode: "effort", logs, errors }
     const currentVariant = normVariant(input.current.variant)
     const current = currentVariant.toLowerCase()
@@ -1960,6 +2193,10 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
 
   const pairMode = config.effort && config.candidates.length > 0
   const review = input.review === true
+  const profile = input.profile ?? null
+  const band = profile?.effort
+  const stance = profile?.criteria
+  const agentNote = stance ? ` The session's active agent is "${profile!.id}".` : ""
   const finalize = (extra: Partial<RouteOutcome>): RouteOutcome => ({
     mode: pairMode ? "pair" : "model",
     logs,
@@ -1972,11 +2209,15 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
   let question: QuestionLike
   let lead: string
   if (pairMode) {
-    const currentLevels = (await input.levelsFor(input.current.providerID, input.current.modelID)).filter((l) =>
-      EFFORT_ORDER.includes(l),
+    const currentLevels = clampEffortLevels(
+      (await input.levelsFor(input.current.providerID, input.current.modelID)).filter((l) =>
+        EFFORT_ORDER.includes(l),
+      ),
+      band,
     )
     const sources: PairOptionSource[] = []
-    for (const c of config.candidates) sources.push({ candidate: c, levels: await input.levelsFor(c.providerID, c.modelID) })
+    for (const c of config.candidates)
+      sources.push({ candidate: c, levels: clampEffortLevels(await input.levelsFor(c.providerID, c.modelID), band) })
     const built = buildPairOptions(
       { providerID: currentRef.providerID, modelID: currentRef.id, variant: currentRef.variant },
       currentLevels,
@@ -1989,10 +2230,11 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
     lead = review
       ? "A user message in an OpenCode coding session is quoted below. The session is on the review routing entry; decide which model should run the assistant's review turn and how much reasoning effort it should use. The available model+level pairs are listed in the question."
       : "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn and how much reasoning effort it should use; the available model+level pairs are listed in the question."
+    if (agentNote) lead += agentNote
     question = {
       id: "route",
       type: "choice",
-      instructions: review ? ROUTE_REVIEW_PAIR_INSTRUCTIONS : ROUTE_PAIR_INSTRUCTIONS,
+      instructions: stance ?? (review ? ROUTE_REVIEW_PAIR_INSTRUCTIONS : ROUTE_PAIR_INSTRUCTIONS),
       criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])),
     }
   } else {
@@ -2000,10 +2242,11 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
     lead = review
       ? "A user message in an OpenCode coding session is quoted below. The session is on the review routing entry; decide which model should run the assistant's review turn. The available models are listed in the question."
       : "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn for it; the available models are listed in the question."
+    if (agentNote) lead += agentNote
     question = {
       id: "route",
       type: "choice",
-      instructions: review ? ROUTE_REVIEW_MODEL_INSTRUCTIONS : ROUTE_MODEL_INSTRUCTIONS,
+      instructions: stance ?? (review ? ROUTE_REVIEW_MODEL_INSTRUCTIONS : ROUTE_MODEL_INSTRUCTIONS),
       criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])),
     }
   }
