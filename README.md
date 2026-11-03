@@ -90,7 +90,7 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
       "package": "github:atvari-eu/opencode-decisions",
       "options": {
         "model": "jev-1.13",           // judgment model (default: jev-1.13-free, or JEV_MODEL)
-        "auto": {                      // routing meta models (default + review are built in)
+        "routes": {                    // routing meta models (default + review are built in)
           "default": {
             "candidates": ["openrouter/anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4"],
             "fallback": "openrouter/anthropic/claude-3.5-haiku",
@@ -121,9 +121,8 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 | `cache` | on | [Tools & commands](docs/tools.md) |
 | `model` | `JEV_MODEL` env / `jev-1.13-free` | [Provider](docs/provider.md) |
 | `provider` | `"opencode"` (Console) | [Provider](docs/provider.md) |
-| `auto` | record; `default` + `review` entries on, extra keys become picker entries | [Model routing](docs/routing.md) |
-| `autoReview` | deprecated alias for `auto.review` | [Model routing](docs/routing.md) |
-| `pool` | on; top 18, auto 1/1/1, review 0/1/2 | [Model routing](docs/routing.md) |
+| `routes` | `{ "default": {}, "review": {} }`; extra keys become picker entries; each entry's Console cut inlines under `pool` | [Model routing](docs/routing.md) |
+| `auto` | deprecated alias for `routes` | [Model routing](docs/routing.md) |
 | `effort` | off | [Model routing](docs/routing.md) |
 | `doneCheck` | off | [Done-check](docs/done-check.md) |
 | `find` | on | [Semantic search](docs/find.md) |
@@ -139,7 +138,7 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 - User prompt text is never edited for instructions (scrub aside); guidance lives in the tool descriptions.
 - Compaction never rewrites user/assistant text and never applies partial decisions.
 - Approvals never override configured deny rules; automatic decisions are an explicit delegation, bounded by deterministic gates.
-- `Auto Review` never routes to a model in `Auto`'s pool: overlapping candidates, sources, and fallbacks are filtered before the review question is built.
+- `Auto Review` never routes to a model in `Auto`'s pool: overlapping candidates, pool picks, and fallbacks are filtered before the review question is built.
 
 ## Documentation
 

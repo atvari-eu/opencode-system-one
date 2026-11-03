@@ -94,15 +94,24 @@ them here.
   (DESIGN.md "Prompt-notes" has the history); description-led guidance is the
   escalation path.
 - Option keys: `model` is the judgment-model override (a string); per-turn
-  model routing lives under `auto`, a record of meta models. The built-ins
+  model routing lives under `routes`, a record of meta models (the deprecated
+  `auto` key is still accepted as an alias). The built-ins
   `default` and `review` are on by default and keep the picker ids
   `opencode-decisions/auto` and `opencode-decisions/auto-review` (parked
   sessions and route pins reference those ids); any other key registers
   `opencode-decisions/<key>`. Each entry engages only while the session sits
   on its exact entry, and a review-kind pool is always disjoint from the
-  `default` entry's pool. The Console default-pool shape lives top-level
-  under `pool` (default on); per-entry keys never carry counts. One key must
-  never carry both a string and an object meaning.
+  `default` entry's pool (the kind also selects the review routing
+  criteria, independent of an inlined cut). The Console cut inlines on the
+  entry itself under
+  `pool` (`true` takes the kind's built-in cut, `false` disables it, an
+  object sets `cheap`/`popular`/`strong`/`topK`/`minContext`), with
+  `favorites` beside it, so there is no shared pool registry; a review-kind
+  entry still subtracts the `default` entry's pool at route time. `pool`
+  carries a boolean-or-object
+  meaning, never a string (named pools were removed and a leftover string
+  warns and fails closed). One key must never carry both a string and an
+  object meaning.
 
 ## Conventions
 

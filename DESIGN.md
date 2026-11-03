@@ -82,8 +82,8 @@ pin storage). Rationale worth remembering when extending it:
   support variants, not two stacked judgments. Two separate calls would
   race each other's switches and double the latency; one call also lets
   the criteria state the cheaper-model-preference coherently.
-- **Record of entries, disjoint default pools**: `auto` is a record parsed
-  by `parseAutoEntries` (`src/logic.ts`). `default` and `review` are built
+- **Record of entries, disjoint default pools**: `routes` is a record parsed
+  by `parseRouteEntries` (`src/logic.ts`). `default` and `review` are built
   in and on by default; they keep the legacy picker ids
   `opencode-decisions/auto` and `opencode-decisions/auto-review` because
   parked sessions and `route-pin` records reference them. Any other key gets
@@ -94,8 +94,8 @@ pin storage). Rationale worth remembering when extending it:
   configuration overlap can never make the two compete for a model. Review
   turns use their own criteria (correctness and thoroughness over cost), and
   a route pin records the parked-from entry so the idle reset restores the
-  right one. The legacy flat `auto` object and the `autoReview` key are
-  parsed into the same record with a one-line notice.
+  right one. The deprecated `auto` key and the legacy flat object are parsed
+  into the same record with a one-line notice.
 - **The stand-down lattice** (in priority order for any prompt): a foreign
   manual pick (newest `model-switched` not matching the session pin) wins
   over everything; a return to the recorded base model re-arms auto; a
@@ -110,29 +110,25 @@ pin storage). Rationale worth remembering when extending it:
   every config merger, not just OpenCode's. `effort-pin/...` keys are read
   as fallbacks so upgrades from the pre-rename storage keep working. A
   later rename folded the whole group under `auto` when the engagement
-  gate changed (see below); that rename carried no backward compatibility
-  by decision of the repo owner.
-- **Candidate sources** (`auto.<id>.sources`): the pool may extend past the
-  static `candidates` list with what the session itself knows - TUI
-  favorites (`~/.local/state/opencode/model.json` under `XDG_STATE_HOME`)
-  and OpenCode's Console models ranked by the public usage leaderboard
-  behind opencode.ai/data (`/data/index.json`, provider-less model ids
-  matched against the session catalog, `plan` choosing `opencode` or
-  `opencode-go`). The leaderboard fetch is one per process, bounded at
-  10 s, snapshotted in plugin storage and fail-open to cost-only ranking;
-  `"popular"` is the source's default mode (top 10, clamped 1-40), and
-  the pre-2026 local read (`session_message` rows over 30 days) remains
-  available as the opt-in `"local"` ranking. Baked decisions: sources are
-  opt-in (they widen what routing may switch to) and additive-only
-  (explicit candidates stay ahead of sourced ones); the prompt hook runs
-  per prompt, so the sources snapshot is read exactly once per process,
-  shared across concurrent hooks via an in-flight memo, with up to three
-  attempts when the first local read fails transiently; they fail open
-  (missing file / failed DB read = no candidates from that source, logged
-  once on change), and malformed shapes disable rather than guess (bar a
-  clamped count). Availability gating happens twice: after merging, every
-  candidate is checked against *this session's* catalog - provider auth
-  and workspace enablement decide membership, so an unavailable
+  gate changed (see below), and a third rename moved it to `routes` while
+  the `auto` key kept working as an alias; that last change keeps the record
+  distinct from the `effort.auto` boolean and the picker name.
+- **Candidate sources** (`routes.<id>.favorites`, `routes.<id>.pool`): an
+  entry may extend past the static `candidates` list with what the session
+  itself knows - TUI favorites (`~/.local/state/opencode/model.json` under
+  `XDG_STATE_HOME`) and the Console pool. The local-usage ranking
+  (`sources.opencode`, `session_message` rows over 30 days) was removed
+  outright, and the `sources` wrapper followed when pool/favorites moved onto
+  the entry: a leftover `sources` object warns and contributes nothing, and
+  the public-usage ranking lives in each entry's `pool` cut. Baked
+  decisions: sources are opt-in (they widen what routing may switch to) and
+  additive-only (explicit candidates stay ahead of sourced ones); the prompt
+  hook runs per prompt, so the favorites snapshot is read exactly once per
+  process, shared across concurrent hooks via an in-flight memo; it fails
+  open (missing file = no candidates from the source), and malformed shapes
+  disable rather than guess. Availability gating happens twice: after
+  merging, every candidate is checked against *this session's* catalog -
+  provider auth and workspace enablement decide membership, so an unavailable
   provider's models vanish from the domain entirely - and known-bad flags
   (`enabled: false`, `deprecated`/`disabled`/... status,
   `time.deprecated`) drop the entry with a once-per-candidate log, while
@@ -193,32 +189,45 @@ pin storage). Rationale worth remembering when extending it:
   keeps the conservative default: every gated model is excluded. The markers
   are structural (`-free`, `-contributor`, price), not a baked model list;
   explicit `candidates` still reach them, bypassing the switch read.
-  Auto's remaining candidates are filtered to the large-model class
+  The default kind's remaining candidates are filtered to the large-model class
   (`limit.context >= 500k`; the authenticated Console lists 200k-262k promo
   tiers beside the models people actually drive, and a tiny tier otherwise
   wins every cheap slot). That filter falls back to the unfiltered
-  remainder when it would empty auto, so a small-window catalog still
+  remainder when it would empty the split, so a small-window catalog still
   routes; a catalog left with only gated models yields empty pools (fail
   closed). Review is otherwise unfiltered and keeps the best models, while
-  auto can still escalate; disjointness holds by construction even when the
-  window is tiny. No model ids are baked: a stale id would
+  the default kind can still escalate; disjointness holds by construction
+  even when the window is tiny. No model ids are baked: a stale id would
   silently degrade into "routing off", and a user without a Console chat
   provider gets no default pool instead of being routed onto another
   provider. The leaderboard is fetched lazily (first prompt on a
   default-pool entry, or the first `/jev-status` open) so plugin startup
   keeps its old latency profile. Routing entries default on for the same
   reason: an entry only routes while the user selects it.
-  **Pool option** (2026-11-03): the default-pool shape is a top-level `pool`
-  option (`parsePoolOptions` in `src/logic.ts`), on by default with the
-  numbers above. It owns both splits - `auto` (topK, cheap/popular/strong,
-  `minContext`) and `review` (cheap/popular/strong) - because review-first
-  evaluation is what keeps them disjoint. Explicit `candidates` and sources
-  still win per entry; `pool: false` leaves an unconfigured entry with
-  nothing to route to, and its fallback chain still applies. Counts are
-  floored and clamped to `topK`; `0` disables an axis deliberately, while
-  malformed input keeps the default rather than silently turning routing
-  off. `topK` clamps 1-40 because the benchmark warm-up fetches one page per
-  window model.
+  **Pool cut** (2026-11-03): the Console cut is inlined on the entry itself
+  under `pool` (`parsePoolSplit` in `src/logic.ts`), so there is no
+  shared pool registry: `true` takes the kind's built-in cut, `false`
+  disables it, and an object sets `cheap`/`popular`/`strong`/`topK`/
+  `minContext`. The built-in cuts are `DEFAULT_POOL_SPLITS` (default
+  1/1/1 with a 500k floor, review 0/1/2 with none). Review-first evaluation
+  of the two built-in entries is what keeps their cuts disjoint; an entry
+  that inlines its own cut gets an independent slice over the same ranked
+  window (`poolCut`), since the user chose it. Route-time review
+  disjointness still subtracts the `default` entry's pool, so the invariant
+  holds regardless of which cut a review entry inlines. It ranks only
+  the OpenCode Console catalog (`opencode`/`opencode-go`), never another
+  provider's models. `pool` is a boolean-or-object key: named pools
+  and the top-level `pools` option were removed while the feature was a day
+  old, and a leftover string warns and fails closed (it never silently routes
+  onto a cut the user did not configure). `pool: false` leaves an
+  unconfigured entry with nothing to route to, and its fallback chain still
+  applies. Counts are floored and clamped to the cut's own `topK`; `0`
+  disables an axis deliberately, while malformed input keeps the default
+  rather than silently turning routing off. `topK` clamps 1-40 because the
+  benchmark warm-up fetches one page per window model, at the widest
+  configured window. The split key was renamed from `auto` to `default`
+  while the option was a day old; "auto" now belongs to the feature name and
+  the deprecated option alias only.
 - **`tierOf`**: a catalog-cost read that feeds a per-Mtok hint into option
   criteria; OpenCode 2 lists `cost` as a tier array and prices per modality
   (`cost.text.input.price`), so the reader takes the cheapest listed input
@@ -244,13 +253,13 @@ pin storage). Rationale worth remembering when extending it:
   injected judge must unwrap `.reply` (a former direct pass-through typed
   fine, passed tsc, and failed only at runtime - hence the comment at each
   injection site).
-- **The auto entry** (`auto.default.enable`): OpenCode has no "auto" model
+- **The auto entry** (`routes.default`): OpenCode has no "auto" model
   concept, so the plugin registers `opencode-decisions/auto` itself via
   `ctx.provider.transform` (Provider.Info.empty + Model.Info.default, a
   closed-port base URL so a direct invocation fails fast instead of
   hanging - fail-visible, never fail-silent). The entry is only ever a
   *resting point* the plugin routes away from.
-  `auto.<id>.fallback` exists because a failure *at* auto would otherwise
+  `routes.<id>.fallback` exists because a failure *at* auto would otherwise
   leave the turn running on a dead model - the adapter (not the logic)
   switches to the fallback, keeping it pinned so the loop continues.
   A 2026-10-18 incident showed a configured fallback alone is not
@@ -284,7 +293,7 @@ pin storage). Rationale worth remembering when extending it:
   (2) A fresh session has no pin and no
   `model-switched` row, so the emergency chain had no target and the turn
   executed on auto. The adapter now closes with the first named candidate
-  when both `auto.<id>.fallback` and history are absent, and a `switchModel`
+  when both `routes.<id>.fallback` and history are absent, and a `switchModel`
   the host rejects falls through the remaining usable candidates instead
   of leaving the session parked on the entry. Ordering stays: configured
   fallback > last-used real model > first candidate. The same remainder
@@ -314,7 +323,7 @@ pin storage). Rationale worth remembering when extending it:
   provenance (`route-pin` = a session of the auto loop, `effort-pin` = a
   plain effort session), and the per-prompt write keys off the outcome's
   mode (`pair`/`model` → route, `effort` → effort) so the two features
-  compose correctly when both are enabled. `auto.default.enable` defaults to
+  compose correctly when both are enabled. `routes.default.enable` defaults to
   `true` - with nothing to opt out of, registering the picker entry for
   everyone is the honest expose of the feature (and it cannot interfere
   with any model the user picks by hand).
