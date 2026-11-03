@@ -9,6 +9,10 @@ const sessionHolder = { current: undefined as string | undefined }
 const noopModule = { default: { id: "stub", setup: async () => async () => {} } }
 mock.module("../src/audit-panel.tsx", () => noopModule)
 mock.module("../src/footer-marker.tsx", () => noopModule)
+mock.module("../src/status-panel.tsx", () => ({
+  default: { id: "stub.status", setup: async () => async () => {} },
+  statusRefresh: { current: undefined },
+}))
 mock.module("../src/footer-jev-model.tsx", () => ({
   default: { id: "stub.model", setup: async () => async () => {} },
   sessionHolder,

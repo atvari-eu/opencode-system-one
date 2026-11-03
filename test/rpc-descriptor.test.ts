@@ -20,6 +20,13 @@ describe("makeJevRpc", () => {
     expect(definition.methods.set.input.required).toEqual(["sessionID", "model"])
     expect(definition.methods.reset.input.required).toEqual(["sessionID"])
     expect(definition.methods.configFault).toBeDefined()
+    expect(definition.methods.status).toBeDefined()
+    expect(definition.methods.status.output.required).toContain("pools")
+    const poolSchema = definition.methods.status.output.properties.pools.items
+    expect(poolSchema.properties.name).toBeDefined()
+    expect(poolSchema.properties.shape).toBeDefined()
+    expect(poolSchema.required).not.toContain("shape")
+    expect(definition.methods.status.output.properties.health.required).toEqual(["ok", "events"])
   })
 
   test("declares the transcript-free screen event", async () => {

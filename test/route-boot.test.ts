@@ -21,11 +21,21 @@ process.env.OPENCODE_BIN = "/bin/false"
 process.env.XDG_DATA_HOME = `/tmp/jev-nostore-${process.pid}`
 
 const AUTO = { providerID: "opencode-decisions", id: "auto" }
+const AUTO_REVIEW = { providerID: "opencode-decisions", id: "auto-review" }
 
-function makeHost(opts: { catalogAfterMs: number; catalog: any[]; candidates?: string[]; rejectSwitchTo?: string }) {
+function makeHost(opts: {
+  catalogAfterMs: number
+  catalog: any[]
+  candidates?: string[]
+  rejectSwitchTo?: string
+  auto?: any
+  autoReview?: any
+  model?: any
+}) {
   const startedAt = Date.now()
   const calls: Array<{ providerID: string; id: string; variant?: string }> = []
   const attempts: Array<{ providerID: string; id: string; variant?: string }> = []
+  const providerAdds: any[] = []
   let promptHook: ((event: any) => Promise<void>) | undefined
   let listCalls = 0
 
@@ -43,7 +53,8 @@ function makeHost(opts: { catalogAfterMs: number; catalog: any[]; candidates?: s
   const ctx: any = {
     options: {
       screen: { enabled: false },
-      auto: { candidates: opts.candidates ?? ["munito/cheap"] },
+      auto: opts.auto ?? { candidates: opts.candidates ?? ["munito/cheap"] },
+      ...(opts.autoReview !== undefined ? { autoReview: opts.autoReview } : {}),
     },
     location: { directory: "/tmp/jev-route-boot" },
     app: { version: "0.0.0-test" },
@@ -57,7 +68,7 @@ function makeHost(opts: { catalogAfterMs: number; catalog: any[]; candidates?: s
         if (name === "prompt") promptHook = fn
         return undefined
       },
-      get: async () => ({ data: { model: AUTO } }),
+      get: async () => ({ data: { model: opts.model ?? AUTO } }),
       context: async () => [],
       switchModel: async (input: any) => {
         attempts.push({ ...input.model })
@@ -87,7 +98,11 @@ function makeHost(opts: { catalogAfterMs: number; catalog: any[]; candidates?: s
       get: async () => null,
       transform: async (cb: any) => cb(noopEditor),
     },
-    provider: { transform: async (cb: any) => cb(noopEditor), get: async () => null, list: async () => [] },
+    provider: {
+      transform: async (cb: any) => cb({ ...noopEditor, add: (entry: any) => providerAdds.push(entry) }),
+      get: async () => null,
+      list: async () => [],
+    },
     event: { subscribe: async function* () {}, hook: async () => undefined, publish: async () => {} },
     permission: { hook: async () => undefined, askDecision: async () => null },
     rpc: { call: async () => null },
@@ -97,6 +112,7 @@ function makeHost(opts: { catalogAfterMs: number; catalog: any[]; candidates?: s
     ctx,
     calls,
     attempts,
+    providerAdds,
     listCalls: () => listCalls,
     firePrompt: async (text: string) => {
       if (!promptHook) throw new Error("prompt hook was not registered")
@@ -178,5 +194,67 @@ describe("auto-entry routing right after boot", () => {
     // when the host refuses it, the session must not stay on the auto entry.
     expect(host.attempts.map((a) => a.id)).toEqual(["cheap", "smart"])
     expect(host.calls.map((c) => c.id)).toEqual(["smart"])
+  })
+
+  test("registers auto and auto-review as distinct picker models", async () => {
+    const host = await setup(
+      makeHost({
+        catalogAfterMs: 0,
+        catalog: [],
+        candidates: ["munito/cheap"],
+        autoReview: { enable: true, candidates: ["review/deep"] },
+      }),
+    )
+
+    const models = host.providerAdds[0]?.models ?? []
+    const ids = models.map((model: any) => (typeof model.id === "string" ? model.id : model.id?.id))
+    expect(ids).toEqual(["auto", "auto-review"])
+    expect(models.map((model: any) => model.name)).toEqual(["Auto", "Auto Review"])
+  })
+
+  test("a custom meta model registers after the built-ins", async () => {
+    const host = await setup(
+      makeHost({
+        catalogAfterMs: 0,
+        catalog: [],
+        auto: {
+          default: { candidates: ["munito/cheap"] },
+          triage: { name: "Triage", candidates: ["munito/cheap"] },
+        },
+      }),
+    )
+
+    const models = host.providerAdds[0]?.models ?? []
+    expect(models.map((model: any) => (typeof model.id === "string" ? model.id : model.id?.id))).toEqual([
+      "auto",
+      "auto-review",
+      "triage",
+    ])
+    expect(models.map((model: any) => model.name)).toEqual(["Auto", "Auto Review", "Triage"])
+  })
+
+  test("auto-review never falls back to a model in the auto pool", async () => {
+    const host = await setup(
+      makeHost({
+        catalogAfterMs: 0,
+        candidates: ["munito/cheap"],
+        autoReview: {
+          enable: true,
+          // Both candidates are configured for review, but only review/deep
+          // is unique to its pool. The shared fallback must be ignored too.
+          candidates: ["munito/cheap", "review/deep"],
+          fallback: "munito/cheap",
+        },
+        catalog: [
+          { providerID: "munito", id: "cheap", variants: [] },
+          { providerID: "review", id: "deep", variants: [] },
+        ],
+        model: AUTO_REVIEW,
+      }),
+    )
+
+    await host.firePrompt("review the change")
+
+    expect(host.calls).toEqual([{ providerID: "review", id: "deep" }])
   })
 })

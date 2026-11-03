@@ -70,18 +70,32 @@ escalation path is an opt-in classifier folded into the existing per-prompt
 routing call (one round-trip, two questions, real since `routeTurn` pair
 mode), measured offline first.
 
-## Auto routing: one engine, two dials
+## Auto routing: one engine, a record of meta models
 
 Auto model routing and the older auto effort feature share one engine
 (`routeTurn` in `src/logic.ts`); `src/index.ts` only performs the
 OpenCode-side I/O the outcome declares (catalog lookups, `session.switchModel`,
 pin storage). Rationale worth remembering when extending it:
 
-- **Pair mode**: when `effort.auto` and `auto` are both on, the
+- **Pair mode**: when `effort.auto` and an entry route, the
   prompt hook asks one `(model, level)` question over the candidates that
   support variants, not two stacked judgments. Two separate calls would
   race each other's switches and double the latency; one call also lets
   the criteria state the cheaper-model-preference coherently.
+- **Record of entries, disjoint default pools**: `auto` is a record parsed
+  by `parseAutoEntries` (`src/logic.ts`). `default` and `review` are built
+  in and on by default; they keep the legacy picker ids
+  `opencode-decisions/auto` and `opencode-decisions/auto-review` because
+  parked sessions and `route-pin` records reference them. Any other key gets
+  its own pickup entry after the built-ins. Entry checks are by exact
+  `(providerID, id)`, and
+  review-kind routing subtracts the `default` entry's pool (explicit
+  candidates, sources, and fallback) before offering options - so
+  configuration overlap can never make the two compete for a model. Review
+  turns use their own criteria (correctness and thoroughness over cost), and
+  a route pin records the parked-from entry so the idle reset restores the
+  right one. The legacy flat `auto` object and the `autoReview` key are
+  parsed into the same record with a one-line notice.
 - **The stand-down lattice** (in priority order for any prompt): a foreign
   manual pick (newest `model-switched` not matching the session pin) wins
   over everything; a return to the recorded base model re-arms auto; a
@@ -98,45 +112,145 @@ pin storage). Rationale worth remembering when extending it:
   later rename folded the whole group under `auto` when the engagement
   gate changed (see below); that rename carried no backward compatibility
   by decision of the repo owner.
-- **Candidate sources** (`auto.sources`): the pool may extend past the
+- **Candidate sources** (`auto.<id>.sources`): the pool may extend past the
   static `candidates` list with what the session itself knows - TUI
   favorites (`~/.local/state/opencode/model.json` under `XDG_STATE_HOME`)
-  and OpenCode's own most-used models (`session_message` rows read
-  read-only via `bun:sqlite`, ranked by assistant-message count over 30
-  days). The `opencode` source's single ranking mode is "popular" (top 10
-  by default - hence `"opencode": true` is shorthand), and `plan` picks
-  the model family: `"zen"` (the `opencode` provider, default) or `"go"`
-  (the OpenCode Go subscription). Baked decisions: sources are opt-in
-  (they widen what routing may switch to) and additive-only (explicit
-  candidates stay ahead of sourced ones); the prompt hook runs per
-  prompt, so the sources snapshot is read exactly once per process (the
-  ranking shifts on a 30-day horizon - re-reading per prompt would only
-  burn I/O), shared across concurrent hooks via an in-flight memo, with
-  up to three attempts when the first read fails transiently; they fail
-  open (missing file / failed DB read = no candidates from that source,
-  logged once on change), and malformed shapes disable rather than guess
-  (bar a clamped count). Availability gating happens twice: after
-  merging, every candidate is checked against *this session's* catalog -
-  provider auth and workspace enablement decide membership, so an
-  unavailable provider's models vanish from the domain entirely - and
-  known-bad flags (`enabled: false`, `deprecated`/`disabled`/... status,
+  and OpenCode's Console models ranked by the public usage leaderboard
+  behind opencode.ai/data (`/data/index.json`, provider-less model ids
+  matched against the session catalog, `plan` choosing `opencode` or
+  `opencode-go`). The leaderboard fetch is one per process, bounded at
+  10 s, snapshotted in plugin storage and fail-open to cost-only ranking;
+  `"popular"` is the source's default mode (top 10, clamped 1-40), and
+  the pre-2026 local read (`session_message` rows over 30 days) remains
+  available as the opt-in `"local"` ranking. Baked decisions: sources are
+  opt-in (they widen what routing may switch to) and additive-only
+  (explicit candidates stay ahead of sourced ones); the prompt hook runs
+  per prompt, so the sources snapshot is read exactly once per process,
+  shared across concurrent hooks via an in-flight memo, with up to three
+  attempts when the first local read fails transiently; they fail open
+  (missing file / failed DB read = no candidates from that source, logged
+  once on change), and malformed shapes disable rather than guess (bar a
+  clamped count). Availability gating happens twice: after merging, every
+  candidate is checked against *this session's* catalog - provider auth
+  and workspace enablement decide membership, so an unavailable
+  provider's models vanish from the domain entirely - and known-bad flags
+  (`enabled: false`, `deprecated`/`disabled`/... status,
   `time.deprecated`) drop the entry with a once-per-candidate log, while
-  unknown statuses fail open. The 30-day local-usage window is the honest
-  proxy for "most used" because OpenCode publishes no global ranking.
+  unknown statuses fail open.
+- **Default pools** (2026-11-03): an entry with no `candidates` and no
+  enabled source no longer stays off. It routes from the **live session
+  registry** (`ctx.model.list()`), never a static catalog: `opencode`/
+  `opencode-go` chat models that the host currently lists, filtered by
+  `enabled`/status/`time.deprecated`, tool support, and a context window.
+  Duplicate model ids collapse to the provider with the lower listed price
+  (the same model is often cheaper on `opencode-go`; a fixed provider
+  preference silently picked the expensive entry), ranked by the public
+  leaderboard, truncated to the top 18. Leaderboard ids are matched
+  structurally: `-free` and dated build suffixes (`-1017`, `-1017-op`) fold
+  into the model they were built from, plus `canonical_id` when the
+  registry exposes it; a row neither side agrees on (Fireworks calls
+  DeepSeek V4.1 `v4p1-flash`) is skipped instead of guessed.
+  The review split takes the most-used model plus the 2 strongest by
+  benchmark score - review needs capable models, so it gets no cheap slot.
+  The default split is a union of three signals over the remainder: the
+  lowest **real** cost, the
+  highest public usage, and the next strongest. The usage slot is what
+  keeps a model the community drives from falling out just because three
+  cheaper ones exist (GLM-5.3-Flash was rank 3 by usage and 4th by cost).
+  Weights are 1/1/1: a wider cheap band would crowd out the popular and
+  strong slots, and review's 1 popular + 2 strong reproduces the previous
+  strongest-only trio on today's catalog while still swapping in a model
+  the community actually drives when one outranks it.
+  All four sections of the opencode.ai/data body feed the picks, not just
+  the leaderboard order: `sessionCost` (observed real spend) is the first
+  cost key, then cache-adjusted token cost - measured
+  `tokenPricesUsdPer1M` where present, else the catalog's list and
+  cache-read prices, weighted by the measured `cacheRatio` so a steep
+  cache discount is priced in. Strength reads the benchmark results on each
+  model's opencode.ai/data page: one small fetch per window model, once a day,
+  snapshotted in plugin storage (the per-model page is the only source; the
+  dashboard and `index.json` carry no benchmarks). Every result in the 0-100
+  range counts as a pass rate, which excludes Elo and rating scales. A model's
+  score is its best run per benchmark name and version relative to the best
+  model in that group, averaged across the groups it reports; groups fewer than
+  three models report are ignored, and a model with thin coverage is pulled
+  toward the neutral 0.5 so broad-but-shallow coverage cannot top the axis. A
+  model reporting nothing sits at that midpoint, and when no group is usable
+  the axis fails open to the measured output price and then the list price,
+  reproducing the pre-benchmark ranking. Usage is the tie-break. On the
+  2026-11-03 eligible window this puts `deepseek-v4.1-flash`,
+  `mimo-v2.6-pro`, `mimo-v2.6-flash` and `glm-5.3-flash` ahead of the priciest
+  model, `deepseek-v4-pro`. Both default
+  pools consult the workspace privacy switches, read from the Console API
+  (`GET /console/api/orgs/current` -> `org.privacy.training`) with the CLI's
+  OAuth session, and drop the models a disabled switch would refuse: free
+  promo tiers (`-free` ids or a $0 list price) under `training.free`,
+  `-contributor` models under `training.paid`. The model catalog does not
+  reflect those switches (a gated model stays listed and enabled, then fails
+  at request time with a data-policy error), so the read is separate. It is
+  cached for five minutes and refreshed in the background, never stalling a
+  prompt. An unreadable policy (no Console session, non-Console deployment)
+  keeps the conservative default: every gated model is excluded. The markers
+  are structural (`-free`, `-contributor`, price), not a baked model list;
+  explicit `candidates` still reach them, bypassing the switch read.
+  Auto's remaining candidates are filtered to the large-model class
+  (`limit.context >= 500k`; the authenticated Console lists 200k-262k promo
+  tiers beside the models people actually drive, and a tiny tier otherwise
+  wins every cheap slot). That filter falls back to the unfiltered
+  remainder when it would empty auto, so a small-window catalog still
+  routes; a catalog left with only gated models yields empty pools (fail
+  closed). Review is otherwise unfiltered and keeps the best models, while
+  auto can still escalate; disjointness holds by construction even when the
+  window is tiny. No model ids are baked: a stale id would
+  silently degrade into "routing off", and a user without a Console chat
+  provider gets no default pool instead of being routed onto another
+  provider. The leaderboard is fetched lazily (first prompt on a
+  default-pool entry, or the first `/jev-status` open) so plugin startup
+  keeps its old latency profile. Routing entries default on for the same
+  reason: an entry only routes while the user selects it.
+  **Pool option** (2026-11-03): the default-pool shape is a top-level `pool`
+  option (`parsePoolOptions` in `src/logic.ts`), on by default with the
+  numbers above. It owns both splits - `auto` (topK, cheap/popular/strong,
+  `minContext`) and `review` (cheap/popular/strong) - because review-first
+  evaluation is what keeps them disjoint. Explicit `candidates` and sources
+  still win per entry; `pool: false` leaves an unconfigured entry with
+  nothing to route to, and its fallback chain still applies. Counts are
+  floored and clamped to `topK`; `0` disables an axis deliberately, while
+  malformed input keeps the default rather than silently turning routing
+  off. `topK` clamps 1-40 because the benchmark warm-up fetches one page per
+  window model.
+- **`tierOf`**: a catalog-cost read that feeds a per-Mtok hint into option
+  criteria; OpenCode 2 lists `cost` as a tier array and prices per modality
+  (`cost.text.input.price`), so the reader takes the cheapest listed input
+  value and still accepts the legacy `cost.input` / `price.perMillion.input`
+  / bare-number shapes. Missing data simply yields no hint.
+- **Candidate facts** (2026-11-03): the routing state carries a capped
+  `<candidate-models>` block so the judge can weigh context size, price,
+  cache mix, popularity, and benchmark strength instead of a one-line price
+  hint. It is appended after the scrubbed prompt and digest, keyed by
+  `providerID/modelID` (the prefix of both option shapes, so pair mode does
+  not repeat a model per effort level), and rendered by pure
+  `catalogModelFacts` / `modelFactsBlock` in `src/logic.ts` from the live
+  session catalog plus the `LEADERBOARD_*` / `BENCHMARK_SCORES` snapshots.
+  No new fetch and no object state: the string shape stays. The adapter
+  whitelists fields, so host `headers`/`body`/`settings` overlays can never
+  leave the process. Caps are 8 rows / 1200 chars, rows dropped before
+  fields. Missing metadata omits the field and never fails the turn; a
+  benchmark score is emitted only when `strengthDetails` reports usable
+  groups, so the output-price fallback is never presented as measured
+  strength. Screening, generic judging, and the tools deliberately carry no
+  model facts: their decisions are about content, not models.
 - **`.reply` unwrap**: `cachedJudge` returns `{ reply, cached }`; every
   injected judge must unwrap `.reply` (a former direct pass-through typed
   fine, passed tsc, and failed only at runtime - hence the comment at each
   injection site).
-- **`tierOf`**: a defensive read across catalog cost shapes (`cost.input`,
-  `price.perMillion.input`, bare number) that feeds a per-Mtok hint into
-  option criteria; missing data simply yields no hint.
-- **The auto entry** (`auto.enable`): OpenCode has no "auto" model
+- **The auto entry** (`auto.default.enable`): OpenCode has no "auto" model
   concept, so the plugin registers `opencode-decisions/auto` itself via
   `ctx.provider.transform` (Provider.Info.empty + Model.Info.default, a
   closed-port base URL so a direct invocation fails fast instead of
   hanging - fail-visible, never fail-silent). The entry is only ever a
   *resting point* the plugin routes away from.
-  `auto.fallback` exists because a failure *at* auto would otherwise
+  `auto.<id>.fallback` exists because a failure *at* auto would otherwise
   leave the turn running on a dead model - the adapter (not the logic)
   switches to the fallback, keeping it pinned so the loop continues.
   A 2026-10-18 incident showed a configured fallback alone is not
@@ -170,7 +284,7 @@ pin storage). Rationale worth remembering when extending it:
   (2) A fresh session has no pin and no
   `model-switched` row, so the emergency chain had no target and the turn
   executed on auto. The adapter now closes with the first named candidate
-  when both `auto.fallback` and history are absent, and a `switchModel`
+  when both `auto.<id>.fallback` and history are absent, and a `switchModel`
   the host rejects falls through the remaining usable candidates instead
   of leaving the session parked on the entry. Ordering stays: configured
   fallback > last-used real model > first candidate. The same remainder
@@ -200,7 +314,7 @@ pin storage). Rationale worth remembering when extending it:
   provenance (`route-pin` = a session of the auto loop, `effort-pin` = a
   plain effort session), and the per-prompt write keys off the outcome's
   mode (`pair`/`model` → route, `effort` → effort) so the two features
-  compose correctly when both are enabled. `auto.enable` defaults to
+  compose correctly when both are enabled. `auto.default.enable` defaults to
   `true` - with nothing to opt out of, registering the picker entry for
   everyone is the honest expose of the feature (and it cannot interfere
   with any model the user picks by hand).
@@ -357,6 +471,28 @@ preview shown in the expanded row; passing screens stay content-free. The ring
 is TUI-side, so entries start when the TUI is running; the config fault is
 replayed through `configFault`. The retired `/jev-screen-history` view is now
 `/jev-audit` with the `s` filter.
+
+## TUI status panel
+
+`/jev-status` is the read-only counterweight to the audit trail. The server
+half computes one snapshot over the existing `jev-config` rpc (`status`):
+deployment health for the effective decision model (cached init/pick
+verdicts only - the panel never pings), the picker candidates with cached
+faults, every enabled feature with its resolved options, and both routing
+pools after source merging, review disjointness, and availability
+filtering. The pool step is assigned by the auto block, so it shares the
+prompt path's helpers and cannot drift from what routing would actually
+offer. The snapshot load is lazy: it may wait for the one-per-process
+leaderboard fetch, but never for a model call.
+
+Like the audit panel, `status-panel.tsx` is a **pure renderer**: `tui.ts`
+owns the rpc call, the durable `jev-status` store, and the refresh trigger
+(the panel's `r` key calls through an exported holder rather than
+subscribing). The panel renders sections in a fixed order - decision model,
+candidates, pools, health, features, then severity statistics folded from
+the same `jev-audit` ring (ok/warn/error/info counts, per-kind counts, the
+newest error). `r` refreshes, `c` copies the text rendering, `f` toggles
+fullscreen, `esc`/`q` closes, and a second `/jev-status` run toggles it.
 
 The auto done-check gets the same treatment in miniature: it is the one
 feature whose *purpose* is to write a waking row, so it cannot be free.

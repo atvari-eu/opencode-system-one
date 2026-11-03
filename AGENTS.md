@@ -9,7 +9,7 @@ them here.
 ## Commands
 
 - `bun` is not on PATH: run tests as `nix shell nixpkgs#bun -c bun test`
-  (433 tests, 23 files, ~7 s). That plus `typecheck` is the entire
+  (573 tests, 28 files, ~7 s). That plus `typecheck` is the entire
   check — there is no linter, formatter, codegen, or CI config to hunt
   for, and no build step (OpenCode loads `src/index.ts` directly).
 - Typecheck: `nix shell nixpkgs#bun -c bun install` once (dev deps), then
@@ -94,9 +94,15 @@ them here.
   (DESIGN.md "Prompt-notes" has the history); description-led guidance is the
   escalation path.
 - Option keys: `model` is the judgment-model override (a string); per-turn
-  model routing lives under `auto` (`auto.enable` default true, engages
-  only while the session sits on the `opencode-decisions/auto` entry) —
-  one key must never carry both a string and an object meaning.
+  model routing lives under `auto`, a record of meta models. The built-ins
+  `default` and `review` are on by default and keep the picker ids
+  `opencode-decisions/auto` and `opencode-decisions/auto-review` (parked
+  sessions and route pins reference those ids); any other key registers
+  `opencode-decisions/<key>`. Each entry engages only while the session sits
+  on its exact entry, and a review-kind pool is always disjoint from the
+  `default` entry's pool. The Console default-pool shape lives top-level
+  under `pool` (default on); per-entry keys never carry counts. One key must
+  never carry both a string and an object meaning.
 
 ## Conventions
 

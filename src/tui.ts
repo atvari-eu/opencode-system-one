@@ -35,12 +35,14 @@ import {
 } from "./logic"
 import { jevRpcClientOf, subscribeJevEvents, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
 import { AUDIT_STORE_KEY, appendAudit, auditEntryOf, type AuditEntry, type AuditKind } from "./audit"
+import { STATUS_STORE_KEY, type StatusStore } from "./status"
 // Static imports: the TUI loader compiles these TSX modules with its Solid
 // transform. Dynamic `import("./…tsx")` is resolved by Bun instead, which
 // cannot see the runtime-provided `solid-js` ("Cannot find package
 // 'solid-js'"). Static imports also let one module graph share the host's
 // Solid instance.
 import auditPanel from "./audit-panel.tsx"
+import statusPanel, { statusRefresh } from "./status-panel.tsx"
 import footerMarker from "./footer-marker.tsx"
 import footerModel, { sessionHolder } from "./footer-jev-model.tsx"
 
@@ -344,6 +346,98 @@ export default {
     })
     cleanups.push(unlisten)
 
+    // -- status panel: one read-only snapshot of the plugin --
+    // The snapshot itself comes from the server half (jev-config rpc.status):
+    // deployment health, picker candidates, enabled features, both routing
+    // pools. tui.ts owns the fetch and writes the durable store;
+    // status-panel.tsx renders it and asks for a refresh through
+    // `statusRefresh`.
+    let statusPanelLoaded = false
+    let statusPanelError = ""
+    try {
+      const statusCleanup = await statusPanel.setup(context)
+      cleanups.push(statusCleanup)
+      statusPanelLoaded = true
+    } catch (err) {
+      statusPanelError = String((err as Error)?.message ?? err)
+      console.log(`[jev] tui: status panel unavailable: ${statusPanelError}`)
+    }
+
+    const statusStore = context.storage.store<StatusStore>(STATUS_STORE_KEY, {
+      initial: { status: null, at: 0 },
+    })
+    const writeStatus = (mutation: (draft: StatusStore) => void): void => {
+      try {
+        statusStore[1]?.((draft: StatusStore) => mutation(draft))
+      } catch {}
+    }
+
+    // The jev-config subclient, built once (the descriptor construction
+    // resolves @opencode/plugin/rpc when the host has it; failure degrades to
+    // undefined and the commands toast the remedy).
+    let cachedRpc: any | undefined
+    let rpcChecked = false
+    const rpcOf = async (): Promise<any | undefined> => {
+      if (!rpcChecked) {
+        rpcChecked = true
+        cachedRpc = await jevRpcClientOf(context)
+      }
+      return cachedRpc
+    }
+
+    const currentSessionID = (): string | undefined => {
+      const fromSlot = sessionHolder?.current
+      if (typeof fromSlot === "string" && fromSlot) return fromSlot
+      try {
+        const route: any = (context as any).ui?.router?.current?.()
+        if (typeof route?.sessionID === "string" && route.sessionID) return route.sessionID
+        if (typeof route?.data?.sessionID === "string" && route.data.sessionID) return route.data.sessionID
+      } catch {}
+      return undefined
+    }
+
+    let statusBusy = false
+    const refreshStatus = async (): Promise<void> => {
+      if (statusBusy) return
+      statusBusy = true
+      writeStatus((draft) => {
+        draft.fetching = true
+        draft.error = undefined
+      })
+      try {
+        const jev = await rpcOf()
+        if (!jev?.status) {
+          writeStatus((draft) => {
+            draft.fetching = false
+            draft.error =
+              "status unavailable - this host has no jev-config rpc; restart OpenCode on a current version"
+          })
+          return
+        }
+        const sessionID = currentSessionID()
+        const snapshot = await jev.status(sessionID ? { sessionID } : {})
+        writeStatus((draft) => {
+          draft.status = snapshot ?? null
+          draft.at = Date.now()
+          draft.fetching = false
+          draft.error = undefined
+        })
+      } catch (err) {
+        writeStatus((draft) => {
+          draft.fetching = false
+          draft.error = String((err as Error)?.message ?? err)
+        })
+      } finally {
+        statusBusy = false
+      }
+    }
+    statusRefresh.current = () => {
+      void refreshStatus()
+    }
+    cleanups.push(() => {
+      statusRefresh.current = undefined
+    })
+
     // -- audit panel: all UI-only RPC events in one log --
     let auditPanelLoaded = false
     let auditPanelError = ""
@@ -361,7 +455,7 @@ export default {
     const unlayer = context.keymap.layer(() => ({
       mode: "global",
       commands: [
-        {
+         {
           id: "jev.audit",
           title: "Jev event audit",
           description: "Open the Jev RPC event log (screen, errors, config, scrub, approvals)",
@@ -389,6 +483,36 @@ export default {
               draft.selected = undefined
             })
             context.ui.panel.open("jev-audit")
+          },
+        },
+        {
+          id: "jev.status",
+          title: "Jev plugin status",
+          description:
+            "Open the status panel: decision model and candidates, routing pools, deployment health, enabled features, recent event severity",
+          group: "jev",
+          palette: true,
+          slash: { name: "jev-status" },
+          run: () => {
+            if (!statusPanelLoaded) {
+              context.ui.toast.show({
+                title: "jev",
+                message: statusPanelError
+                  ? `status panel unavailable: ${statusPanelError}`
+                  : "status panel unavailable - check the TUI log for the load error",
+                variant: "warning",
+                duration: 10_000,
+              })
+              return
+            }
+            const current = context.ui.panel?.current?.()
+            if (current?.name === "jev-status") {
+              context.ui.panel.close?.()
+              return
+            }
+            // Fetch before opening so the panel never flashes "no snapshot".
+            void refreshStatus()
+            context.ui.panel.open("jev-status")
           },
         },
         {
@@ -432,7 +556,6 @@ export default {
     }
     // Also the picker's current-session source: the footer slot carries the
     // session id of the session on screen, which command runs do not receive.
-    let lastSessionHolder: { current?: string } | undefined = sessionHolder
     try {
       const modelCleanup = await footerModel.setup(context)
       cleanups.push(modelCleanup)
@@ -460,30 +583,6 @@ export default {
           draft.sessions = { ...(draft.sessions ?? {}), [sessionID]: model }
         })
       } catch {}
-    }
-
-    const currentSessionID = (): string | undefined => {
-      const fromSlot = lastSessionHolder?.current
-      if (typeof fromSlot === "string" && fromSlot) return fromSlot
-      try {
-        const route: any = (context as any).ui?.router?.current?.()
-        if (typeof route?.sessionID === "string" && route.sessionID) return route.sessionID
-        if (typeof route?.data?.sessionID === "string" && route.data.sessionID) return route.data.sessionID
-      } catch {}
-      return undefined
-    }
-
-    // The jev-config subclient, built once (the descriptor construction
-    // resolves @opencode/plugin/rpc when the host has it; failure degrades
-    // to undefined and the command toasts the remedy).
-    let cachedRpc: any | undefined
-    let rpcChecked = false
-    const rpcOf = async (): Promise<any | undefined> => {
-      if (!rpcChecked) {
-        rpcChecked = true
-        cachedRpc = await jevRpcClientOf(context)
-      }
-      return cachedRpc
     }
 
     const toastOf = (message: string, variant: ToastOptions["variant"] = "info", duration = 8_000): void => {

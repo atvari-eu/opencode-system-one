@@ -32,6 +32,46 @@ export interface JevSetResult {
   message?: string
 }
 
+/** One registered routing entry's pool as /jev-status shows it: what the
+ * config declared, what the sources contributed, what the review
+ * disjointness subtracted, and what the session catalog currently accepts. */
+export interface JevStatusPool {
+  id: string
+  review: boolean
+  /** Picker title (name plus aliases). Optional for older hosts. */
+  name?: string
+  /** Default-pool cut ("1 cheap + 1 popular + 1 strong of the top 18"),
+   * present only for entries drawing the Console pool. */
+  shape?: string
+  enabled: boolean
+  explicit: string[]
+  sourced: string[]
+  excluded: string[]
+  usable: string[]
+  fallback?: string
+}
+
+/** One read-only snapshot for the /jev-status panel. */
+export interface JevStatusInfo {
+  /** Selected deployment (provider option text). */
+  provider: string
+  endpoint: string
+  /** Chain default decision model. */
+  model: string
+  /** Session pin; the effective model is `pick || model`. */
+  pick?: string
+  catalog: "live" | "snapshot" | "none" | "unknown"
+  health: {
+    ok: boolean
+    fault?: string
+    /** The jev-config event surface is available. */
+    events: boolean
+  }
+  models: Array<{ id: string; fault?: string }>
+  features: Array<{ name: string; state: string }>
+  pools: JevStatusPool[]
+}
+
 /** One screening verdict, sent server -> TUI over the `screen` event. This is
  * the UI-only channel: it feeds the verdict panel and the flagged/unsafe
  * toasts without writing anything to the session transcript. `error` carries
@@ -110,6 +150,73 @@ const methods = {
       type: "object",
       properties: { ok: { type: "boolean" } },
       required: ["ok"],
+      additionalProperties: false,
+    },
+  },
+  status: {
+    input: {
+      type: "object",
+      properties: { sessionID: STRING },
+      additionalProperties: false,
+    },
+    output: {
+      type: "object",
+      properties: {
+        provider: STRING,
+        endpoint: STRING,
+        model: STRING,
+        pick: STRING,
+        catalog: { type: "string", enum: ["live", "snapshot", "none", "unknown"] },
+        health: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            fault: STRING,
+            events: { type: "boolean" },
+          },
+          required: ["ok", "events"],
+          additionalProperties: false,
+        },
+        models: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { id: STRING, fault: STRING },
+            required: ["id"],
+            additionalProperties: false,
+          },
+        },
+        features: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { name: STRING, state: STRING },
+            required: ["name", "state"],
+            additionalProperties: false,
+          },
+        },
+        pools: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: STRING,
+              review: { type: "boolean" },
+              name: STRING,
+              shape: STRING,
+              enabled: { type: "boolean" },
+              explicit: { type: "array", items: STRING },
+              sourced: { type: "array", items: STRING },
+              excluded: { type: "array", items: STRING },
+              usable: { type: "array", items: STRING },
+              fallback: STRING,
+            },
+            required: ["id", "review", "enabled", "explicit", "sourced", "excluded", "usable"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["provider", "endpoint", "model", "catalog", "health", "models", "features", "pools"],
       additionalProperties: false,
     },
   },

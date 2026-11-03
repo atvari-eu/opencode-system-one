@@ -5,6 +5,9 @@
 
 import { describe, expect, test } from "bun:test"
 import {
+  AUTO_MODEL,
+  AUTO_PROVIDER,
+  AUTO_REVIEW_MODEL,
   buildModelOptions,
   buildPairOptions,
   candidateKey,
@@ -15,6 +18,7 @@ import {
   parseCandidates,
   parseRouteSources,
   pinMatches,
+  pseudoEntryFor,
   rankSourcePopular,
   refKey,
   resolveRouteAnswer,
@@ -22,6 +26,7 @@ import {
   routeTurn,
   type RouteConfig,
   type RouteInput,
+  withoutSharedPool,
 } from "../src/logic"
 
 const LEVELS: Record<string, string[]> = {
@@ -139,20 +144,23 @@ describe("pair option building", () => {
     ])
   })
 
-  test("candidates are dropped whole past the option cap, never trimmed", () => {
+  test("every candidate gets a level before extras consume the cap", () => {
     const many: Array<{ candidate: Candidate; levels: string[] }> = Array.from({ length: 5 }, (_, i) => ({
       candidate: { providerID: "p", modelID: `m${i}` },
       levels: ["low", "medium", "high"],
     }))
     const built = buildPairOptions({ providerID: "c", modelID: "cur", variant: "default" }, ["low", "medium"], many)
     expect(built.options.length).toBeLessThanOrEqual(MAX_OPTIONS)
-    // 2 current + 3 levels per candidate: fits 3 candidates, drops the rest
-    expect(built.included.map((c) => c.modelID)).toEqual(["m0", "m1", "m2"])
-    // no partial level lists: every included candidate contributes all its levels
-    for (const c of built.included) {
-      const keys = built.options.filter((o) => o.providerID === c.providerID && o.modelID === c.modelID)
-      expect(keys.map((o) => o.variant)).toEqual(["low", "medium", "high"])
-    }
+    // 2 current + 5 reserved levels: every candidate survives with a base
+    // level, and the leftover room goes to the earlier candidates' extras.
+    expect(built.included.map((c) => c.modelID)).toEqual(["m0", "m1", "m2", "m3", "m4"])
+    const levelsOf = (modelID: string): string[] =>
+      built.options.filter((o) => o.modelID === modelID).map((o) => o.variant ?? "")
+    expect(levelsOf("m0")).toEqual(["low", "medium", "high"])
+    expect(levelsOf("m1")).toEqual(["low", "medium", "high"])
+    expect(levelsOf("m2")).toEqual(["medium", "low"])
+    expect(levelsOf("m3")).toEqual(["medium"])
+    expect(levelsOf("m4")).toEqual(["medium"])
   })
 })
 
@@ -425,6 +433,57 @@ describe("scrub and state hygiene", () => {
   })
 })
 
+describe("candidate model facts", () => {
+  const FACTS = new Map<string, { providerID: string; modelID: string; contextTokens?: number }>([
+    ["acme/base", { providerID: "acme", modelID: "base", contextTokens: 128_000 }],
+    ["zeta/flagship", { providerID: "zeta", modelID: "flagship", contextTokens: 1_000_000 }],
+  ])
+  const factsOf = (providerID: string, modelID: string) => FACTS.get(`${providerID}/${modelID}`)
+
+  test("the block rides after the state and lists each model once", async () => {
+    const seen: string[] = []
+    await turn(PAIR_CONFIG, {
+      digest: "RECENT HEAVY WORK",
+      facts: factsOf,
+      judge: async (_q: unknown, state: unknown) => {
+        seen.push(String(state))
+        return { answers: { route: { choice: "acme/base#default", confidence: 0.9 } } }
+      },
+    })
+    const state = seen.join("")
+    expect(state).toContain("<recent-context>")
+    expect(state.indexOf("<candidate-models>")).toBeGreaterThan(state.indexOf("</recent-context>"))
+    expect(state.match(/- acme\/base:/g)?.length).toBe(1)
+    expect(state.match(/- zeta\/flagship:/g)?.length).toBe(1)
+  })
+
+  test("no facts callback keeps the state exactly as before", async () => {
+    const seen: string[] = []
+    await turn(PAIR_CONFIG, {
+      judge: async (_q: unknown, state: unknown) => {
+        seen.push(String(state))
+        return { answers: { route: { choice: "acme/base#default", confidence: 0.9 } } }
+      },
+    })
+    expect(seen.join("")).not.toContain("<candidate-models>")
+  })
+
+  test("facts cannot reintroduce unscrubbed prompt text", async () => {
+    const seen: string[] = []
+    await turn(MODEL_CONFIG, {
+      prompt: "use token sk_live_123",
+      scrub: (t: string) => t.replaceAll("sk_live_123", "[redacted]"),
+      facts: (p: string, m: string) => ({ providerID: p, modelID: m, contextTokens: 128_000 }),
+      judge: async (_q: unknown, state: unknown) => {
+        seen.push(String(state))
+        return { answers: { route: { choice: "acme/base", confidence: 0.9 } } }
+      },
+    })
+    expect(seen.join("")).toContain("<candidate-models>")
+    expect(seen.join("")).not.toContain("sk_live_123")
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Offline fixtures: one scripted judge reply per prompt, asserting the resolved
 // (model, level). The mock encodes the pick itself - these pin the wiring end
@@ -549,6 +608,63 @@ describe("auto pseudo-model entry", () => {
   })
 })
 
+describe("auto and auto-review entries", () => {
+  const entries = [
+    { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL },
+    { providerID: AUTO_PROVIDER, modelID: AUTO_REVIEW_MODEL },
+  ]
+
+  test("entry matching is exact, never by provider alone", () => {
+    expect(pseudoEntryFor(entries, { providerID: AUTO_PROVIDER, id: AUTO_MODEL })?.modelID).toBe(AUTO_MODEL)
+    expect(pseudoEntryFor(entries, { providerID: AUTO_PROVIDER, id: AUTO_REVIEW_MODEL })?.modelID).toBe(
+      AUTO_REVIEW_MODEL,
+    )
+    expect(pseudoEntryFor(entries, { providerID: AUTO_PROVIDER, id: "something-else" })).toBeNull()
+    expect(pseudoEntryFor(entries, { providerID: "acme", id: AUTO_MODEL })).toBeNull()
+  })
+
+  test("review pool never contains a model from the auto pool", () => {
+    const autoPool: Candidate[] = [
+      { providerID: "acme", modelID: "fast" },
+      { providerID: "zeta", modelID: "flagship" },
+    ]
+    const reviewPool: Candidate[] = [
+      { providerID: "acme", modelID: "fast" },
+      { providerID: "review", modelID: "deep" },
+    ]
+    expect(withoutSharedPool(reviewPool, autoPool)).toEqual([{ providerID: "review", modelID: "deep" }])
+  })
+
+  test("review criteria replace the cost-first auto criteria", async () => {
+    let instructions = ""
+    let state = ""
+    await turn(PAIR_CONFIG, {
+      review: true,
+      judge: async (questions: any, judgedState: any) => {
+        instructions = questions[0].instructions
+        state = String(judgedState)
+        return { answers: { route: { choice: "acme/fast#low", confidence: 0.9 } } }
+      },
+    })
+    expect(instructions).toContain("REVIEW turn")
+    expect(instructions).toContain("Prioritize correctness")
+    expect(state).toContain("review routing entry")
+  })
+
+  test("model-only review routing also uses review criteria", async () => {
+    let instructions = ""
+    await turn(MODEL_CONFIG, {
+      review: true,
+      judge: async (questions: any) => {
+        instructions = questions[0].instructions
+        return { answers: { route: { choice: "acme/base", confidence: 0.9 } } }
+      },
+    })
+    expect(instructions).toContain("REVIEW turn")
+    expect(instructions).toContain("Prioritize correctness")
+  })
+})
+
 // ---------------------------------------------------------------------------
 // parseRouteSources: dynamic candidate sources (favorites + opencode usage).
 // ---------------------------------------------------------------------------
@@ -572,17 +688,43 @@ describe("parseRouteSources", () => {
 
   test("opencode: true enables popular mode on the zen plan by default", () => {
     const on = parseRouteSources({ opencode: true })
-    expect(on.opencode).toEqual({ enabled: true, plan: "zen", limit: 10 })
+    expect(on.opencode).toEqual({ enabled: true, plan: "zen", limit: 10, popular: true, local: false })
   })
 
   test("popular is the default mode; a count sets the top size", () => {
-    expect(parseRouteSources({ opencode: {} }).opencode).toEqual({ enabled: true, plan: "zen", limit: 10 })
+    expect(parseRouteSources({ opencode: {} }).opencode).toEqual({
+      enabled: true,
+      plan: "zen",
+      limit: 10,
+      popular: true,
+      local: false,
+    })
     expect(parseRouteSources({ opencode: { popular: true } }).opencode.enabled).toBe(true)
     expect(parseRouteSources({ opencode: { popular: 5 } }).opencode).toEqual({
       enabled: true,
       plan: "zen",
       limit: 5,
+      popular: true,
+      local: false,
     })
+  })
+
+  test("local is a separate opt-in ranking", () => {
+    expect(parseRouteSources({ opencode: { local: true } }).opencode).toEqual({
+      enabled: true,
+      plan: "zen",
+      limit: 10,
+      popular: false,
+      local: true,
+    })
+    expect(parseRouteSources({ opencode: { popular: false, local: 3 } }).opencode).toEqual({
+      enabled: true,
+      plan: "zen",
+      limit: 3,
+      popular: false,
+      local: true,
+    })
+    expect(parseRouteSources({ opencode: { local: false } }).opencode.enabled).toBe(true)
   })
 
   test("plan selects zen or go; anything else disables", () => {
@@ -590,6 +732,8 @@ describe("parseRouteSources", () => {
       enabled: true,
       plan: "go",
       limit: 10,
+      popular: true,
+      local: false,
     })
     expect(parseRouteSources({ opencode: { plan: "zen" } }).opencode.plan).toBe("zen")
     expect(parseRouteSources({ opencode: { plan: "copilot" } }).opencode.enabled).toBe(false)
@@ -609,7 +753,13 @@ describe("parseRouteSources", () => {
   test("sources compose independently", () => {
     const cfg = parseRouteSources({ favorites: true, opencode: { plan: "go", popular: 3 } })
     expect(cfg.favorites).toBe(true)
-    expect(cfg.opencode).toEqual({ enabled: true, plan: "go", limit: 3 })
+    expect(cfg.opencode).toEqual({
+      enabled: true,
+      plan: "go",
+      limit: 3,
+      popular: true,
+      local: false,
+    })
   })
 })
 

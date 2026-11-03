@@ -32,6 +32,7 @@ Replies for identical (endpoint, model, state, questions) are served from durabl
 | `/jev-approval-stats` | lists which command patterns trigger approvals and how they resolve, so recurring asks can become explicit permission rules (see [Approvals](approvals.md)) |
 | `/jev-models [<id> \| reset]` | pins the System One judgment model for this session; every pick is ping-verified before it sticks (see [Provider](provider.md)) |
 | `/jev-audit` | opens the audit side panel with every UI-only event |
+| `/jev-status` | opens the status panel: decision model and candidates, routing pools, deployment health, enabled features, recent event severity |
 
 ## The audit panel (`/jev-audit`)
 
@@ -44,6 +45,19 @@ The panel carries every UI-only event - screen verdicts, errors, config faults, 
 - The panel opens at the newest row and follows it until you select one; long events are cropped to one row (click to select and expand). Filter chips are clickable too.
 - Screen rows keep the redacted, capped call that triggered them (`Screened output of: <call>`); flagged/unsafe rows add a capped result preview. Passing screens store no content.
 - Mouse selection is disabled in the panel; use `c`/`y` to copy.
+
+## The status panel (`/jev-status`)
+
+One read-only snapshot of the plugin, in sections:
+
+- **decision model** - the model that actually judges this session (a `/jev-models` pin wins over the chain default), the provider, and the endpoint;
+- **available decision models** - the picker candidates, with cached deployment faults (`✗ 401 unauthorized`) and a marker on the current one;
+- **model pools** - every routing entry separately (`auto`, `auto-review`, and any custom meta model): how many candidates are usable, what the config declared, what the sources merged in, what review disjointness excluded, the fallback, and the default-pool shape when it applies;
+- **health** - the cached init/pick deployment verdict (the panel never pings), the decision-catalog source (`live`/`snapshot`/`none`), and whether the `jev-config` event channel is available;
+- **features** - every feature with its resolved options: screen mode/annotation/tools, scrub, tools, commands, cache, effort.auto, both routing entries, done-check, find, approvals policy, compaction mode;
+- **recent events** - ok/warn/error/info counts and per-kind counts folded from the `/jev-audit` ring, plus the newest error.
+
+`r` refreshes the snapshot, `c` copies it as text, `f` toggles fullscreen, `esc`/`q` closes, and running `/jev-status` again toggles the panel. Event statistics update live while the panel is open; the other sections refresh on `r` or the next open. Mouse selection is disabled in the panel.
 
 ## Event toasts (`toasts`)
 

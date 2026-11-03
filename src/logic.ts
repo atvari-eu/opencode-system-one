@@ -198,6 +198,45 @@ export function parseCandidates(raw: unknown): Candidate[] {
 export const candidateKey = (c: { providerID: string; modelID: string }): string =>
   `${c.providerID}/${c.modelID}`
 
+// Pseudo-model entries registered by the plugin. They are resting points the
+// router moves away from, never runnable destinations, and each id is exact:
+// "auto" and "auto-review" must never be mistaken for one another.
+export const AUTO_PROVIDER = "opencode-decisions"
+export const AUTO_MODEL = "auto"
+export const AUTO_REVIEW_MODEL = "auto-review"
+
+export interface PseudoEntry {
+  providerID: string
+  modelID: string
+}
+
+export function isPseudoEntry(entry: PseudoEntry | null | undefined, model: any): boolean {
+  return !!entry && model?.providerID === entry.providerID && model?.id === entry.modelID
+}
+
+export function pseudoEntryFor<T extends PseudoEntry>(
+  entries: readonly T[],
+  model: any,
+): T | null {
+  return entries.find((entry) => isPseudoEntry(entry, model)) ?? null
+}
+
+export function pseudoEntryOfRef<T extends PseudoEntry>(
+  entries: readonly T[],
+  ref: any,
+): T | null {
+  const id = ref?.id ?? ref?.modelID
+  return entries.find((entry) => entry.providerID === ref?.providerID && entry.modelID === id) ?? null
+}
+
+/** Candidates a routing entry may offer, minus every model another entry
+ * already owns. Review routing is deliberately disjoint from the base auto
+ * pool: a shared model must never be pickable from both entries. */
+export function withoutSharedPool(candidates: Candidate[], pool: readonly Candidate[]): Candidate[] {
+  const blocked = new Set(pool.map(candidateKey))
+  return candidates.filter((candidate) => !blocked.has(candidateKey(candidate)))
+}
+
 // ---------------------------------------------------------------------------
 // Dynamic routing sources: candidates read from OpenCode's own local state
 // (TUI model favorites, local usage history) in addition to the static
@@ -210,20 +249,26 @@ export interface OpencodeSourceConfig {
   /** Which OpenCode plan's models to rank: "zen" (the `opencode` provider,
    * default) or "go" (the OpenCode Go subscription). */
   plan: "zen" | "go"
-  /** Top-N count of the ranking ("popular" - the only mode and the default
-   * when the source is enabled). */
+  /** Top-N count of each ranking. */
   limit: number
+  /** Rank by the public opencode.ai/data leaderboard. Default mode. */
+  popular: boolean
+  /** Also merge models from local 30-day usage (opt-in). */
+  local: boolean
 }
 
 export interface RouteSourcesConfig {
   /** Models starred in OpenCode's model picker (TUI favorites). */
   favorites: boolean
-  /** OpenCode's own models, ranked by local usage history. */
+  /** OpenCode's own models, ranked by the public leaderboard and/or local use. */
   opencode: OpencodeSourceConfig
 }
 
 const POPULAR_LIMIT_DEFAULT = 10
 const POPULAR_LIMIT_MAX = 40
+
+const isModeValue = (v: unknown): boolean =>
+  v === undefined || v === true || v === false || (typeof v === "number" && Number.isFinite(v))
 
 // A clamped magnitude - counts never disable the source.
 function parsePopularLimit(raw: unknown): number {
@@ -234,35 +279,216 @@ function parsePopularLimit(raw: unknown): number {
 
 // Accepts the route config's "sources":
 //   { "favorites": true,
-//     "opencode": true | { "plan"?: "zen" | "go", "popular"?: true | <count> } }
-// "opencode" toggles the source; "popular" is its default mode ("zen" plan,
-// top 10). Sources are off unless explicitly enabled - they widen what
-// routing may switch to, so absent or malformed keys must never turn them
-// on: an unrecognized plan or a non-numeric/non-boolean "popular" leaves the
-// source off instead of guessing. An explicit "popular": false idles it
-// (recognized, no other mode exists yet).
+//     "opencode": true | { "plan"?: "zen" | "go",
+//                          "popular"?: true | <count>,
+//                          "local"?: true | <count> } }
+// "popular" (the public opencode.ai/data leaderboard) is the default mode;
+// "local" additionally merges the machine's own 30-day usage. Sources are
+// off unless explicitly enabled - they widen what routing may switch to, so
+// absent or malformed keys must never turn them on: an unrecognized plan or
+// a non-numeric/non-boolean mode value leaves the source off instead of
+// guessing. "popular": false idles that ranking, so the source stays off
+// unless "local" is enabled.
 export function parseRouteSources(raw: unknown): RouteSourcesConfig {
   const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {}
-  let opencode: OpencodeSourceConfig = { enabled: false, plan: "zen", limit: POPULAR_LIMIT_DEFAULT }
+  let opencode: OpencodeSourceConfig = {
+    enabled: false,
+    plan: "zen",
+    limit: POPULAR_LIMIT_DEFAULT,
+    popular: false,
+    local: false,
+  }
   const src = obj.opencode
   if (src === true) {
-    opencode = { enabled: true, plan: "zen", limit: POPULAR_LIMIT_DEFAULT }
+    opencode = {
+      enabled: true,
+      plan: "zen",
+      limit: POPULAR_LIMIT_DEFAULT,
+      popular: true,
+      local: false,
+    }
   } else if (src && typeof src === "object" && !Array.isArray(src)) {
     const planKnown = src.plan === undefined || src.plan === "zen" || src.plan === "go"
-    const modeKnown =
-      src.popular === undefined ||
-      src.popular === true ||
-      src.popular === false ||
-      (typeof src.popular === "number" && Number.isFinite(src.popular))
-    if (planKnown && modeKnown) {
+    if (planKnown && isModeValue(src.popular) && isModeValue(src.local)) {
+      const local = src.local === true || (typeof src.local === "number" && Number.isFinite(src.local))
+      // Popular is on unless explicitly disabled or "local"-only was asked for.
+      const popularExplicit =
+        src.popular === true ||
+        src.popular === false ||
+        (typeof src.popular === "number" && Number.isFinite(src.popular))
+      const popular = popularExplicit ? src.popular !== false : !local
+      const limit =
+        typeof src.popular === "number" && Number.isFinite(src.popular)
+          ? parsePopularLimit(src.popular)
+          : parsePopularLimit(src.local)
       opencode = {
-        enabled: src.popular !== false,
+        enabled: popular || local,
         plan: (src.plan as "zen" | "go") ?? "zen",
-        limit: parsePopularLimit(src.popular),
+        limit,
+        popular,
+        local,
       }
     }
   }
   return { favorites: obj.favorites === true, opencode }
+}
+
+// ---------------------------------------------------------------------------
+// Routing meta models (`auto`): a record of pseudo-model entries. The built-in
+// `default` and `review` entries keep their legacy picker ids (`auto`,
+// `auto-review`) so parked sessions and route pins survive; custom keys get
+// `opencode-decisions/<key>`. Every entry carries the same option surface.
+// ---------------------------------------------------------------------------
+
+export type RouteEntryKind = "default" | "review"
+
+export interface RouteEntryConfig {
+  /** Default true. `false` on the entry value does the same thing. */
+  enable?: boolean
+  /** Criteria and default-pool split. Defaults to "review" for the built-in
+   * `review` key and "default" everywhere else. */
+  kind?: RouteEntryKind
+  name?: string
+  aliases?: string[]
+  candidates?: unknown
+  sources?: unknown
+  fallback?: unknown
+  minConfidence?: number
+}
+
+export interface ParsedRouteEntry extends PseudoEntry {
+  /** Config key: "default", "review", or a custom id. */
+  key: string
+  title: string
+  kind: RouteEntryKind
+  /** Derived from `kind`, so existing call sites keep reading one field. */
+  review: boolean
+  enable: boolean
+  candidates: Candidate[]
+  /** No explicit candidates and no enabled source: derive the pool from the
+   * Console catalog ranked by public usage. */
+  defaultPool: boolean
+  minConfidence: number
+  fallback: Candidate | null
+  sources: RouteSourcesConfig
+}
+
+export interface ParsedAutoEntries {
+  entries: ParsedRouteEntry[]
+  /** Deprecation and drop notices for the host to log once at setup. */
+  warnings: string[]
+}
+
+export const BUILTIN_ROUTE_MODEL_ID: Record<string, string> = {
+  default: AUTO_MODEL,
+  review: AUTO_REVIEW_MODEL,
+}
+export const BUILTIN_ROUTE_ORDER = ["default", "review"] as const
+
+const BUILTIN_ROUTE_NAMES: Record<string, string> = { default: "Auto", review: "Auto Review" }
+const ROUTE_KEY = /^[a-z][a-z0-9-]*$/
+const ROUTE_ENTRY_FIELDS = new Set([
+  "enable",
+  "kind",
+  "name",
+  "aliases",
+  "candidates",
+  "sources",
+  "fallback",
+  "minConfidence",
+])
+
+const isRouteObject = (value: unknown): value is Record<string, any> =>
+  !!value && typeof value === "object" && !Array.isArray(value)
+
+function routeEntryOf(key: string, raw: unknown): ParsedRouteEntry {
+  const obj = isRouteObject(raw) ? raw : {}
+  const aliases = (Array.isArray(obj.aliases) ? obj.aliases : [])
+    .filter((alias: unknown): alias is string => typeof alias === "string" && alias.trim() !== "")
+    .map((alias: string) => alias.trim())
+  const kind: RouteEntryKind =
+    obj.kind === "review" || (obj.kind === undefined && key === "review") ? "review" : "default"
+  const name =
+    typeof obj.name === "string" && obj.name.trim() !== ""
+      ? obj.name.trim()
+      : BUILTIN_ROUTE_NAMES[key] ?? key
+  const fallbackRaw: unknown = obj.fallback
+  const fallbackList = Array.isArray(fallbackRaw)
+    ? fallbackRaw
+    : typeof fallbackRaw === "string"
+      ? [fallbackRaw]
+      : fallbackRaw
+  const candidates = parseCandidates(obj.candidates)
+  const sources = parseRouteSources(obj.sources)
+  return {
+    providerID: AUTO_PROVIDER,
+    modelID: BUILTIN_ROUTE_MODEL_ID[key] ?? key,
+    key,
+    title: aliases.length > 0 ? `${name} (${aliases.join(", ")})` : name,
+    kind,
+    review: kind === "review",
+    enable: obj.enable !== false,
+    candidates,
+    defaultPool: candidates.length === 0 && !sources.favorites && !sources.opencode.enabled,
+    minConfidence: clampThreshold(obj.minConfidence, 0.25, 0.99, 0.45),
+    fallback: parseCandidates(fallbackList)[0] ?? null,
+    sources,
+  }
+}
+
+/** Parses the `auto` option into routing entries. Accepts the record shape,
+ * the legacy flat entry (treated as `default`), a global boolean, and the
+ * deprecated `autoReview` key as an alias for `auto.review`. Built-ins are
+ * always present (disabled entries included, so `/jev-status` can print them)
+ * and come first; custom entries keep declaration order. Never throws. */
+export function parseAutoEntries(raw: unknown, legacyReview?: unknown): ParsedAutoEntries {
+  const warnings: string[] = []
+  const record: Record<string, unknown> = {}
+  if (isRouteObject(raw)) {
+    const flat = !("default" in raw) && !("review" in raw) && Object.keys(raw).some((key) => ROUTE_ENTRY_FIELDS.has(key))
+    if (flat) {
+      warnings.push('a flat "auto" object is now "auto.default"; the old shape still works')
+      record.default = raw
+    } else {
+      Object.assign(record, raw)
+    }
+  }
+  if (legacyReview !== undefined) {
+    if ("review" in record) {
+      warnings.push('"autoReview" is ignored because "auto.review" is set')
+    } else {
+      warnings.push('"autoReview" is deprecated - use "auto.review"')
+      if (legacyReview === false || legacyReview === null) record.review = false
+      else if (isRouteObject(legacyReview)) record.review = legacyReview
+    }
+  }
+
+  const entries: ParsedRouteEntry[] = []
+  const seenIDs = new Set<string>()
+  const take = (key: string, value: unknown): void => {
+    const entry = routeEntryOf(key, value)
+    if (seenIDs.has(entry.modelID)) {
+      warnings.push(`routing entry "${key}" is dropped: model id ${entry.modelID} is already used`)
+      return
+    }
+    seenIDs.add(entry.modelID)
+    if (raw === false || value === false) entry.enable = false
+    entries.push(entry)
+  }
+  for (const key of BUILTIN_ROUTE_ORDER) take(key, key in record ? record[key] : {})
+  for (const [key, value] of Object.entries(record)) {
+    if (key in BUILTIN_ROUTE_MODEL_ID) continue
+    if (!ROUTE_KEY.test(key)) {
+      warnings.push(`routing entry "${key}" is dropped: keys must match ${ROUTE_KEY}`)
+      continue
+    }
+    if (ROUTE_ENTRY_FIELDS.has(key)) {
+      warnings.push(`routing entry "${key}" is dropped: that key is a reserved entry field`)
+      continue
+    }
+    take(key, value)
+  }
+  return { entries, warnings }
 }
 
 // Ranks usage rows into same-provider candidates: rows carry flattened
@@ -290,6 +516,963 @@ export function rankSourcePopular(
     .sort((a, b) => b.steps - a.steps || (a.modelID < b.modelID ? -1 : a.modelID > b.modelID ? 1 : 0))
     .slice(0, limit)
     .map(({ providerID, modelID }) => ({ providerID, modelID }))
+}
+
+// Ranks one provider's catalog models by the public usage leaderboard (the
+// model ids behind opencode.ai/data): only leaderboard models that exist in
+// the session catalog count, ordered by leaderboard position and truncated to
+// `limit`. Never throws, never returns duplicates.
+export function rankSourceLeaderboard(
+  models: Array<{ providerID?: unknown; modelID?: unknown }>,
+  leaderboard: readonly string[],
+  providerID: string,
+  limit: number,
+): Candidate[] {
+  if (!Number.isFinite(limit) || limit < 1) return []
+  const rank = new Map(leaderboard.map((id, index) => [id, index]))
+  const seen = new Set<string>()
+  const ranked: Array<Candidate & { at: number }> = []
+  for (const model of models) {
+    if (model.providerID !== providerID) continue
+    const modelID = typeof model.modelID === "string" ? model.modelID.trim() : ""
+    if (!modelID || seen.has(modelID)) continue
+    const at = rank.get(modelID)
+    if (at === undefined) continue
+    seen.add(modelID)
+    ranked.push({ providerID, modelID, at })
+  }
+  return ranked
+    .sort((a, b) => a.at - b.at)
+    .slice(0, limit)
+    .map(({ providerID, modelID }) => ({ providerID, modelID }))
+}
+
+// ---------------------------------------------------------------------------
+// Default routing pool: the Console catalog, ranked by public usage
+// ---------------------------------------------------------------------------
+
+/** One benchmark observation from a model's opencode.ai/data page. Scores for
+ * the same `name` and `version` are comparable; different harnesses of the
+ * same benchmark are not distinguished, so callers collapse them to the best
+ * score before ranking. */
+export interface BenchmarkScore {
+  name: string
+  version?: string
+  score: number
+}
+
+/** Catalog + public-stat facts for one model offered to the router. A
+ * whitelist by construction: never a spread of the host's model info, which
+ * carries `headers`/`body`/`settings` overlays that must not leave the
+ * process. Missing fields are omitted, not defaulted. */
+export interface ModelFacts {
+  providerID: string
+  modelID: string
+  /** Context window in tokens. */
+  contextTokens?: number
+  /** Maximum output tokens. */
+  outputTokens?: number
+  /** Lowest listed input price per Mtok. */
+  inputCost?: number
+  /** Lowest listed output price per Mtok. */
+  outputCost?: number
+  /** Listed cache-read price per Mtok. */
+  cacheReadCost?: number
+  /** Observed cache-hit share (0..1) from opencode.ai/data. */
+  cacheRatio?: number
+  /** 1-based position in the public top-models list. */
+  usageRank?: number
+  /** Release date, epoch ms. */
+  releasedAt?: number
+  /** The catalog's tool-call capability flag. */
+  tools?: boolean
+  /** The catalog lists image input. */
+  imageInput?: boolean
+  /** Benchmark observations from the model's opencode.ai/data page. */
+  benchmarks?: BenchmarkScore[]
+}
+
+export interface PoolModel {
+  providerID: string
+  modelID: string
+  /** The catalog's canonical model id (`deepseek/deepseek-v4.1-flash`),
+   * shared by every provider that serves the same model. */
+  canonicalID?: string
+  /** Lowest listed input price; undefined when the catalog lists none. */
+  inputCost?: number
+  /** Lowest listed output price; undefined when the catalog lists none. */
+  outputCost?: number
+  /** Listed cache-read price per Mtok, when the catalog exposes one. */
+  cacheReadCost?: number
+  /** Context window, the model's only structured size signal in the catalog. */
+  contextTokens?: number
+  /** Observed cost of one real session (USD), when opencode.ai/data reports
+   * it. More faithful than a list price for a cache-heavy agentic turn. */
+  sessionCost?: number
+  /** Actual average token prices (USD per Mtok) measured by opencode.ai/data
+   * ("Token cost"). What was paid, not the list price. */
+  tokenInputCost?: number
+  tokenOutputCost?: number
+  tokenCachedInputCost?: number
+  /** Share of input tokens that hit the cache (0..1), from opencode.ai/data
+   * ("Cache ratio"). Turns the listed input price into a real one. */
+  cacheRatio?: number
+  /** 1-based position in the public top-models list, when ranked. */
+  usageRank?: number
+  /** Benchmark observations from the model's opencode.ai/data page. The
+   * strong axis percentiles these within the pool; an empty list means the
+   * page had none, which falls back to output price. */
+  benchmarks?: BenchmarkScore[]
+}
+
+/** Default routing pool: window size plus the picks each entry gets.
+ * Both pools are a union of the same three signals - lowest real token cost
+ * (`cheap`), highest public usage (`popular`), highest benchmark strength
+ * (`strong`, output price as the fallback when a model has no benchmark) - so
+ * a model the community drives cannot fall out just for being fourth cheapest.
+ * Review picks first: it is the reviewer, so it takes strength and usage and
+ * no cost slot. Auto takes the remainder.
+ * `autoMinContext` keeps auto's picks out of the toy-model class: the
+ * leaderboard also lists small 262k-context tiers beside the 1M-context
+ * models people actually drive. It is a floor, not an exact-size test - a
+ * model without a context window fails open. */
+export const DEFAULT_POOL = {
+  topK: 18,
+  autoCheap: 1,
+  autoPopular: 1,
+  autoStrong: 1,
+  reviewCheap: 0,
+  reviewPopular: 1,
+  reviewStrong: 2,
+  autoMinContext: 500_000,
+} as const
+
+/** Slot counts for one split of the Console default pool. */
+export interface PoolSplitCounts {
+  /** Lowest real-cost picks; 0 disables the cost axis. */
+  cheap: number
+  /** Highest public-usage picks left after cheap. */
+  popular: number
+  /** Strongest picks left after cheap and popular. */
+  strong: number
+}
+
+export interface PoolAutoSplit extends PoolSplitCounts {
+  /** Context floor for the default-kind split; 0 disables it. */
+  minContext: number
+}
+
+/** The top-level `pool` option: the Console default pool, enabled by default
+ * with the built-in shape. Explicit `candidates` and sources still win over
+ * it. */
+export interface PoolOptions {
+  enable: boolean
+  /** Leaderboard-ranked window considered before the slot picks. */
+  topK: number
+  auto: PoolAutoSplit
+  review: PoolSplitCounts
+}
+
+export const DEFAULT_POOL_OPTIONS: PoolOptions = {
+  enable: true,
+  topK: DEFAULT_POOL.topK,
+  auto: {
+    cheap: DEFAULT_POOL.autoCheap,
+    popular: DEFAULT_POOL.autoPopular,
+    strong: DEFAULT_POOL.autoStrong,
+    minContext: DEFAULT_POOL.autoMinContext,
+  },
+  review: {
+    cheap: DEFAULT_POOL.reviewCheap,
+    popular: DEFAULT_POOL.reviewPopular,
+    strong: DEFAULT_POOL.reviewStrong,
+  },
+}
+
+const poolCount = (value: unknown, fallback: number, hi: number): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.min(hi, Math.floor(value))
+    : fallback
+
+/** Parses the top-level `pool` option. `false` (or `enable: false`) disables
+ * the pool; missing or malformed values keep the built-in shape, and a
+ * malformed count keeps its own default rather than silently disabling an
+ * axis the user did not mention. `0` is a valid count. `topK` clamps 1-40
+ * (one benchmark page is fetched per window model). */
+export function parsePoolOptions(raw: unknown): PoolOptions {
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {}
+  const enable = raw !== false && obj.enable !== false
+  const topK = Math.max(1, poolCount(obj.topK, DEFAULT_POOL.topK, 40))
+  const split = (value: unknown, defaults: PoolSplitCounts): PoolSplitCounts => {
+    const entry = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {}
+    return {
+      cheap: poolCount(entry.cheap, defaults.cheap, topK),
+      popular: poolCount(entry.popular, defaults.popular, topK),
+      strong: poolCount(entry.strong, defaults.strong, topK),
+    }
+  }
+  const autoRaw = obj.auto && typeof obj.auto === "object" && !Array.isArray(obj.auto) ? (obj.auto as Record<string, any>) : {}
+  return {
+    enable,
+    topK,
+    auto: {
+      ...split(autoRaw, DEFAULT_POOL_OPTIONS.auto),
+      minContext:
+        typeof autoRaw.minContext === "number" && Number.isFinite(autoRaw.minContext) && autoRaw.minContext >= 0
+          ? Math.floor(autoRaw.minContext)
+          : DEFAULT_POOL.autoMinContext,
+    },
+    review: split(obj.review, DEFAULT_POOL_OPTIONS.review),
+  }
+}
+
+/** One split rendered for logs/status, omitting zero slots
+ * ("1 cheap + 1 popular + 1 strong"). */
+export function poolShapeText(options: PoolOptions, split: "auto" | "review"): string {
+  const counts: PoolSplitCounts = split === "review" ? options.review : options.auto
+  const parts: string[] = []
+  if (counts.cheap > 0) parts.push(`${counts.cheap} cheap`)
+  if (counts.popular > 0) parts.push(`${counts.popular} popular`)
+  if (counts.strong > 0) parts.push(`${counts.strong} strong`)
+  return parts.length > 0 ? parts.join(" + ") : "no picks"
+}
+
+const NO_COST = Number.MAX_SAFE_INTEGER
+
+/** Reads a model's per-million-token price across the catalog's shapes
+ * (`cost` as a tier array in OpenCode 2, legacy `cost.input`, `price`).
+ * Returns the lowest finite tier value: the model's cheapest context tier. */
+export function modelCost(info: unknown, kind: "input" | "output"): number | undefined {
+  if (!info || typeof info !== "object") return undefined
+  const entry = info as Record<string, any>
+  const fromCost = (cost: any): number[] => {
+    if (typeof cost === "number") return [cost]
+    if (!cost || typeof cost !== "object") return []
+    const values: number[] = []
+    const direct = kind === "input" ? cost.input : cost.output
+    if (typeof direct === "number") values.push(direct)
+    const perMillion = cost.perMillion?.[kind]
+    if (typeof perMillion === "number") values.push(perMillion)
+    // OpenCode 2 prices per modality: `cost.text.input.price`.
+    const perModality = cost.text?.[kind]?.price
+    if (typeof perModality === "number") values.push(perModality)
+    return values
+  }
+  const cost = entry.cost ?? entry.price
+  const values = Array.isArray(cost) ? cost.flatMap(fromCost) : fromCost(cost)
+  const finite = values.filter((value) => Number.isFinite(value) && value >= 0)
+  return finite.length > 0 ? Math.min(...finite) : undefined
+}
+
+/** Reads a model's cache-read price per Mtok across the catalog's shapes
+ * (`cost[].cache.read` in OpenCode 2, `price.perMillion.cacheRead`, the
+ * per-modality `cost.text.input.cache.read`). Returns the lowest finite
+ * tier. Undefined when the catalog exposes no cache-read price. */
+export function modelCacheCost(info: unknown): number | undefined {
+  if (!info || typeof info !== "object") return undefined
+  const entry = info as Record<string, any>
+  const fromCost = (cost: any): number[] => {
+    if (!cost || typeof cost !== "object") return []
+    const values: number[] = []
+    const direct = cost.cache?.read
+    if (typeof direct === "number") values.push(direct)
+    const perMillion = cost.perMillion?.cacheRead
+    if (typeof perMillion === "number") values.push(perMillion)
+    const perModality = cost.text?.input?.cache?.read
+    if (typeof perModality === "number") values.push(perModality)
+    return values
+  }
+  const cost = entry.cost ?? entry.price
+  const values = Array.isArray(cost) ? cost.flatMap(fromCost) : fromCost(cost)
+  const finite = values.filter((value) => Number.isFinite(value) && value >= 0)
+  return finite.length > 0 ? Math.min(...finite) : undefined
+}
+
+/** Extracts the whitelisted routing facts from a live catalog entry (the
+ * models.dev-derived `Model.Info`). Undefined when the entry carries no useful
+ * detail; a partial entry still yields the fields it has. */
+export function catalogModelFacts(
+  providerID: string,
+  modelID: string,
+  info: unknown,
+): ModelFacts | undefined {
+  if (!info || typeof info !== "object") return undefined
+  const entry = info as Record<string, any>
+  const limit = entry.limit && typeof entry.limit === "object" ? entry.limit : {}
+  const caps = entry.capabilities && typeof entry.capabilities === "object" ? entry.capabilities : {}
+  const size = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined
+  const releasedRaw = entry.time?.released
+  const released =
+    typeof releasedRaw === "number"
+      ? releasedRaw
+      : typeof releasedRaw === "string"
+        ? Date.parse(releasedRaw)
+        : NaN
+  const facts: ModelFacts = { providerID, modelID }
+  const contextTokens = size(limit.context)
+  if (contextTokens !== undefined) facts.contextTokens = contextTokens
+  const outputTokens = size(limit.output)
+  if (outputTokens !== undefined) facts.outputTokens = outputTokens
+  const inputCost = modelCost(entry, "input")
+  if (inputCost !== undefined) facts.inputCost = inputCost
+  const outputCost = modelCost(entry, "output")
+  if (outputCost !== undefined) facts.outputCost = outputCost
+  const cacheReadCost = modelCacheCost(entry)
+  if (cacheReadCost !== undefined) facts.cacheReadCost = cacheReadCost
+  if (Number.isFinite(released) && released > 0) facts.releasedAt = released
+  if (typeof caps.tools === "boolean") facts.tools = caps.tools
+  if (Array.isArray(caps.input)) facts.imageInput = caps.input.includes("image")
+  return Object.keys(facts).length > 2 ? facts : undefined
+}
+
+/** A model's blended per-Mtok price: input plus output. Agentic turns both
+ * read a large context and emit a long completion, so ranking by input alone
+ * would call a cheap-to-read, expensive-to-write model "cheap". Falls back to
+ * whichever side the catalog lists. */
+export function modelPrice(model: { inputCost?: number; outputCost?: number }): number | undefined {
+  if (model.inputCost === undefined) return model.outputCost
+  if (model.outputCost === undefined) return model.inputCost
+  return model.inputCost + model.outputCost
+}
+
+/** Parses the public usage leaderboard behind opencode.ai/data
+ * (`leaderboard.pastWeek` in /data/index.json) into ranked model ids. */
+export function parseLeaderboard(json: unknown): string[] {
+  const week = (json as any)?.leaderboard?.pastWeek
+  if (!Array.isArray(week)) return []
+  const rows = week
+    .map((row: any, index: number) => ({
+      model: typeof row?.model === "string" ? row.model.trim() : "",
+      rank: typeof row?.rank === "number" && Number.isFinite(row.rank) ? row.rank : index,
+      index,
+    }))
+    .filter((row: { model: string }) => row.model !== "")
+  rows.sort((a: { rank: number; index: number }, b: { rank: number; index: number }) =>
+    a.rank !== b.rank ? a.rank - b.rank : a.index - b.index,
+  )
+  return [...new Set(rows.map((row: { model: string }) => row.model))]
+}
+
+/** The per-model page URLs from the same leaderboard body, keyed by the
+ * leaderboard's own model id. Only `https://opencode.ai/data/...` pages are
+ * kept: the body is untrusted, and the caller appends `.json` to fetch it. */
+export function parseLeaderboardPages(json: unknown): Record<string, string> {
+  const week = (json as any)?.leaderboard?.pastWeek
+  if (!Array.isArray(week)) return {}
+  const pages: Record<string, string> = {}
+  for (const row of week) {
+    const model = typeof row?.model === "string" ? row.model.trim() : ""
+    const page = typeof row?.page === "string" ? row.page.trim() : ""
+    if (model === "" || !/^https:\/\/opencode\.ai\/data\/[^"'\s]+$/.test(page)) continue
+    if (!(model in pages)) pages[model] = page
+  }
+  return pages
+}
+
+/** Reads a model page's benchmark list (`model.benchmarks` in
+ * `/data/<lab>/<slug>.json`). Entries without a name or a finite score are
+ * dropped; `version` is optional because some benchmarks publish none. */
+export function parseModelBenchmarks(json: unknown): BenchmarkScore[] {
+  const rows = Array.isArray(json) ? json : (json as any)?.model?.benchmarks
+  if (!Array.isArray(rows)) return []
+  const out: BenchmarkScore[] = []
+  for (const row of rows) {
+    const name = typeof row?.name === "string" ? row.name.trim() : ""
+    const score = typeof row?.score === "number" ? row.score : NaN
+    if (name === "" || !Number.isFinite(score)) continue
+    const version =
+      typeof row?.version === "string" && row.version.trim() !== ""
+        ? row.version.trim()
+        : typeof row?.version === "number" && Number.isFinite(row.version)
+          ? String(row.version)
+          : undefined
+    out.push(version === undefined ? { name, score } : { name, version, score })
+  }
+  return out
+}
+
+/** Parses the observed per-session cost table behind opencode.ai/data
+ * (`sessionCost` in /data/index.json) into model id -> USD per session. The
+ * table is shorter than the leaderboard: only models with enough paid usage
+ * get a row, so a missing entry is normal and callers fall back to list price. */
+export function parseSessionCost(json: unknown): Record<string, number> {
+  const rows = (json as any)?.sessionCost
+  if (!Array.isArray(rows)) return {}
+  const costs: Record<string, number> = {}
+  for (const row of rows) {
+    const model = typeof row?.model === "string" ? row.model.trim() : ""
+    const cost = typeof row?.costPerSessionUsd === "number" ? row.costPerSessionUsd : NaN
+    if (model === "" || !Number.isFinite(cost) || cost < 0) continue
+    costs[model] = cost
+  }
+  return costs
+}
+
+/** Parses opencode.ai/data's actual average token prices ("Token cost"):
+ * `tokenPricesUsdPer1M` -> model id -> USD per Mtok. Missing or malformed
+ * sides are omitted; a model with no usable price keeps its catalog price. */
+export interface TokenCost {
+  input?: number
+  output?: number
+  cachedInput?: number
+}
+
+export function parseTokenCost(json: unknown): Record<string, TokenCost> {
+  const rows = (json as any)?.tokenPricesUsdPer1M
+  if (!Array.isArray(rows)) return {}
+  const costs: Record<string, TokenCost> = {}
+  for (const row of rows) {
+    const model = typeof row?.model === "string" ? row.model.trim() : ""
+    if (model === "") continue
+    const price = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+    const entry: TokenCost = {}
+    const input = price(row?.input)
+    const output = price(row?.output)
+    const cachedInput = price(row?.cachedInput)
+    if (input !== undefined) entry.input = input
+    if (output !== undefined) entry.output = output
+    if (cachedInput !== undefined) entry.cachedInput = cachedInput
+    if (input === undefined && output === undefined && cachedInput === undefined) continue
+    costs[model] = entry
+  }
+  return costs
+}
+
+/** Parses opencode.ai/data's cache-hit share ("Cache ratio") into model id ->
+ * fraction in [0, 1]. Prefers `cachedInputPercent`; falls back to the token
+ * counts when the percent is absent. */
+export function parseCacheRatio(json: unknown): Record<string, number> {
+  const rows = (json as any)?.cacheRatio
+  if (!Array.isArray(rows)) return {}
+  const ratios: Record<string, number> = {}
+  for (const row of rows) {
+    const model = typeof row?.model === "string" ? row.model.trim() : ""
+    if (model === "") continue
+    let ratio: number | undefined
+    if (typeof row?.cachedInputPercent === "number" && Number.isFinite(row.cachedInputPercent)) {
+      ratio = row.cachedInputPercent / 100
+    } else {
+      const cached = typeof row?.cachedInputTokens === "number" ? row.cachedInputTokens : NaN
+      const uncached = typeof row?.uncachedInputTokens === "number" ? row.uncachedInputTokens : NaN
+      if (Number.isFinite(cached) && Number.isFinite(uncached) && cached + uncached > 0) {
+        ratio = cached / (cached + uncached)
+      }
+    }
+    if (ratio === undefined || !Number.isFinite(ratio) || ratio < 0 || ratio > 1) continue
+    ratios[model] = ratio
+  }
+  return ratios
+}
+
+/** 1-based usage ranks keyed by `poolAlias`, first occurrence winning. Used to
+ * attach the public top-models position to a catalog model. */
+export function usageRanks(leaderboard: readonly string[]): Map<string, number> {
+  const ranks = new Map<string, number>()
+  leaderboard.forEach((id, index) => {
+    const key = poolAlias(id)
+    if (key !== "" && !ranks.has(key)) ranks.set(key, index + 1)
+  })
+  return ranks
+}
+
+/** The default pool's window: the catalog models matched to the public usage
+ * leaderboard, in leaderboard order, truncated to `topK`. Unranked models do
+ * not qualify - popularity is the gate, so a free or obscure model cannot
+ * enter through a cost tiebreak. With no usable ranking (fetch failed, or
+ * nothing in the catalog is on it) the window falls back to the whole pool
+ * ranked by blended price, so routing still has candidates (fail open). */
+export function rankDefaultPool(
+  models: readonly PoolModel[],
+  leaderboard: readonly string[],
+  topK: number = DEFAULT_POOL.topK,
+): PoolModel[] {
+  const ordered = [...models].sort(
+    (a, b) => compareModelIDs(a, b) || (a.providerID < b.providerID ? -1 : a.providerID > b.providerID ? 1 : 0),
+  )
+  const exact = new Map<string, PoolModel>()
+  const byAlias = new Map<string, PoolModel>()
+  for (const model of ordered) {
+    const key = poolAlias(model.modelID)
+    if (!exact.has(key)) exact.set(key, model)
+    for (const alias of poolAliases(model)) if (!byAlias.has(alias)) byAlias.set(alias, model)
+  }
+  const window: PoolModel[] = []
+  const seen = new Set<string>()
+  for (const id of leaderboard) {
+    const key = poolAlias(id)
+    const model = exact.get(key) ?? byAlias.get(key)
+    if (!model) continue
+    const modelKey = candidateKey(model)
+    if (seen.has(modelKey)) continue
+    seen.add(modelKey)
+    window.push(model)
+    if (window.length >= Math.max(1, topK)) break
+  }
+  return window.length > 0 ? window : cheapestModels(models, topK)
+}
+
+// The leaderboard reports the id a request was served under, not the catalog
+// id: a Console free tier is listed as `beam-free` while usage lands on the
+// upstream `reflection/beam-1.0-501b-a23b`, and a dated build keeps its own
+// row. Normalizing both sides to a bare model name lets one model collect all
+// of its rows instead of competing with itself for window slots. Only
+// structural differences are bridged; a spelling no catalog id or canonical id
+// agrees on (`deepseek-v4p1-flash` from Fireworks vs `deepseek-v4.1-flash`)
+// stays unmatched rather than being guessed, which costs a duplicate row but
+// can never invent an identity.
+
+/** A catalog or leaderboard id reduced to its model name: lowercased, with a
+ * free-tier suffix and a dated build suffix (`-1017`, `-1017-op`) removed. */
+export function poolAlias(id: string): string {
+  let key = id.trim().toLowerCase()
+  for (const suffix of [/-free$/, /-\d{4}(?:-op)?$/]) key = key.replace(suffix, "")
+  return key
+}
+
+/** Every leaderboard key a catalog model can be reported under: its own id
+ * plus its canonical id's model segment (`deepseek/deepseek-v4.1-flash`). */
+export function poolAliases(model: { modelID: string; canonicalID?: string }): string[] {
+  const aliases = new Set<string>()
+  const add = (id: string | undefined): void => {
+    if (!id) return
+    const key = poolAlias(id)
+    if (key) aliases.add(key)
+  }
+  add(model.modelID)
+  add(model.canonicalID?.split("/").pop())
+  return [...aliases]
+}
+
+function compareModelIDs(a: PoolModel, b: PoolModel): number {
+  return a.modelID < b.modelID ? -1 : a.modelID > b.modelID ? 1 : 0
+}
+
+/** The `n` cheapest models by blended price (unknown prices last). `costOf`
+ * lets the default split rank by observed per-session cost where known. */
+export function cheapestModels(
+  pool: readonly PoolModel[],
+  n: number,
+  costOf: (model: PoolModel) => number | undefined = modelPrice,
+): PoolModel[] {
+  return [...pool]
+    .sort((a, b) => {
+      const ca = costOf(a) ?? NO_COST
+      const cb = costOf(b) ?? NO_COST
+      return ca !== cb ? ca - cb : compareModelIDs(a, b)
+    })
+    .slice(0, Math.max(0, n))
+}
+
+/** The output price the model actually charged: the measured average from
+ * opencode.ai/data, then the catalog list price. */
+export function modelOutputPrice(model: PoolModel): number | undefined {
+  return model.tokenOutputCost ?? model.outputCost
+}
+
+/** The input price after the observed cache mix: uncached share at the input
+ * price, cached share at the cache-read price. Prefers measured token prices
+ * from opencode.ai/data, then the catalog's list and cache-read prices. Falls
+ * back to the plain input price when either side of the split is unknown. */
+export function effectiveInputPrice(model: PoolModel): number | undefined {
+  const input = model.tokenInputCost ?? model.inputCost
+  if (input === undefined) return undefined
+  const cached = model.tokenCachedInputCost ?? model.cacheReadCost
+  const ratio = model.cacheRatio
+  if (cached === undefined || ratio === undefined) return input
+  return input * (1 - ratio) + cached * ratio
+}
+
+/** The default split's cheap-axis cost: observed session cost when
+ * opencode.ai/data reports it, otherwise the cache-adjusted token cost
+ * (effective input plus output). Session cost is the real per-turn spend;
+ * the token fallback still prices caching in, so a model with a steep cache
+ * discount is not ranked by its list input price. */
+export function poolRunCost(model: PoolModel): number | undefined {
+  if (model.sessionCost !== undefined) return model.sessionCost
+  const input = effectiveInputPrice(model)
+  const output = modelOutputPrice(model)
+  if (input === undefined) return output
+  if (output === undefined) return input
+  return input + output
+}
+
+/** True when a model belongs to the small-model class the default `auto` pool
+ * should avoid. A missing context window fails open. */
+export function isLargePoolModel(model: PoolModel, minContext: number = DEFAULT_POOL.autoMinContext): boolean {
+  return model.contextTokens === undefined || model.contextTokens >= minContext
+}
+
+/** A model with no listed price on both sides is a free/promo tier. Unknown
+ * prices are not free: they must not win a paid-everything tie by accident. */
+export function isFreePoolModel(model: PoolModel): boolean {
+  return modelPrice(model) === 0
+}
+
+/** The Console privacy switches that gate models training on request data:
+ * `paid` is "Allow paid endpoints that train on request data", `free` is
+ * "Allow free endpoints that train on request data" (turning it off disables
+ * every free model, not just some). */
+export interface TrainingConsent {
+  paid: boolean
+  free: boolean
+}
+
+/** The consent switch a model depends on, or undefined when the Console does
+ * not gate it: free promo tiers (`-free`, $0 list price) follow the free
+ * switch, `-contributor` models the paid one. Structural markers only
+ * (`-free`, `-contributor`, price) - no model id is baked in. */
+export function trainingConsentClass(model: PoolModel): "free" | "paid" | undefined {
+  const id = model.modelID.trim().toLowerCase()
+  if (id.endsWith("-free") || isFreePoolModel(model)) return "free"
+  if (poolAlias(id).endsWith("-contributor")) return "paid"
+  return undefined
+}
+
+/** True when the Console refuses the model under the given workspace privacy
+ * settings, so a routed turn would fail with a data-policy error. An unknown
+ * policy (`consent` undefined, e.g. the settings read failed or the workspace
+ * runs on a non-Console deployment) fails closed: every gated model is
+ * treated as refused rather than risking a failed turn. Configure such a
+ * model explicitly as a candidate to route to it with consent enabled. */
+export function needsTrainingOptIn(model: PoolModel, consent?: TrainingConsent): boolean {
+  const gated = trainingConsentClass(model)
+  if (!gated) return false
+  if (!consent) return true
+  return gated === "free" ? !consent.free : !consent.paid
+}
+
+/** Reads the two training switches out of the Console's org payload
+ * (`GET /console/api/orgs/current` -> `org.privacy.training`). Undefined on
+ * any shape surprise, so the caller keeps failing closed. */
+export function parseTrainingConsent(body: unknown): TrainingConsent | undefined {
+  const training = (body as { org?: { privacy?: { training?: unknown } } })?.org?.privacy?.training
+  if (training === null || typeof training !== "object") return undefined
+  const { paid, free } = training as { paid?: unknown; free?: unknown }
+  if (typeof paid !== "boolean" || typeof free !== "boolean") return undefined
+  return { paid, free }
+}
+
+/** Chooses between two entries for the same model id (the two Console plans
+ * both serve it): the cheaper listed price wins. A tie or unknown price keeps
+ * the first entry, so the projection stays deterministic. */
+export function cheaperPoolModel(prior: PoolModel, next: PoolModel): PoolModel {
+  const priorCost = modelPrice(prior) ?? NO_COST
+  const nextCost = modelPrice(next) ?? NO_COST
+  return nextCost < priorCost ? next : prior
+}
+
+/** 0..1 percentile ranks (1 = highest) keyed by `candidateKey`, for the models
+ * with a finite value. Ties share their average rank; models below `min` do not
+ * qualify, so a two-model pool cannot manufacture a perfect-vs-zero signal. */
+export function percentileRanks(
+  models: readonly PoolModel[],
+  valueOf: (model: PoolModel) => number | undefined,
+  min = 2,
+): Map<string, number> {
+  const have = models
+    .map((model) => ({ model, value: valueOf(model) }))
+    .filter((row): row is { model: PoolModel; value: number } => row.value !== undefined && Number.isFinite(row.value))
+  const ranks = new Map<string, number>()
+  if (have.length < Math.max(2, min)) return ranks
+  have.sort((a, b) => b.value - a.value || compareModelIDs(a.model, b.model))
+  let i = 0
+  while (i < have.length) {
+    let j = i
+    while (j + 1 < have.length && have[j + 1]!.value === have[i]!.value) j += 1
+    const rank = 1 - (i + j) / 2 / (have.length - 1)
+    for (let k = i; k <= j; k += 1) ranks.set(candidateKey(have[k]!.model), rank)
+    i = j + 1
+  }
+  return ranks
+}
+
+/** The strong axis plus the evidence behind each score: `groups` is the number
+ * of usable benchmark groups a model reports. An empty map means the scores are
+ * the output-price fallback, not measured strength, which callers that render
+ * the score to a judge must not present as a benchmark result. */
+export interface StrengthDetail {
+  /** 0..1 scores keyed by `candidateKey`. */
+  scores: Map<string, number>
+  /** Usable benchmark groups per `candidateKey`. */
+  groups: Map<string, number>
+}
+
+/** The strong axis over one window. Every benchmark result in the 0-100 range
+ * is comparable enough to read as a pass rate; other scales (Elo ratings,
+ * Codeforces points) are ignored. A model's score is the mean of its best run
+ * per benchmark name and version, relative to the best model in that same
+ * group, so a benchmark where everyone scores 30 still differentiates. Groups
+ * with fewer than three models are ignored, and a model reporting few groups is
+ * pulled toward the neutral 0.5 so broad-but-shallow coverage cannot top the
+ * axis. A model reporting nothing sits at 0.5. When no group is usable (the
+ * fetch failed, or a catalog that is not on opencode.ai/data), the axis falls
+ * back to the output-price percentile, reproducing the pre-benchmark ranking.
+ * That fallback reports zero groups. */
+export function strengthDetails(models: readonly PoolModel[]): StrengthDetail {
+  const groups = new Map<string, Map<string, number>>()
+  for (const model of models) {
+    const key = candidateKey(model)
+    for (const bench of model.benchmarks ?? []) {
+      if (!(bench.score >= 0 && bench.score <= 100)) continue
+      const group = `${bench.name}\u0000${bench.version ?? ""}`
+      const rows = groups.get(group) ?? new Map<string, number>()
+      const prior = rows.get(key)
+      if (prior === undefined || bench.score > prior) rows.set(key, bench.score)
+      groups.set(group, rows)
+    }
+  }
+  const usable = [...groups.values()].filter((rows) => rows.size >= 3)
+  const totals = new Map<string, { sum: number; n: number }>()
+  for (const rows of usable) {
+    const best = Math.max(...rows.values())
+    if (!(best > 0)) continue
+    for (const [key, score] of rows) {
+      const entry = totals.get(key) ?? { sum: 0, n: 0 }
+      entry.sum += score / best
+      entry.n += 1
+      totals.set(key, entry)
+    }
+  }
+  if (totals.size === 0) return { scores: percentileRanks(models, modelOutputPrice), groups: new Map() }
+  const PRIOR_WEIGHT = 3
+  const scores = new Map<string, number>()
+  const evidence = new Map<string, number>()
+  for (const model of models) {
+    const key = candidateKey(model)
+    const entry = totals.get(key)
+    if (entry) evidence.set(key, entry.n)
+    scores.set(key, entry ? (entry.sum + 0.5 * PRIOR_WEIGHT) / (entry.n + PRIOR_WEIGHT) : 0.5)
+  }
+  return { scores, groups: evidence }
+}
+
+/** The strong axis scores alone (see `strengthDetails`). */
+export function strengthScores(models: readonly PoolModel[]): Map<string, number> {
+  return strengthDetails(models).scores
+}
+
+/** The `n` highest scores (unknown last). Equal scores break toward the
+ * more-used model, then the model id. `scoreOf` defaults to output price for
+ * callers outside the default-pool split. */
+export function strongestModels(
+  pool: readonly PoolModel[],
+  n: number,
+  scoreOf: (model: PoolModel) => number | undefined = modelOutputPrice,
+): PoolModel[] {
+  return [...pool]
+    .sort((a, b) => {
+      const sa = scoreOf(a)
+      const sb = scoreOf(b)
+      const va = sa ?? Number.NEGATIVE_INFINITY
+      const vb = sb ?? Number.NEGATIVE_INFINITY
+      if (va !== vb) return vb - va
+      const ra = a.usageRank ?? Number.POSITIVE_INFINITY
+      const rb = b.usageRank ?? Number.POSITIVE_INFINITY
+      return ra !== rb ? ra - rb : compareModelIDs(a, b)
+    })
+    .slice(0, Math.max(0, n))
+}
+
+/** Caps for the `<candidate-models>` block: eight rows, ~300 tokens worst
+ * case. Rows are dropped before fields, in option order, so the set the judge
+ * weighs stays complete even when the tail loses detail. */
+export const MODEL_FACTS_MAX_ROWS = 8
+export const MODEL_FACTS_MAX_CHARS = 1200
+
+const fmtFactTokens = (value: number): string => {
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000
+    return `${Number.isInteger(millions) ? millions : Number(millions.toFixed(1))}M`
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k`
+  return String(Math.round(value))
+}
+
+const fmtFactPrice = (value: number): string => `$${String(Number(value.toPrecision(2)))}`
+
+const fmtFactMonth = (value: number): string => {
+  const date = new Date(value)
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`
+}
+
+const modelFactsRow = (facts: ModelFacts, strength: { score: number; groups: number } | undefined): string => {
+  const parts: string[] = []
+  const size: string[] = []
+  if (facts.contextTokens !== undefined) size.push(`ctx ${fmtFactTokens(facts.contextTokens)}`)
+  if (facts.outputTokens !== undefined) size.push(`max out ${fmtFactTokens(facts.outputTokens)}`)
+  if (size.length > 0) parts.push(size.join(", "))
+  const price: string[] = []
+  if (facts.inputCost !== undefined) price.push(`in ${fmtFactPrice(facts.inputCost)}/Mtok`)
+  if (facts.outputCost !== undefined) price.push(`out ${fmtFactPrice(facts.outputCost)}/Mtok`)
+  if (price.length > 0) parts.push(price.join(", "))
+  if (facts.cacheRatio !== undefined) parts.push(`cache-hit ${Math.round(facts.cacheRatio * 100)}%`)
+  if (facts.usageRank !== undefined) parts.push(`usage #${facts.usageRank}`)
+  if (strength && strength.groups > 0) {
+    parts.push(`strength ${strength.score.toFixed(2)} over ${strength.groups} benchmarks`)
+  }
+  if (facts.releasedAt !== undefined) parts.push(`released ${fmtFactMonth(facts.releasedAt)}`)
+  const caps: string[] = []
+  if (facts.tools) caps.push("tools")
+  if (facts.imageInput) caps.push("image input")
+  if (caps.length > 0) parts.push(caps.join(", "))
+  return `- ${facts.providerID}/${facts.modelID}: ${parts.join("; ")}`
+}
+
+/** A tagged block of catalog facts for the models a routing question offers,
+ * or "" when no model has any. Keyed by `providerID/modelID`, which is the
+ * prefix of every option key (`model` or `model#level`), so pair mode does not
+ * repeat facts per effort level.
+ *
+ * Strength is computed over the offered set only and emitted solely when the
+ * model reports usable benchmark groups: `strengthDetails` returning a price
+ * percentile is not benchmark strength, and presenting it as such would
+ * mislead the judge. A throwing `factsOf` drops that row (fail-open). */
+export function modelFactsBlock(
+  models: ReadonlyArray<{ providerID: string; modelID: string }>,
+  factsOf: (providerID: string, modelID: string) => ModelFacts | undefined,
+  maxChars: number = MODEL_FACTS_MAX_CHARS,
+): string {
+  const rows: ModelFacts[] = []
+  const seen = new Set<string>()
+  for (const model of models) {
+    if (rows.length >= MODEL_FACTS_MAX_ROWS) break
+    const key = candidateKey(model)
+    if (seen.has(key)) continue
+    seen.add(key)
+    let facts: ModelFacts | undefined
+    try {
+      facts = factsOf(model.providerID, model.modelID)
+    } catch {
+      facts = undefined
+    }
+    if (facts) rows.push(facts)
+  }
+  if (rows.length === 0) return ""
+  const strength = strengthDetails(
+    rows.map((facts) => ({
+      providerID: facts.providerID,
+      modelID: facts.modelID,
+      outputCost: facts.outputCost,
+      benchmarks: facts.benchmarks,
+    })),
+  )
+  const lines: string[] = []
+  let chars = 0
+  for (const facts of rows) {
+    const key = candidateKey(facts)
+    const groups = strength.groups.get(key)
+    const detail = groups !== undefined ? { score: strength.scores.get(key) ?? 0.5, groups } : undefined
+    const row = modelFactsRow(facts, detail)
+    if (lines.length > 0 && chars + row.length + 1 > maxChars) break
+    lines.push(row)
+    chars += row.length + 1
+  }
+  return `<candidate-models>\nRelative strength is over the models listed here; a missing field means unknown.\n${lines.join("\n")}\n</candidate-models>`
+}
+
+export interface PoolSplit {
+  auto: PoolModel[]
+  review: PoolModel[]
+}
+
+interface PoolSlots {
+  cheap: number
+  popular: number
+  strong: number
+}
+
+/** One pool from a window: the `cheap` lowest real cost, then the `popular`
+ * highest-usage models left, then the `strong` strongest of what remains.
+ * `window` keeps leaderboard order, so popular is a plain slice. `strength` is
+ * computed over the whole window, so a model's score does not drift as slots
+ * fill. */
+function poolSlots(
+  window: readonly PoolModel[],
+  slots: PoolSlots,
+  strength: ReadonlyMap<string, number>,
+): PoolModel[] {
+  const cheap = cheapestModels(window, slots.cheap, poolRunCost)
+  const used = new Set(cheap.map(candidateKey))
+  const popular = window
+    .filter((model) => !used.has(candidateKey(model)))
+    .slice(0, Math.max(0, slots.popular))
+  for (const model of popular) used.add(candidateKey(model))
+  const strong = strongestModels(
+    window.filter((model) => !used.has(candidateKey(model))),
+    slots.strong,
+    (model) => strength.get(candidateKey(model)),
+  )
+  return [...cheap, ...popular, ...strong]
+}
+
+/** Both default pools from one window, disjoint by construction: review takes
+ * its union of slots first - `reviewPopular` highest usage plus
+ * `reviewStrong` strongest, no cost slot - then auto takes the same union
+ * (`autoCheap`, `autoPopular`, `autoStrong`) over the rest. Review therefore
+ * keeps the best models while auto cannot miss one the community actually
+ * drives and can still escalate to a capable one.
+ *
+ * The cheap axis prices in the observed cache mix (session cost first, then
+ * cache-adjusted token cost). The strength axis percentiles the benchmark
+ * observations on each model's opencode.ai/data page, grouped by benchmark name
+ * and version; a model with no usable benchmark falls back to its measured
+ * output price, so a catalog without benchmark pages ranks exactly as before.
+ *
+ * Auto's picks are filtered to the large-model class: an authenticated
+ * Console lists small free tiers (200k-262k context) beside the 1M-context
+ * models people actually drive, and those tiny tiers otherwise win every
+ * cheap slot. The filter falls back to the unfiltered remainder when it
+ * would empty auto, so a small-window catalog still routes. Both pools skip
+ * models the Console refuses under the workspace's training-consent switches
+ * (`needsTrainingOptIn`): with the switches off, free tiers and
+ * `-contributor` models fail the turn with a data-policy error. `consent`
+ * carries the live settings; when they are unknown every gated model is
+ * excluded (the pre-settings default).
+ * Review is otherwise unfiltered: a strong 200k-context model must remain
+ * eligible, and quality outranks price there. */
+export function defaultPoolSplit(
+  models: readonly PoolModel[],
+  leaderboard: readonly string[],
+  options: {
+    topK?: number
+    autoCheap?: number
+    autoPopular?: number
+    autoStrong?: number
+    reviewCheap?: number
+    reviewPopular?: number
+    reviewStrong?: number
+    autoMinContext?: number
+    consent?: TrainingConsent
+    /** The top-level `pool` option; flat keys above win when both are set. */
+    pool?: PoolOptions
+  } = {},
+): PoolSplit {
+  const pool = options.pool ?? DEFAULT_POOL_OPTIONS
+  if (!pool.enable) return { auto: [], review: [] }
+  const topK = options.topK ?? pool.topK
+  const autoCheap = options.autoCheap ?? pool.auto.cheap
+  const autoPopular = options.autoPopular ?? pool.auto.popular
+  const autoStrong = options.autoStrong ?? pool.auto.strong
+  const reviewCheap = options.reviewCheap ?? pool.review.cheap
+  const reviewPopular = options.reviewPopular ?? pool.review.popular
+  const reviewStrong = options.reviewStrong ?? pool.review.strong
+  const autoMinContext = options.autoMinContext ?? pool.auto.minContext
+  const usable = models.filter((model) => !needsTrainingOptIn(model, options.consent))
+  const window = rankDefaultPool(usable, leaderboard, topK)
+  const strength = strengthScores(window)
+  const review = poolSlots(window, {
+    cheap: reviewCheap,
+    popular: reviewPopular,
+    strong: reviewStrong,
+  }, strength)
+  const reviewKeys = new Set(review.map(candidateKey))
+  const rest = window.filter((model) => !reviewKeys.has(candidateKey(model)))
+  const large = rest.filter((model) => isLargePoolModel(model, autoMinContext))
+  const autoPool = large.length > 0 ? large : rest
+  const auto = poolSlots(autoPool, { cheap: autoCheap, popular: autoPopular, strong: autoStrong }, strength)
+  return { auto, review }
 }
 
 // Catalog entries can exist and still be unusable in the current session:
@@ -345,6 +1528,10 @@ export function normalizeRef(ref: { providerID: string; modelID: string; variant
 export interface PinRecord {
   to: any
   from: any
+  /** The pseudo-entry this routing pin belongs to. `from` is the model the
+   * pick replaced and can be a real model (pre-judge emergency move), so the
+   * idle reset reads the entry here first. */
+  entry?: { providerID: string; modelID: string }
 }
 
 export function pinMatches(last: { to: any; from: any } | undefined | null, pin: PinRecord | undefined | null): boolean {
@@ -472,26 +1659,52 @@ export function buildPairOptions(
     })
   }
   const included: Candidate[] = []
-  for (const source of candidateSources) {
+  // Fair two-pass packing: reserve one option per remaining candidate, so a
+  // model with many levels can never starve the models after it. When the
+  // room suffices this preserves the historical grouped order exactly; when
+  // it does not, every candidate still gets its representative level and the
+  // leftover levels fill what remains.
+  const addLevel = (source: PairOptionSource, level: string): void => {
+    options.push({
+      key: pairKey(source.candidate, level),
+      providerID: source.candidate.providerID,
+      modelID: source.candidate.modelID,
+      variant: level,
+      criteria: withTier(
+        source.candidate.providerID,
+        source.candidate.modelID,
+        `${source.candidate.label ?? candidateKey(source.candidate)} - ${
+          level === "default"
+            ? "model switch only (this model lists no reasoning variants)"
+            : levelCriteria(level)
+        }`,
+      ),
+    })
+  }
+  const planned: Array<{ source: PairOptionSource; levels: string[]; used: Set<string> }> = []
+  for (let index = 0; index < candidateSources.length; index++) {
+    const source = candidateSources[index]!
     const levels = source.levels.length > 0 ? source.levels : ["default"]
-    if (options.length + levels.length > MAX_OPTIONS) break
-    for (const level of levels)
-      options.push({
-        key: pairKey(source.candidate, level),
-        providerID: source.candidate.providerID,
-        modelID: source.candidate.modelID,
-        variant: level,
-        criteria: withTier(
-          source.candidate.providerID,
-          source.candidate.modelID,
-          `${source.candidate.label ?? candidateKey(source.candidate)} - ${
-            level === "default"
-              ? "model switch only (this model lists no reasoning variants)"
-              : levelCriteria(level)
-          }`,
-        ),
-      })
+    const reserved = candidateSources.length - index - 1
+    const room = MAX_OPTIONS - options.length - reserved
+    if (room < 1) break
+    if (room >= levels.length) {
+      for (const level of levels) addLevel(source, level)
+      planned.push({ source, levels, used: new Set(levels) })
+    } else {
+      const base = levels.includes("medium") ? "medium" : levels[0]!
+      addLevel(source, base)
+      planned.push({ source, levels, used: new Set([base]) })
+    }
     included.push(source.candidate)
+  }
+  for (const entry of planned) {
+    for (const level of entry.levels) {
+      if (entry.used.has(level)) continue
+      if (options.length >= MAX_OPTIONS) return { options, included }
+      addLevel(entry.source, level)
+      entry.used.add(level)
+    }
   }
   return { options, included }
 }
@@ -549,6 +1762,12 @@ export const ROUTE_PAIR_INSTRUCTIONS =
 export const ROUTE_MODEL_INSTRUCTIONS =
   "Pick which model the assistant's turn should run on. The current model is one of the options - keep it unless another option clearly fits better. Prefer the cheaper model that can still do the job; escalate only when the message clearly needs more capability."
 
+export const ROUTE_REVIEW_PAIR_INSTRUCTIONS =
+  "Pick the (model, reasoning level) pair for a REVIEW turn: the assistant is inspecting code, a change, or a result for defects. Prioritize correctness, thoroughness, and the ability to spot subtle problems. Prefer the stronger candidate and the higher reasoning level when the review is non-trivial; do not downgrade merely because the prompt is short."
+
+export const ROUTE_REVIEW_MODEL_INSTRUCTIONS =
+  "Pick which model should run a REVIEW turn: the assistant is inspecting code, a change, or a result for defects. Prioritize correctness, thoroughness, and the ability to spot subtle problems. Prefer the stronger candidate when the review is non-trivial; do not downgrade merely because the prompt is short."
+
 // ---------------------------------------------------------------------------
 // Router: one jev round-trip per prompt -> a structured outcome the caller
 // applies (switchModel, pin records, logs). Raising the outcome instead of
@@ -585,8 +1804,13 @@ export interface RouteInput {
    * judge failures keep the last real pick instead of reverting to it.
    */
   autoEntry?: { providerID: string; modelID: string } | null
+  /** Use the review criteria: this turn is on the auto-review entry. */
+  review?: boolean
   /** Optional per-model price hint for the option criteria. */
   tier?: (providerID: string, modelID: string) => string
+  /** Catalog + public-stat facts for one offered model. Missing facts are
+   * omitted from the state, never a reason to fail the turn. */
+  facts?: (providerID: string, modelID: string) => ModelFacts | undefined
   /** Deterministic scrub applied to prompt + question state text. */
   scrub?: (text: string) => string
   judge: (questions: QuestionLike[], state: unknown, signal?: AbortSignal) => Promise<{ answers?: Record<string, any> }>
@@ -756,6 +1980,7 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
   }
 
   const pairMode = config.effort && config.candidates.length > 0
+  const review = input.review === true
   const finalize = (extra: Partial<RouteOutcome>): RouteOutcome => ({
     mode: pairMode ? "pair" : "model",
     logs,
@@ -782,19 +2007,38 @@ export async function routeTurn(config: RouteConfig, input: RouteInput): Promise
     )
     options = built.options
     if (options.length === 0) return failToBase("[jev] route: no options could be built")
-    lead =
-      "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn and how much reasoning effort it should use; the available model+level pairs are listed in the question."
-    question = { id: "route", type: "choice", instructions: ROUTE_PAIR_INSTRUCTIONS, criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])) }
+    lead = review
+      ? "A user message in an OpenCode coding session is quoted below. The session is on the review routing entry; decide which model should run the assistant's review turn and how much reasoning effort it should use. The available model+level pairs are listed in the question."
+      : "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn and how much reasoning effort it should use; the available model+level pairs are listed in the question."
+    question = {
+      id: "route",
+      type: "choice",
+      instructions: review ? ROUTE_REVIEW_PAIR_INSTRUCTIONS : ROUTE_PAIR_INSTRUCTIONS,
+      criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])),
+    }
   } else {
     options = buildModelOptions({ providerID: currentRef.providerID, modelID: currentRef.id }, config.candidates, input.tier, !autoMode)
-    lead =
-      "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn for it; the available models are listed in the question."
-    question = { id: "route", type: "choice", instructions: ROUTE_MODEL_INSTRUCTIONS, criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])) }
+    lead = review
+      ? "A user message in an OpenCode coding session is quoted below. The session is on the review routing entry; decide which model should run the assistant's review turn. The available models are listed in the question."
+      : "A user message in an OpenCode coding session is quoted below. Decide which model should run the assistant's turn for it; the available models are listed in the question."
+    question = {
+      id: "route",
+      type: "choice",
+      instructions: review ? ROUTE_REVIEW_MODEL_INSTRUCTIONS : ROUTE_MODEL_INSTRUCTIONS,
+      criteria: Object.fromEntries(options.map((o) => [o.key, o.criteria])),
+    }
   }
 
   let reply: { answers?: Record<string, any> }
+  const state = routeStateText(lead, scrub, input)
+  const facts = input.facts
+    ? modelFactsBlock(
+        options.map((option) => ({ providerID: option.providerID, modelID: option.modelID })),
+        input.facts,
+      )
+    : ""
   try {
-    reply = await input.judge([question], routeStateText(lead, scrub, input), AbortSignal.timeout(8_000))
+    reply = await input.judge([question], facts ? `${state}\n\n${facts}` : state, AbortSignal.timeout(8_000))
   } catch (err: any) {
     faults.push(String(err?.message ?? err))
     return failToBase(`[jev] route: judge failed (${String(err?.message ?? err)})`)
@@ -1698,30 +2942,37 @@ export function inlineScreenFailure(tool: string): boolean {
   return tool === "webfetch" || tool === "websearch"
 }
 
-// Footer attribution: "(auto)" markers for the prompt footer. The TUI half
-// derives them from the transcript - the model-switched rows carry {model,
-// previous} - because the TUI storage API exposes no cross-half channel to
-// the service plugin's route-pin records, and synthetic rows are not
-// timeline-rendered. Accepted ambiguity: a MANUAL pick chosen while the
-// session rested at the auto entry has the same {picked, previous: auto}
-// shape as the plugin's grab and will also show the marker.
-export const AUTO_PROVIDER = "opencode-decisions"
+// Footer attribution: "(auto)" / "(auto-review)" markers for the prompt
+// footer. The TUI half derives them from the transcript - the model-switched
+// rows carry {model, previous} - because the TUI storage API exposes no
+// cross-half channel to the service plugin's route-pin records, and synthetic
+// rows are not timeline-rendered. Accepted ambiguity: a MANUAL pick chosen
+// while the session rested at an entry has the same {picked, previous: entry}
+// shape as the plugin's grab and will also show that entry's marker.
+const pseudoLabelOf = (ref: any): string => {
+  if (ref?.providerID !== AUTO_PROVIDER) return ""
+  const id = ref?.id ?? ref?.modelID
+  if (typeof id !== "string" || id === "") return ""
+  if (id === AUTO_MODEL) return "(auto)"
+  if (id === AUTO_REVIEW_MODEL) return "(auto-review)"
+  return `(${id})`
+}
 
-export function footerAutoMarker(
+export function footerAutoLabel(
   current: { providerID: string; modelID: string; variant?: string } | undefined,
   lastSwitched: { model: { providerID: string; id: string; variant?: string }; previous?: { providerID: string; id: string; variant?: string } } | undefined,
-): boolean {
-  if (!current) return false
-  if (current.providerID === AUTO_PROVIDER && !(current as any).id) {
-    // parked at the auto entry (Model.Ref via ui.model.current())
-    return true
+): string {
+  if (!current) return ""
+  if (current.providerID === AUTO_PROVIDER) {
+    // Parked at an entry (Model.Ref via ui.model.current()); an entry with no
+    // id is the legacy auto shape.
+    const parked = pseudoLabelOf(current)
+    if (parked) return parked
+    return (current as any).id || (current as any).modelID ? "" : "(auto)"
   }
-  if (lastSwitched?.previous?.providerID === AUTO_PROVIDER) {
-    // last placement went auto-entry -> a real model (the plugin grab, or a
-    // manual pick made from the resting state)
-    return true
-  }
-  return false
+  // Last placement went entry -> real model (the plugin grab, or a manual
+  // pick made from the resting state).
+  return pseudoLabelOf(lastSwitched?.previous)
 }
 
 // ---------------------------------------------------------------------------
