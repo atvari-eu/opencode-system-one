@@ -29,7 +29,6 @@ function makeHost(opts: {
   candidates?: string[]
   rejectSwitchTo?: string
   auto?: any
-  autoReview?: any
   model?: any
 }) {
   const startedAt = Date.now()
@@ -54,7 +53,6 @@ function makeHost(opts: {
     options: {
       screen: { enabled: false },
       auto: opts.auto ?? { candidates: opts.candidates ?? ["munito/cheap"] },
-      ...(opts.autoReview !== undefined ? { autoReview: opts.autoReview } : {}),
     },
     location: { directory: "/tmp/jev-route-boot" },
     app: { version: "0.0.0-test" },
@@ -202,7 +200,6 @@ describe("auto-entry routing right after boot", () => {
         catalogAfterMs: 0,
         catalog: [],
         candidates: ["munito/cheap"],
-        autoReview: { enable: true, candidates: ["review/deep"] },
       }),
     )
 
@@ -238,12 +235,15 @@ describe("auto-entry routing right after boot", () => {
       makeHost({
         catalogAfterMs: 0,
         candidates: ["munito/cheap"],
-        autoReview: {
-          enable: true,
-          // Both candidates are configured for review, but only review/deep
-          // is unique to its pool. The shared fallback must be ignored too.
-          candidates: ["munito/cheap", "review/deep"],
-          fallback: "munito/cheap",
+        auto: {
+          default: { candidates: ["munito/cheap"] },
+          review: {
+            enable: true,
+            // Both candidates are configured for review, but only review/deep
+            // is unique to its pool. The shared fallback must be ignored too.
+            candidates: ["munito/cheap", "review/deep"],
+            fallback: "munito/cheap",
+          },
         },
         catalog: [
           { providerID: "munito", id: "cheap", variants: [] },

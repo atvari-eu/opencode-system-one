@@ -5,7 +5,7 @@ import {
   cheaperPoolModel,
   defaultPoolSplit,
   DEFAULT_POOL,
-  DEFAULT_POOL_OPTIONS,
+  DEFAULT_POOL_SPLITS,
   effectiveInputPrice,
   isFreePoolModel,
   isLargePoolModel,
@@ -20,15 +20,15 @@ import {
   parseLeaderboard,
   parseLeaderboardPages,
   parseModelBenchmarks,
-  parsePoolOptions,
+  parsePoolSplit,
   parseSessionCost,
   parseTokenCost,
   parseTrainingConsent,
   percentileRanks,
+  poolCut,
   poolRunCost,
   poolShapeText,
   rankDefaultPool,
-  rankSourceLeaderboard,
   strongestModels,
   strengthDetails,
   strengthScores,
@@ -514,86 +514,91 @@ describe("modelFactsBlock", () => {
   })
 })
 
-describe("parsePoolOptions", () => {
-  test("missing, true, and malformed values keep the built-in shape", () => {
+const cut = (
+  overrides: Partial<typeof DEFAULT_POOL_SPLITS.default> = {},
+  kind: "default" | "review" = "default",
+) => ({ ...DEFAULT_POOL_SPLITS[kind], ...overrides })
+
+describe("parsePoolSplit", () => {
+  test("missing and malformed values keep the kind's built-in cut", () => {
     for (const raw of [undefined, true, "no", 42, []]) {
-      expect(parsePoolOptions(raw)).toEqual(DEFAULT_POOL_OPTIONS)
+      expect(parsePoolSplit(raw)).toEqual(DEFAULT_POOL_SPLITS.default)
+      expect(parsePoolSplit(raw, "review")).toEqual(DEFAULT_POOL_SPLITS.review)
     }
   })
 
-  test("false and enable:false disable the pool", () => {
-    expect(parsePoolOptions(false).enable).toBe(false)
-    expect(parsePoolOptions({ enable: false }).enable).toBe(false)
-    expect(parsePoolOptions({ enable: true }).enable).toBe(true)
-  })
-
   test("counts floor, clamp to the window, and 0 is valid", () => {
-    const parsed = parsePoolOptions({
+    const parsed = parsePoolSplit({ topK: 3, cheap: 9, popular: 0, strong: 1.9 })
+    expect(parsed).toEqual({
+      cheap: 3,
+      popular: 0,
+      strong: 1,
       topK: 3,
-      auto: { cheap: 9, popular: 0, strong: 1.9 },
-      review: { strong: -1 },
+      minContext: DEFAULT_POOL.defaultMinContext,
     })
-    expect(parsed.topK).toBe(3)
-    expect(parsed.auto).toEqual({ cheap: 3, popular: 0, strong: 1, minContext: DEFAULT_POOL.autoMinContext })
-    expect(parsed.review.strong).toBe(DEFAULT_POOL_OPTIONS.review.strong)
   })
 
   test("topK clamps 1-40 and minContext 0 disables the floor", () => {
-    expect(parsePoolOptions({ topK: 0 }).topK).toBe(1)
-    expect(parsePoolOptions({ topK: 99 }).topK).toBe(40)
-    expect(parsePoolOptions({ auto: { minContext: 0 } }).auto.minContext).toBe(0)
+    expect(parsePoolSplit({ topK: 0 }).topK).toBe(1)
+    expect(parsePoolSplit({ topK: 99 }).topK).toBe(40)
+    expect(parsePoolSplit({ minContext: 0 }).minContext).toBe(0)
+    expect(parsePoolSplit({ minContext: 1_000 }, "review").minContext).toBe(1_000)
   })
 
-  test("split overrides merge independently over the defaults", () => {
-    const parsed = parsePoolOptions({ auto: { cheap: 2 }, review: { popular: 3 } })
-    expect(parsed.auto.cheap).toBe(2)
-    expect(parsed.auto.popular).toBe(DEFAULT_POOL.autoPopular)
-    expect(parsed.review.popular).toBe(3)
-    expect(parsed.review.strong).toBe(DEFAULT_POOL.reviewStrong)
+  test("fields merge independently over the kind's defaults", () => {
+    const parsed = parsePoolSplit({ cheap: 2 }, "review")
+    expect(parsed.cheap).toBe(2)
+    expect(parsed.popular).toBe(DEFAULT_POOL.reviewPopular)
+    expect(parsed.strong).toBe(DEFAULT_POOL.reviewStrong)
+    expect(parsed.minContext).toBe(DEFAULT_POOL.reviewMinContext)
   })
 })
 
 describe("poolShapeText", () => {
   test("omits zero slots and keeps the familiar wording", () => {
-    expect(poolShapeText(DEFAULT_POOL_OPTIONS, "auto")).toBe("1 cheap + 1 popular + 1 strong")
-    expect(poolShapeText(DEFAULT_POOL_OPTIONS, "review")).toBe("1 popular + 2 strong")
+    expect(poolShapeText(DEFAULT_POOL_SPLITS.default)).toBe("1 cheap + 1 popular + 1 strong")
+    expect(poolShapeText(DEFAULT_POOL_SPLITS.review)).toBe("1 popular + 2 strong")
   })
 
-  test("an empty split says so", () => {
-    const empty = { ...DEFAULT_POOL_OPTIONS, review: { cheap: 0, popular: 0, strong: 0 } }
-    expect(poolShapeText(empty, "review")).toBe("no picks")
+  test("an empty cut says so", () => {
+    expect(poolShapeText(cut({ cheap: 0, popular: 0, strong: 0 }))).toBe("no picks")
   })
 })
 
-describe("defaultPoolSplit with the pool option", () => {
+describe("defaultPoolSplit with inlined cuts", () => {
   const models = [poolModel("cheap", 0.1, 0.2), poolModel("popular", 1, 2), poolModel("strong", 2, 5), poolModel("strong2", 3, 6)]
   const board = ["cheap", "popular", "strong", "strong2"]
 
-  test("a disabled pool returns two empty splits", () => {
-    const split = defaultPoolSplit(models, board, {
-      pool: { ...DEFAULT_POOL_OPTIONS, enable: false },
-    })
-    expect(split).toEqual({ auto: [], review: [] })
-  })
-
   test("configured counts shape each split and keep them disjoint", () => {
-    const pool = {
-      ...DEFAULT_POOL_OPTIONS,
-      topK: 4,
-      auto: { ...DEFAULT_POOL_OPTIONS.auto, cheap: 1, popular: 1, strong: 0 },
-      review: { cheap: 0, popular: 0, strong: 1 },
-    }
-    const split = defaultPoolSplit(models, board, { pool })
+    const split = defaultPoolSplit(models, board, {
+      default: cut({ cheap: 1, popular: 1, strong: 0, topK: 4, minContext: 0 }),
+      review: cut({ cheap: 0, popular: 0, strong: 1, topK: 4, minContext: 0 }, "review"),
+    })
     expect(split.review.map((m) => m.modelID)).toEqual(["strong2"])
-    expect(split.auto.map((m) => m.modelID)).toEqual(["cheap", "popular"])
-    const keys = new Set(split.auto.map((m) => m.modelID))
+    expect(split.default.map((m) => m.modelID)).toEqual(["cheap", "popular"])
+    const keys = new Set(split.default.map((m) => m.modelID))
     expect(split.review.every((m) => !keys.has(m.modelID))).toBe(true)
   })
 
-  test("flat split overrides still win over the pool option", () => {
-    const pool = { ...DEFAULT_POOL_OPTIONS, review: { cheap: 0, popular: 0, strong: 0 } }
-    const split = defaultPoolSplit(models, board, { pool, reviewCheap: 1 })
-    expect(split.review.map((m) => m.modelID)).toEqual(["cheap"])
+  test("each split picks from its own topK window", () => {
+    const split = defaultPoolSplit(models, board, {
+      default: cut({ topK: 4, cheap: 0, popular: 0, strong: 1, minContext: 0 }),
+      review: cut({ topK: 2, cheap: 0, popular: 0, strong: 1, minContext: 0 }, "review"),
+    })
+    expect(split.review.map((m) => m.modelID)).toEqual(["popular"])
+    expect(split.default.map((m) => m.modelID)).toEqual(["strong2"])
+  })
+
+  test("an inlined cut outside the built-in pair is independent", () => {
+    const own = cut({ cheap: 1, popular: 2, strong: 1, topK: 4, minContext: 0 })
+    expect(poolCut(models, board, own).map((m) => m.modelID)).toEqual([
+      "cheap",
+      "popular",
+      "strong",
+      "strong2",
+    ])
+    const strongOnly = cut({ cheap: 0, popular: 0, strong: 2, topK: 4, minContext: 0 })
+    expect(poolCut(models, board, strongOnly).map((m) => m.modelID)).toEqual(["strong2", "strong"])
   })
 })
 
@@ -620,7 +625,7 @@ describe("defaultPoolSplit", () => {
     "mimo-v2.6-pro",
   ]
 
-  test("review takes one popular and two strong, auto takes cheap, popular and strong", () => {
+  test("review takes one popular and two strong, the default kind takes cheap, popular and strong", () => {
     const split = defaultPoolSplit(catalog, leaderboard)
     // The top model by usage, then the two strongest remaining by output.
     expect(split.review.map((m) => m.modelID)).toEqual([
@@ -630,7 +635,7 @@ describe("defaultPoolSplit", () => {
     ])
     // Cheapest by list price, then the next-highest usage, then the strongest
     // of what is left. Muse Spark is a `-contributor` model and stays out.
-    expect(split.auto.map((m) => m.modelID)).toEqual([
+    expect(split.default.map((m) => m.modelID)).toEqual([
       "mimo-v2.6-flash",
       "glm-5.3-flash",
       "gpt-6-luna",
@@ -646,7 +651,10 @@ describe("defaultPoolSplit", () => {
     const split = defaultPoolSplit(
       models,
       ["priciest", "winner", "middle"],
-      { reviewPopular: 0, reviewStrong: 1, autoCheap: 0, autoPopular: 0, autoStrong: 0 },
+      {
+        review: cut({ popular: 0, strong: 1 }, "review"),
+        default: cut({ cheap: 0, popular: 0, strong: 0 }),
+      },
     )
     expect(split.review.map((m) => m.modelID)).toEqual(["winner"])
   })
@@ -658,7 +666,7 @@ describe("defaultPoolSplit", () => {
 
   test("the pools are disjoint and an unranked free model stays out", () => {
     const split = defaultPoolSplit(catalog, leaderboard)
-    const keys = [...split.auto, ...split.review].map((m) => `${m.providerID}/${m.modelID}`)
+    const keys = [...split.default, ...split.review].map((m) => `${m.providerID}/${m.modelID}`)
     expect(new Set(keys).size).toBe(keys.length)
     expect(keys.some((key) => key.endsWith("/big-pickle"))).toBe(false)
   })
@@ -669,18 +677,18 @@ describe("defaultPoolSplit", () => {
       ["only", "other"],
     )
     expect(split.review.map((m) => m.modelID)).toEqual(["only", "other"])
-    expect(split.auto).toEqual([])
+    expect(split.default).toEqual([])
   })
 
   test("no leaderboard at all still yields disjoint pools from cost ranking", () => {
     const split = defaultPoolSplit(catalog, [])
-    const keys = [...split.auto, ...split.review].map((m) => `${m.providerID}/${m.modelID}`)
+    const keys = [...split.default, ...split.review].map((m) => `${m.providerID}/${m.modelID}`)
     expect(new Set(keys).size).toBe(keys.length)
     expect(split.review).toHaveLength(3)
-    expect(split.auto).toHaveLength(3)
+    expect(split.default).toHaveLength(3)
   })
 
-  test("auto skips small and free models when a large paid model exists", () => {
+  test("the default kind skips small and free models when a large paid model exists", () => {
     const models = [
       sizedModel("small-free", 0, 0, 262_144),
       sizedModel("large-free", 0, 0, 1_048_576),
@@ -690,12 +698,12 @@ describe("defaultPoolSplit", () => {
     const split = defaultPoolSplit(
       models,
       models.map((model) => model.modelID),
-      { reviewStrong: 1, reviewPopular: 0, autoCheap: 2 },
+      { review: cut({ strong: 1, popular: 0 }, "review"), default: cut({ cheap: 2 }) },
     )
-    // Review keeps the strongest by output; auto then refuses the small free
+    // Review keeps the strongest by output; the default kind then refuses the small free
     // tier, the large free tier and anything else that is not paid.
     expect(split.review.map((m) => m.modelID)).toEqual(["large-paid-2"])
-    expect(split.auto.map((m) => m.modelID)).toEqual(["large-paid"])
+    expect(split.default.map((m) => m.modelID)).toEqual(["large-paid"])
   })
 
   test("a catalog of only gated models leaves the default pools empty", () => {
@@ -703,9 +711,9 @@ describe("defaultPoolSplit", () => {
     const split = defaultPoolSplit(
       models,
       models.map((model) => model.modelID),
-      { reviewStrong: 0, reviewPopular: 0 },
+      { review: cut({ strong: 0, popular: 0 }, "review") },
     )
-    expect(split.auto).toEqual([])
+    expect(split.default).toEqual([])
     expect(split.review).toEqual([])
   })
 
@@ -715,26 +723,20 @@ describe("defaultPoolSplit", () => {
       sizedModel("large-paid", 0.1, 0.3, 1_000_000),
     ]
     const board = models.map((model) => model.modelID)
-    const off = defaultPoolSplit(models, board, {
-      reviewStrong: 0,
-      reviewPopular: 0,
-      autoCheap: 2,
-      autoPopular: 0,
-      autoStrong: 0,
-    })
-    expect(off.auto.map((m) => m.modelID)).toEqual(["large-paid"])
+    const shapes = {
+      review: cut({ strong: 0, popular: 0 }, "review"),
+      default: cut({ cheap: 2, popular: 0, strong: 0 }),
+    }
+    const off = defaultPoolSplit(models, board, shapes)
+    expect(off.default.map((m) => m.modelID)).toEqual(["large-paid"])
     const on = defaultPoolSplit(models, board, {
-      reviewStrong: 0,
-      reviewPopular: 0,
-      autoCheap: 2,
-      autoPopular: 0,
-      autoStrong: 0,
+      ...shapes,
       consent: { paid: true, free: true },
     })
-    expect(on.auto.map((m) => m.modelID)).toEqual(["large-free", "large-paid"])
+    expect(on.default.map((m) => m.modelID)).toEqual(["large-free", "large-paid"])
   })
 
-  test("observed session cost outranks list price for auto's cheap picks", () => {
+  test("observed session cost outranks list price for the default kind's cheap picks", () => {
     const models = [
       sizedModel("list-cheap", 0.01, 0.01, 1_000_000, 0.5),
       sizedModel("session-cheap", 0.5, 0.5, 1_000_000, 0.01),
@@ -742,9 +744,9 @@ describe("defaultPoolSplit", () => {
     const split = defaultPoolSplit(
       models,
       models.map((model) => model.modelID),
-      { reviewStrong: 0, reviewPopular: 0, autoCheap: 1, autoPopular: 0, autoStrong: 0 },
+      { review: cut({ strong: 0, popular: 0 }, "review"), default: cut({ cheap: 1, popular: 0, strong: 0 }) },
     )
-    expect(split.auto.map((m) => m.modelID)).toEqual(["session-cheap"])
+    expect(split.default.map((m) => m.modelID)).toEqual(["session-cheap"])
   })
 
   test("a popular slot keeps the models people actually drive", () => {
@@ -770,7 +772,7 @@ describe("defaultPoolSplit", () => {
     // GLM-5.3-Flash is third by usage but neither the cheapest (MiMo Flash) nor
     // the strongest (MiniMax), so only the popular slot admits it. GPT-6-Luna
     // is cheaper and stays out.
-    expect(split.auto.map((m) => m.modelID)).toEqual([
+    expect(split.default.map((m) => m.modelID)).toEqual([
       "mimo-v2.6-flash",
       "glm-5.3-flash",
       "minimax-m3.1-flash",
@@ -892,29 +894,5 @@ describe("modelCost", () => {
     expect(modelCost({}, "input")).toBeUndefined()
     expect(modelCost(null, "input")).toBeUndefined()
     expect(modelCost({ cost: [{ input: "3" }] }, "input")).toBeUndefined()
-  })
-})
-
-describe("rankSourceLeaderboard", () => {
-  const models = [
-    { providerID: "opencode", modelID: "x" },
-    { providerID: "opencode-go", modelID: "x" },
-    { providerID: "opencode", modelID: "y" },
-    { providerID: "opencode", modelID: "z" },
-  ]
-
-  test("filters to one provider and follows leaderboard order", () => {
-    expect(
-      rankSourceLeaderboard(models, ["y", "x"], "opencode", 10).map((c) => c.modelID),
-    ).toEqual(["y", "x"])
-    expect(
-      rankSourceLeaderboard(models, ["y", "x"], "opencode-go", 10).map((c) => c.modelID),
-    ).toEqual(["x"])
-  })
-
-  test("models absent from the leaderboard contribute nothing, and limits hold", () => {
-    expect(rankSourceLeaderboard(models, ["y"], "opencode", 10).map((c) => c.modelID)).toEqual(["y"])
-    expect(rankSourceLeaderboard(models, ["y", "x"], "opencode", 1).map((c) => c.modelID)).toEqual(["y"])
-    expect(rankSourceLeaderboard(models, ["y"], "opencode", 0)).toEqual([])
   })
 })

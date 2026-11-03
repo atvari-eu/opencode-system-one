@@ -128,7 +128,7 @@ import {
   matchesPatterns,
   mergeApprovalStats,
   parseAuthExport,
-  parseAutoEntries,
+  parseRouteEntries,
   parseCandidates,
   parseGates,
   parseIdleAuto,
@@ -156,19 +156,19 @@ import {
   isReadOnlyRequest,
   shellChainSegments,
   suggestedApprovalStats,
-  rankSourcePopular,
-  rankSourceLeaderboard,
   defaultPoolSplit,
-  DEFAULT_POOL_OPTIONS,
+  DEFAULT_POOL_SPLITS,
   cheaperPoolModel,
   catalogModelFacts,
   modelCacheCost,
   modelCost,
   modelPrice,
-  parsePoolOptions,
+  maxPoolTopK,
+  poolCut,
   poolShapeText,
+  type PoolSplitConfig,
+  type RouteEntryKind,
   type ModelFacts,
-  type PoolOptions,
   parseCacheRatio,
   parseLeaderboard,
   parseLeaderboardPages,
@@ -192,7 +192,7 @@ import {
   unwrapEnvelope,
   userRowCount,
 } from "./logic"
-import { type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type ParsedRouteEntry, type PoolModel, type ProviderOption, type RouteSourcesConfig, type TokenCost, type TrainingConsent } from "./logic"
+import { type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type ParsedRouteEntry, type PoolModel, type ProviderOption, type TokenCost, type TrainingConsent } from "./logic"
 import { SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED, SCREEN_SECRET_THRESHOLD, runScreen, secretScoreNormalized } from "./screen"
 import { makeJevRpc, type JevModelsInfo, type JevScreenEvent, type JevSetResult, type JevStatusInfo } from "./rpc"
 import { execFile } from "node:child_process"
@@ -760,13 +760,13 @@ async function fetchDecisionIndex(ctx: any): Promise<void> {
 // Public usage leaderboard (the statistics behind opencode.ai/data)
 // ---------------------------------------------------------------------------
 
-// Default routing pools and `sources.opencode.popular` rank the Console
-// catalog by the public usage leaderboard. One fetch per process (the data
-// updates hourly; a process-lifetime snapshot is enough), bounded at 10 s,
-// answered from a storage snapshot when opencode.ai is unreachable, then
-// empty - fail open to cost-only ranking. The prompt path kicks this off
-// without awaiting it (a first turn ranks by cost instead of stalling);
-// /jev-status awaits it so the panel shows the ranking the next turn uses.
+// The default routing pool ranks the OpenCode Console catalog by the public
+// usage leaderboard. One fetch per process (the data updates hourly; a
+// process-lifetime snapshot is enough), bounded at 10 s, answered from a
+// storage snapshot when opencode.ai is unreachable, then empty - fail open to
+// cost-only ranking. The prompt path kicks this off without awaiting it (a
+// first turn ranks by cost instead of stalling); /jev-status awaits it so the
+// panel shows the ranking the next turn uses.
 const LEADERBOARD_URL = "https://opencode.ai/data/index.json"
 const LEADERBOARD_SNAPSHOT_KEY = "jev-leaderboard"
 let LEADERBOARD: string[] = []
@@ -1085,20 +1085,8 @@ function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
   return [...byID.values()]
 }
 
-function defaultPoolPicks(
-  entry: { review: boolean },
-  pool: readonly PoolModel[],
-  options: PoolOptions = DEFAULT_POOL_OPTIONS,
-): Candidate[] {
-  const split = defaultPoolSplit(pool, LEADERBOARD, { pool: options, consent: CONSOLE_CONSENT })
-  return (entry.review ? split.review : split.auto).map(({ providerID, modelID }) => ({
-    providerID,
-    modelID,
-  }))
-}
-
-function defaultPoolText(entry: { review: boolean }, options: PoolOptions = DEFAULT_POOL_OPTIONS): string {
-  return poolShapeText(options, entry.review ? "review" : "auto")
+function poolCandidates(picks: readonly PoolModel[]): Candidate[] {
+  return picks.map(({ providerID, modelID }) => ({ providerID, modelID }))
 }
 
 function uniqueCandidates(candidates: readonly Candidate[]): Candidate[] {
@@ -1486,7 +1474,7 @@ const DONE_QUESTION: Question = {
 // revert lattice) lives in logic.ts; this file only performs the
 // OpenCode-specific I/O the outcome declares.
 
-// Auto pseudo-model entries (parsed in logic.ts `parseAutoEntries`): they are
+// Routing pseudo-model entries (parsed in logic.ts `parseRouteEntries`): they are
 // not runnable models - each is a resting point the plugin routes away from at
 // every prompt and restores at idle. Entries are distinct; their pools are
 // kept disjoint so a review turn never lands on a model the default entry can
@@ -1619,48 +1607,56 @@ export default Plugin.define({
       if (typeof v !== "number" || !Number.isFinite(v)) return SCREEN_SECRET_THRESHOLD
       return Math.min(0.99, Math.max(0.05, v))
     })()
-    // Auto options live under "auto" so that the judgment-model override
-    // ("model": "<id>" string) and the auto-routing options never share one
-    // ambiguous key (a string there is not a routing config and vice versa).
-    // "autoReview" is the second entry; both register by default and both
-    // derive a pool from the Console catalog when left unconfigured.
-    // Console default pool shape. Enabled by default with the built-in cuts;
-    // explicit candidates and sources still win over it per entry.
-    const poolOptions = parsePoolOptions((o as any).pool)
-    if (poolOptions.enable) {
-      const minContext =
-        poolOptions.auto.minContext > 0
-          ? ` (min ctx ${poolOptions.auto.minContext >= 1_000 ? `${Math.round(poolOptions.auto.minContext / 1_000)}k` : poolOptions.auto.minContext})`
-          : ""
-      console.log(
-        `[jev] pool: on - top ${poolOptions.topK} · auto ${poolShapeText(poolOptions, "auto")}${minContext} · review ${poolShapeText(poolOptions, "review")}`,
-      )
-    } else {
-      console.log("[jev] pool: off (plugin option) - entries without candidates will not route")
-    }
     // Per-turn model routing is a record of meta models: `default` (the
     // "Auto" entry) and `review` (the "Auto Review" entry) are built in and
-    // on by default; any other key registers an extra entry. The legacy flat
-    // `auto` object and the `autoReview` key are still accepted with a
-    // one-line notice.
-    const parsedAuto = parseAutoEntries((o as any).auto, (o as any).autoReview)
-    for (const warning of parsedAuto.warnings) console.log(`[jev] auto: ${warning}`)
-    const allAutoEntries = parsedAuto.entries
-    // A disabled pool leaves unconfigured entries with no candidates at all;
-    // their same fail-safe chain (fallback, last real model) still applies.
-    if (!poolOptions.enable) for (const entry of allAutoEntries) entry.defaultPool = false
-    const autoEntries = allAutoEntries.filter((entry) => entry.enable)
+    // on by default; any other key registers an extra entry. The deprecated
+    // `auto` key is still accepted with a one-line notice.
+    const parsedRoutes = parseRouteEntries((o as any).routes, {
+      auto: (o as any).auto,
+    })
+    for (const warning of parsedRoutes.warnings) console.log(`[jev] routes: ${warning}`)
+    const allRouteEntries = parsedRoutes.entries
+    const routeEntries = allRouteEntries.filter((entry) => entry.enable)
+    // A kind's built-in cut comes from that kind's built-in entry, so inlining
+    // `pool` on `default`/`review` shapes the pair every `pool: true` entry
+    // draws from; a disabled entry still owns it.
+    const kindPoolConfig = (kind: RouteEntryKind): PoolSplitConfig =>
+      allRouteEntries.find((entry) => entry.key === kind)?.poolConfig ?? DEFAULT_POOL_SPLITS[kind]
+    const poolShapeFor = (entry: ParsedRouteEntry): string => {
+      const cfg = entry.poolConfig
+      if (!cfg) return ""
+      const ctx =
+        cfg.minContext > 0
+          ? ` (min ctx ${cfg.minContext >= 1_000 ? `${Math.round(cfg.minContext / 1_000)}k` : cfg.minContext})`
+          : ""
+      return `${poolShapeText(cfg)} of the top ${cfg.topK}${ctx}`
+    }
+    const widestPoolTopK = (): number =>
+      maxPoolTopK([
+        kindPoolConfig("default"),
+        kindPoolConfig("review"),
+        ...allRouteEntries.flatMap((entry) => (entry.poolConfig ? [entry.poolConfig] : [])),
+      ])
     // The entry every review-kind pool stays disjoint from. A disabled
     // `default` still owns its shape, so review subtracts it either way.
-    const defaultAutoEntry =
-      autoEntries.find((entry) => entry.key === "default") ??
-      allAutoEntries.find((entry) => entry.key === "default") ??
-      autoEntries.find((entry) => !entry.review)
-    for (const entry of autoEntries) {
-      const optionKey = `auto.${entry.key}`
-      if (entry.defaultPool) {
+    const defaultRouteEntry =
+      routeEntries.find((entry) => entry.key === "default") ??
+      allRouteEntries.find((entry) => entry.key === "default") ??
+      routeEntries.find((entry) => !entry.review)
+    for (const entry of routeEntries) {
+      const optionKey = `routes.${entry.key}`
+      const otherSources = entry.candidates.length > 0 || entry.sources.favorites
+      if (entry.usePool && otherSources) {
         console.log(
-          `[jev] ${entry.modelID}: no candidates configured - routing uses the popular default pool (${defaultPoolText(entry, poolOptions)}); set "${optionKey}": { "candidates": [...] } to pin the pool`,
+          `[jev] ${entry.modelID}: pool merged into the configured candidates or sources (${poolShapeFor(entry)}); set "${optionKey}": { "pool": false } to drop it`,
+        )
+      } else if (entry.usePool) {
+        console.log(
+          `[jev] ${entry.modelID}: no candidates configured - routing uses the OpenCode Console pool (${poolShapeFor(entry)}); set "${optionKey}": { "candidates": [...] } to pin the pool`,
+        )
+      } else if (!otherSources) {
+        console.log(
+          `[jev] ${entry.modelID}: no candidates and the Console pool is off - this entry cannot route (its fallback chain still applies)`,
         )
       }
       if (!entry.fallback) {
@@ -1669,7 +1665,7 @@ export default Plugin.define({
         )
       }
     }
-    // Each `auto.<id>.enable` registers an "opencode-decisions/<id>" pseudo-model
+    // Each enabled `routes.<id>` registers an "opencode-decisions/<id>" pseudo-model
     // the user can select in the TUI picker (the built-ins keep the ids "auto"
     // and "auto-review"). The plugin is its only controller: while the session
     // is parked on the entry, jev routes each turn to a real (model, level)
@@ -2022,23 +2018,23 @@ export default Plugin.define({
       rows.push({ name: "commands", state: commandsEnabled ? "on" : "off" })
       rows.push({ name: "cache", state: cacheEnabled ? "on" : "off" })
       rows.push({ name: "effort.auto", state: effortAuto ? "on" : "off" })
-      for (const entry of allAutoEntries) {
+      for (const entry of allRouteEntries) {
         if (!entry.enable) {
-          rows.push({ name: entry.modelID, state: `off · "auto.${entry.key}" disabled` })
+          rows.push({ name: entry.modelID, state: `off · "routes.${entry.key}" disabled` })
           continue
         }
-        const sources = [
-          entry.sources.favorites ? "favorites" : "",
-          entry.sources.opencode.popular ? `popular(${entry.sources.opencode.plan}:${entry.sources.opencode.limit})` : "",
-          entry.sources.opencode.local ? `local(${entry.sources.opencode.limit})` : "",
+        const sources = [entry.sources.favorites ? "favorites" : ""].filter(Boolean)
+        const parts = [
+          entry.candidates.length > 0 ? `${entry.candidates.length} candidate(s)` : "",
+          entry.usePool ? `Console pool (${poolShapeFor(entry)})` : "",
+          ...sources,
         ].filter(Boolean)
         rows.push({
           name: entry.modelID,
-          state: entry.defaultPool
-            ? `on · default pool (${defaultPoolText(entry, poolOptions)} of the top ${poolOptions.topK})`
-            : entry.candidates.length === 0 && sources.length === 0
-              ? "on · no candidates (default pool off)"
-              : `on · ${entry.candidates.length} candidate(s)${sources.length > 0 ? ` + ${sources.join(" + ")}` : ""}${entry.fallback ? " + fallback" : ""}`,
+          state:
+            parts.length > 0
+              ? `on · ${parts.join(" + ")}${entry.fallback ? " + fallback" : ""}`
+              : "on · no candidates (default pool off)",
         })
       }
       rows.push({
@@ -2121,7 +2117,7 @@ export default Plugin.define({
               const computed = poolSnapshot ? await poolSnapshot() : []
               const byID = new Map(computed.map((pool) => [pool.id, pool]))
               const pools: JevStatusInfo["pools"] = []
-              for (const entry of allAutoEntries) {
+              for (const entry of allRouteEntries) {
                 pools.push(
                   byID.get(entry.modelID) ?? {
                     id: entry.modelID,
@@ -2239,12 +2235,12 @@ export default Plugin.define({
     // untouched (plain effort.auto is the separate, still opt-in per-variant
     // feature).
 
-    if (effortAuto || autoEntries.length > 0) {
+    if (effortAuto || routeEntries.length > 0) {
       // Register the pseudo-model entries so they appear in the TUI picker.
       // They list no variants, their base URL points at a closed port so a
       // direct invocation fails fast (fail-visible: the plugin routes away
       // from every entry before any turn), and activation is static "enabled".
-      if (autoEntries.length > 0) {
+      if (routeEntries.length > 0) {
         try {
           const entryProviderID = Provider.ID.make(AUTO_PROVIDER)
           await (ctx as any).provider.transform((editor: any) => {
@@ -2256,13 +2252,13 @@ export default Plugin.define({
                 package: "@opencode/ai/providers/openai-compatible",
                 settings: { baseURL: "http://127.0.0.1:1/v1" },
               },
-              models: autoEntries.map((entry) => ({
+              models: routeEntries.map((entry) => ({
                 ...(Model.Info.default(entryProviderID, Model.ID.make(entry.modelID)) as Record<string, unknown>),
                 name: entry.title,
               })),
             })
           })
-          for (const entry of autoEntries) {
+          for (const entry of routeEntries) {
             console.log(`[jev] route: registered entry ${AUTO_PROVIDER}/${entry.modelID} as "${entry.title}"`)
           }
         } catch (err: any) {
@@ -2329,84 +2325,66 @@ export default Plugin.define({
         return EFFORT_ORDER.filter((level) => listed.includes(level))
       }
 
-      // Dynamic candidate sources (route.sources) - the user's TUI-favorite
-      // models and OpenCode's own most-used models ("popular" mode, zen or
-      // go plan) by local usage. The snapshot is fetched ONCE per process
-      // (usage shifts on a 30-day horizon; per-prompt reads would only burn
-      // I/O), with a short in-flight memo so concurrent prompt hooks share
-      // one fetch, and at most three attempts in case the first run hits a
-      // transient DB error - then the empty snapshot stands for the process
-      // lifetime. Fail-open throughout: a failed source read never errors
-      // the turn, it just contributes no candidates.
-      const MAX_SOURCE_ATTEMPTS = 3
-      const USAGE_DAYS = 30
-      const sourceNeedsFavorites = autoEntries.some((entry) => entry.sources.favorites)
-      const sourceNeedsPopular = autoEntries.some(
-        (entry) => entry.sources.opencode.enabled && entry.sources.opencode.popular,
-      )
-      const sourceNeedsLocal = autoEntries.some(
-        (entry) => entry.sources.opencode.enabled && entry.sources.opencode.local,
-      )
-      const sourceNeedsLeaderboard = sourceNeedsPopular || autoEntries.some((entry) => entry.defaultPool)
-      // Only the default pool ranks by benchmark strength; the popular source
-      // needs the leaderboard but not the per-model benchmark pages.
-      const sourceNeedsBenchmarks = autoEntries.some((entry) => entry.defaultPool)
+      // Candidate sources (routes.<id>.favorites / routes.<id>.pool) - the
+      // user's TUI-favorite models. The snapshot is fetched ONCE per process
+      // (per-prompt reads would only burn I/O), with a short in-flight memo so
+      // concurrent prompt hooks share one fetch. Fail-open throughout: a failed
+      // source read never errors the turn, it just contributes no candidates.
+      const sourceNeedsFavorites = routeEntries.some((entry) => entry.sources.favorites)
+      const sourceNeedsLeaderboard = routeEntries.some((entry) => entry.usePool)
+      // Only the default pool ranks by benchmark strength.
+      const sourceNeedsBenchmarks = routeEntries.some((entry) => entry.usePool)
       // Flagged-unavailable candidates noticed so far, logged once per
       // process so the filter is observable without spamming every prompt.
       const noticedDrops = new Set<string>()
       const sharedPoolNoticed = new Set<string>()
-      const sourceCache: { favorites: Candidate[]; rows: any[] } = { favorites: [], rows: [] }
+      let sourceCache: Candidate[] = []
       let sourceFetched = false
-      let sourceAttempts = 0
       let sourceInflight: Promise<void> | null = null
+      // One notice when the pool is asked for in a session that lists no
+      // Console provider: the pool is Console-only, so an empty catalog is
+      // not a ranking failure.
+      let consolePoolNoticed = false
 
       // The session catalog's Console models (both plans), deduped by id.
-      // The default pool and the public-leaderboard source both rank this.
+      // The default pool ranks this and nothing else.
       const consolePool = (): PoolModel[] => consoleCatalogModels(listIndex.map?.values() ?? [])
 
-      // The pool an unconfigured entry routes from: Console catalog ranked by
-      // public usage, split by cost and benchmark strength (cheapest for auto,
-      // strongest for review). Empty when the session has no Console chat
-      // provider.
+      // The pool an entry routes from: the Console catalog ranked by public
+      // usage, split by cost and benchmark strength (cheapest for the default
+      // kind, strongest for review). The built-in pair is cut together so
+      // review keeps the best models; an entry that inlines its own shape gets
+      // an independent cut. Empty when the session has no Console chat
+      // provider; the pool never ranks another provider's models.
       const defaultCandidates = (entry: ParsedRouteEntry): Candidate[] => {
-        if (!entry.defaultPool) return []
-        return defaultPoolPicks(entry, consolePool(), poolOptions)
+        if (!entry.usePool) return []
+        const pool = consolePool()
+        if (pool.length === 0) {
+          if (!consolePoolNoticed) {
+            consolePoolNoticed = true
+            console.log(
+              "[jev] route: the Console pool ranks only opencode/opencode-go models; none are listed in this session, so entries without candidates cannot route",
+            )
+          }
+          return []
+        }
+        const cfg = entry.poolConfig ?? DEFAULT_POOL_SPLITS[entry.kind]
+        if (entry.sources.pool === "own" && entry.key !== entry.kind) {
+          return poolCandidates(poolCut(pool, LEADERBOARD, cfg, { consent: CONSOLE_CONSENT }))
+        }
+        const split = defaultPoolSplit(pool, LEADERBOARD, {
+          default: kindPoolConfig("default"),
+          review: kindPoolConfig("review"),
+          consent: CONSOLE_CONSENT,
+        })
+        return poolCandidates(split[entry.kind])
       }
 
-      const sourceSnapshotFor = (
-        entry: ParsedRouteEntry,
-      ): { favorites: Candidate[]; opencode: Candidate[] } | null => {
-        if (!entry.sources.favorites && !entry.sources.opencode.enabled) return null
-        const planProvider = entry.sources.opencode.plan === "go" ? "opencode-go" : "opencode"
-        const opencode: Candidate[] = []
-        const seen = new Set<string>()
-        const push = (candidates: Candidate[]): void => {
-          for (const candidate of candidates) {
-            const key = candidateKey(candidate)
-            if (seen.has(key)) continue
-            seen.add(key)
-            opencode.push(candidate)
-          }
-        }
-        if (entry.sources.opencode.popular && LEADERBOARD.length > 0) {
-          const catalogRows = [...(listIndex.map?.values() ?? [])].map((info: any) => ({
-            providerID: info?.providerID,
-            modelID: info?.id ?? info?.modelID,
-          }))
-          push(rankSourceLeaderboard(catalogRows, LEADERBOARD, planProvider, entry.sources.opencode.limit))
-        }
-        if (entry.sources.opencode.local) {
-          push(rankSourcePopular(sourceCache.rows, planProvider, entry.sources.opencode.limit))
-        }
-        return {
-          favorites: entry.sources.favorites ? sourceCache.favorites : [],
-          opencode,
-        }
-      }
+      // This entry's favorites, or null when it does not enable them.
+      const sourceSnapshotFor = (entry: ParsedRouteEntry): Candidate[] | null =>
+        entry.sources.favorites ? sourceCache : null
       const fetchSources = async (): Promise<void> => {
-        sourceAttempts += 1
         const favorites: Candidate[] = []
-        let rows: any[] = []
         if (sourceNeedsFavorites) {
           try {
             const stateDir = process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state")
@@ -2414,57 +2392,22 @@ export default Plugin.define({
             favorites.push(...parseCandidates(raw?.favorite))
           } catch {}
         }
-        let localFailed = false
         // Fire-and-forget: the first routed prompt must not wait on a remote
         // leaderboard. Until it lands, pools rank by cost (fail-open) and
         // later prompts pick the ranking up from the module snapshot.
         if (sourceNeedsLeaderboard) void loadLeaderboard(ctx)
-        if (sourceNeedsBenchmarks) void loadBenchmarks(ctx, poolOptions.topK)
-        if (sourceNeedsLocal) {
-          try {
-            const dataDir = process.env.XDG_DATA_HOME?.trim() || join(homedir(), ".local", "share")
-            const moduleSpecifier = "bun:sqlite"
-            const { Database } = (await import(moduleSpecifier)) as any
-            const db = new Database(join(dataDir, "opencode", "opencode.db"), { readonly: true })
-            try {
-              const since = Date.now() - USAGE_DAYS * 24 * 60 * 60 * 1000
-              rows = ((db
-                .query(
-                  `SELECT json_extract(data, '$.model.providerID') AS providerID,
-                          json_extract(data, '$.model.id') AS modelID,
-                          COUNT(*) AS steps
-                    FROM session_message
-                   WHERE type = 'assistant' AND time_created > ?
-                   GROUP BY providerID, modelID
-                   ORDER BY steps DESC`,
-                )
-                .all(since) as any[]) ?? [])
-            } finally {
-              db.close()
-            }
-          } catch (err) {
-            localFailed = true
-            console.error(`[jev] route: opencode local-usage source failed (routing continues without it):`, err)
-          }
-        }
-        // A failed local read retries on a later prompt (bounded by
-        // MAX_SOURCE_ATTEMPTS); a legitimate empty result does not.
-        sourceFetched = !localFailed
-        sourceCache.favorites = favorites
-        sourceCache.rows = rows
-        if (sourceFetched && (favorites.length > 0 || rows.length > 0 || LEADERBOARD.length > 0)) {
+        if (sourceNeedsBenchmarks) void loadBenchmarks(ctx, widestPoolTopK())
+        sourceFetched = true
+        sourceCache = favorites
+        if (favorites.length > 0 || LEADERBOARD.length > 0) {
           console.log(
-            `[jev] route: sources snapshot (fetched once) - favorites=${favorites.length} leaderboard=${LEADERBOARD.length} usage-rows=${rows.length}`,
+            `[jev] route: sources snapshot (fetched once) - favorites=${favorites.length} leaderboard=${LEADERBOARD.length}`,
           )
         }
       }
-      const resolveRouteSources = (
-        entry: ParsedRouteEntry,
-      ): Promise<{ favorites: Candidate[]; opencode: Candidate[] } | null> => {
-        if (!entry.sources.favorites && !entry.sources.opencode.enabled) return Promise.resolve(null)
-        if (sourceFetched || sourceAttempts >= MAX_SOURCE_ATTEMPTS) {
-          return Promise.resolve(sourceSnapshotFor(entry))
-        }
+      const resolveRouteSources = (entry: ParsedRouteEntry): Promise<Candidate[] | null> => {
+        if (!entry.sources.favorites) return Promise.resolve(null)
+        if (sourceFetched) return Promise.resolve(sourceSnapshotFor(entry))
         sourceInflight ??= fetchSources().finally(() => {
           sourceInflight = null
         })
@@ -2475,7 +2418,7 @@ export default Plugin.define({
       // every prompt while a manual pick is in effect.
       const foreignSwitch = new Map<string, string>()
       // Every pseudo entry is a routing source, never a destination.
-      const autoEntryKeys = new Set(autoEntries.map((entry) => candidateKey(entry)))
+      const routeEntryKeys = new Set(routeEntries.map((entry) => candidateKey(entry)))
 
       // On-demand snapshot for /jev-status: the same merge/disjoint/filter
       // steps the prompt hook runs, minus the boot-lag waiting. Read-only -
@@ -2484,28 +2427,25 @@ export default Plugin.define({
         await refreshListIndex()
         await loadConsoleConsent()
         if (sourceNeedsLeaderboard) await loadLeaderboard(ctx)
-        if (sourceNeedsBenchmarks) await loadBenchmarks(ctx, poolOptions.topK)
+        if (sourceNeedsBenchmarks) await loadBenchmarks(ctx, widestPoolTopK())
         const rows: JevStatusInfo["pools"] = []
-        for (const entry of autoEntries) {
-          const sources = await resolveRouteSources(entry)
-          const sourced = sources
-            ? uniqueCandidates([...sources.favorites, ...sources.opencode])
-            : []
+        for (const entry of routeEntries) {
+          const sourced = (await resolveRouteSources(entry)) ?? []
           const declared = [
             ...entry.candidates,
-            ...(entry.defaultPool ? defaultCandidates(entry) : []),
+            ...(entry.usePool ? defaultCandidates(entry) : []),
             ...sourced,
           ]
           let combined = uniqueCandidates(declared)
           let excluded: Candidate[] = []
           if (entry.review) {
-            const base = defaultAutoEntry
+            const base = defaultRouteEntry
             if (base) {
               const baseSources = await resolveRouteSources(base)
               const basePool = [
                 ...base.candidates,
-                ...(base.defaultPool ? defaultCandidates(base) : []),
-                ...(baseSources ? [...baseSources.favorites, ...baseSources.opencode] : []),
+                ...(base.usePool ? defaultCandidates(base) : []),
+                ...(baseSources ?? []),
                 ...(base.fallback ? [base.fallback] : []),
               ]
               const before = combined
@@ -2518,7 +2458,7 @@ export default Plugin.define({
           }
           const usable: Candidate[] = []
           for (const candidate of combined) {
-            if (autoEntryKeys.has(candidateKey(candidate))) continue
+            if (routeEntryKeys.has(candidateKey(candidate))) continue
             const info = await modelInfo(candidate.providerID, candidate.modelID)
             if (info && isAvailableModel(info)) usable.push(candidate)
           }
@@ -2531,8 +2471,8 @@ export default Plugin.define({
             sourced: sourced.map(candidateKey),
             excluded: excluded.map(candidateKey),
             usable: usable.map(candidateKey),
-            ...(entry.defaultPool
-              ? { shape: `${poolShapeText(poolOptions, entry.review ? "review" : "auto")} of the top ${poolOptions.topK}` }
+            ...(entry.usePool && entry.poolConfig
+              ? { shape: poolShapeFor(entry) }
               : {}),
             ...(entry.fallback ? { fallback: candidateKey(entry.fallback) } : {}),
           })
@@ -2558,7 +2498,7 @@ export default Plugin.define({
           // session on one of the plugin's entries. On any real model it must
           // not touch the turn at all (unless plain effort.auto is opted in) -
           // the manual pick IS the stand-down, no pin bookkeeping needed.
-          const entry = pseudoEntryFor(autoEntries, model)
+          const entry = pseudoEntryFor(routeEntries, model)
           const atAutoEntry = !!entry
           if (!atAutoEntry && !effortAuto) return
 
@@ -2584,13 +2524,16 @@ export default Plugin.define({
             // cost instead of stalling on a remote request.
             void loadConsoleConsent()
             if (sourceNeedsLeaderboard) void loadLeaderboard(ctx)
-            if (sourceNeedsBenchmarks) void loadBenchmarks(ctx, poolOptions.topK)
-            let combined = entry.defaultPool ? defaultCandidates(entry) : entry.candidates
-            const sources = await resolveRouteSources(entry)
-            if (sources) {
+            if (sourceNeedsBenchmarks) void loadBenchmarks(ctx, widestPoolTopK())
+            let combined = uniqueCandidates([
+              ...entry.candidates,
+              ...(entry.usePool ? defaultCandidates(entry) : []),
+            ])
+            const sourced = await resolveRouteSources(entry)
+            if (sourced && sourced.length > 0) {
               const seen = new Set(combined.map((c) => candidateKey(c)))
               const extra: Candidate[] = []
-              for (const candidate of [...sources.favorites, ...sources.opencode]) {
+              for (const candidate of sourced) {
                 const key = candidateKey(candidate)
                 if (!seen.has(key)) {
                   seen.add(key)
@@ -2604,13 +2547,13 @@ export default Plugin.define({
             // base pool (explicit candidates + default pool + sources +
             // fallback) from the review pool, and ignore a shared fallback too.
             if (entry.review) {
-              const base = defaultAutoEntry
+              const base = defaultRouteEntry
               if (base) {
                 const baseSources = await resolveRouteSources(base)
                 const basePool = [
                   ...base.candidates,
-                  ...(base.defaultPool ? defaultCandidates(base) : []),
-                  ...(baseSources ? [...baseSources.favorites, ...baseSources.opencode] : []),
+                  ...(base.usePool ? defaultCandidates(base) : []),
+                  ...(baseSources ?? []),
                   ...(base.fallback ? [base.fallback] : []),
                 ]
                 const before = combined.length
@@ -2636,7 +2579,7 @@ export default Plugin.define({
               for (const candidate of combined) {
                 // Every pseudo entry routes FROM itself only - it is never a
                 // destination for any entry.
-                if (autoEntryKeys.has(candidateKey(candidate))) continue
+                if (routeEntryKeys.has(candidateKey(candidate))) continue
                 const info = await modelInfo(candidate.providerID, candidate.modelID)
                 // Absent from the session's domain entirely (provider not
                 // connected, workspace-disabled there) ...
@@ -2694,7 +2637,7 @@ export default Plugin.define({
           const last = latestSwitch(rows)
           let pin: any
           try {
-            pin = autoEntries.length > 0
+            pin = routeEntries.length > 0
               ? ((await (ctx as any).storage.get(`route-pin/${String(event.sessionID)}`)) ??
                 (await (ctx as any).storage.get(`effort-pin/${String(event.sessionID)}`)))
               : (await (ctx as any).storage.get(`effort-pin/${String(event.sessionID)}`))
@@ -2843,7 +2786,7 @@ export default Plugin.define({
                 // first pool entry instead of leaving the turn on the entry.
                 const first =
                   usableCandidates[0] ??
-                  candidatePool.find((c) => !autoEntryKeys.has(candidateKey(c)))
+                  candidatePool.find((c) => !routeEntryKeys.has(candidateKey(c)))
                 if (first) {
                   outcome.logs.push(
                     `[jev] route: ${entry.modelID} could not route this turn - trying ${candidateKey(first)}`,
@@ -4147,7 +4090,7 @@ export default Plugin.define({
     const ensureOffEntry = async (sessionID: string, messages: ReadonlyArray<any>): Promise<boolean> => {
       try {
         const model = (unwrapEnvelope(await (ctx as any).session.get({ sessionID })) as any)?.model
-        const entry = pseudoEntryFor(autoEntries, model)
+        const entry = pseudoEntryFor(routeEntries, model)
         if (!entry) return true
         let wakePin: any
         try {
@@ -4183,7 +4126,7 @@ export default Plugin.define({
     // touched: a manual pick sleeps through resets until the user returns to
     // their resting point. Best effort: without a usable idle subscription
     // the session stays on the last pick until the next prompt re-routes it.
-    if (autoEntries.length > 0 || effortAuto) {
+    if (routeEntries.length > 0 || effortAuto) {
       const restingInflight = new Set<string>()
       const resetResting = async (sessionID: string): Promise<void> => {
         if (restingInflight.has(sessionID)) return
@@ -4223,10 +4166,10 @@ export default Plugin.define({
           // default variant of the model the last judged turn landed on. The
           // pin names the exact entry, so auto and auto-review never restore
           // into each other.
-          if (pseudoEntryFor(autoEntries, model)) return // already resting on an entry
+          if (pseudoEntryFor(routeEntries, model)) return // already resting on an entry
           if (!pinIsRoute && currentRef.variant === "default") return
           const restingEntry = pinIsRoute
-            ? pseudoEntryOfRef(autoEntries, pin?.entry ?? pin?.from)
+            ? pseudoEntryOfRef(routeEntries, pin?.entry ?? pin?.from)
             : null
           if (pinIsRoute && !restingEntry) return // stale pin from a removed entry
           const resting = restingEntry
@@ -4263,7 +4206,7 @@ export default Plugin.define({
         }
       }
       if (await subscribeIdle((sid) => resetResting(sid), "route-rest")) {
-        console.log(`[jev] route-rest: idle reset active (${autoEntries.length > 0 ? "entry" : "default variant"} resting point)`)
+        console.log(`[jev] route-rest: idle reset active (${routeEntries.length > 0 ? "entry" : "default variant"} resting point)`)
       }
     }
 
@@ -4843,13 +4786,13 @@ export default Plugin.define({
     }
 
     console.log(
-      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} auto=${
-        autoEntries.length > 0
-          ? autoEntries
+      `[jev] plugin loaded - screen=${screenEnabled}/${screenMode}${screenTools === "all" ? "/all-tools" : ""}${screenAnnotation === "notice" ? "/notice" : ""} scrub=${scrubEnabled} tools=${toolsEnabled} cache=${cacheEnabled} effort=${effortAuto ? "auto" : "off"} routes=${
+        routeEntries.length > 0
+          ? routeEntries
               .map((entry) =>
-                entry.defaultPool
-                  ? `${entry.modelID}(pool:${entry.review ? `${poolOptions.review.cheap}c+${poolOptions.review.popular}u+${poolOptions.review.strong}s` : `${poolOptions.auto.cheap}c+${poolOptions.auto.popular}u+${poolOptions.auto.strong}s`})`
-                  : `${entry.modelID}(${entry.candidates.length}${entry.sources.favorites ? "+favorites" : ""}${entry.sources.opencode.popular ? `+popular(${entry.sources.opencode.plan}:${entry.sources.opencode.limit})` : ""}${entry.sources.opencode.local ? `+local(${entry.sources.opencode.limit})` : ""}${entry.fallback ? "+fallback" : ""})`,
+                entry.usePool
+                  ? `${entry.modelID}(pool:${poolShapeText(entry.poolConfig ?? DEFAULT_POOL_SPLITS[entry.kind])})`
+                  : `${entry.modelID}(${entry.candidates.length}${entry.sources.favorites ? "+favorites" : ""}${entry.fallback ? "+fallback" : ""})`,
               )
               .join("+")
           : "off"

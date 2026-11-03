@@ -255,102 +255,48 @@ export function withoutSharedPool(candidates: Candidate[], pool: readonly Candid
 
 // ---------------------------------------------------------------------------
 // Dynamic routing sources: candidates read from OpenCode's own local state
-// (TUI model favorites, local usage history) in addition to the static
-// "candidates" list. Parsing and ranking here are pure; the file and DB
-// reads live in index.ts and feed their rows through below.
+// (TUI model favorites) in addition to the static "candidates" list. Parsing
+// here is pure; the file read lives in index.ts and feeds its rows through.
 // ---------------------------------------------------------------------------
 
-export interface OpencodeSourceConfig {
-  enabled: boolean
-  /** Which OpenCode plan's models to rank: "zen" (the `opencode` provider,
-   * default) or "go" (the OpenCode Go subscription). */
-  plan: "zen" | "go"
-  /** Top-N count of each ranking. */
-  limit: number
-  /** Rank by the public opencode.ai/data leaderboard. Default mode. */
-  popular: boolean
-  /** Also merge models from local 30-day usage (opt-in). */
-  local: boolean
-}
+/** How the Console pool feeds an entry: `"auto"` keeps the implicit rule (only
+ * when the entry has no candidates and no other source), `"on"` merges the
+ * entry kind's built-in cut, `"off"` disables it, and `"own"` uses the shape
+ * inlined under the entry's `pool`. */
+export type PoolSourceMode = "auto" | "on" | "off" | "own"
 
 export interface RouteSourcesConfig {
   /** Models starred in OpenCode's model picker (TUI favorites). */
   favorites: boolean
-  /** OpenCode's own models, ranked by the public leaderboard and/or local use. */
-  opencode: OpencodeSourceConfig
+  /** The Console pool as a source for this entry. */
+  pool: PoolSourceMode
+  /** The entry's inlined cut, when `pool` is `"own"` (the kind's otherwise). */
+  poolConfig: PoolSplitConfig | null
 }
 
-const POPULAR_LIMIT_DEFAULT = 10
-const POPULAR_LIMIT_MAX = 40
-
-const isModeValue = (v: unknown): boolean =>
-  v === undefined || v === true || v === false || (typeof v === "number" && Number.isFinite(v))
-
-// A clamped magnitude - counts never disable the source.
-function parsePopularLimit(raw: unknown): number {
-  if (typeof raw === "number" && Number.isFinite(raw))
-    return Math.max(1, Math.min(Math.floor(raw), POPULAR_LIMIT_MAX))
-  return POPULAR_LIMIT_DEFAULT
-}
-
-// Accepts the route config's "sources":
-//   { "favorites": true,
-//     "opencode": true | { "plan"?: "zen" | "go",
-//                          "popular"?: true | <count>,
-//                          "local"?: true | <count> } }
-// "popular" (the public opencode.ai/data leaderboard) is the default mode;
-// "local" additionally merges the machine's own 30-day usage. Sources are
-// off unless explicitly enabled - they widen what routing may switch to, so
-// absent or malformed keys must never turn them on: an unrecognized plan or
-// a non-numeric/non-boolean mode value leaves the source off instead of
-// guessing. "popular": false idles that ranking, so the source stays off
-// unless "local" is enabled.
-export function parseRouteSources(raw: unknown): RouteSourcesConfig {
+// Reads an entry's candidate sources:
+//   { "favorites": true, "pool"?: true | false | { cheap?, popular?, strong?, topK?, minContext? } }
+// Sources are off unless explicitly enabled - they widen what routing may
+// switch to, so absent or malformed keys must never turn them on.
+export function parseRouteSources(raw: unknown, kind: RouteEntryKind = "default"): RouteSourcesConfig {
   const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {}
-  let opencode: OpencodeSourceConfig = {
-    enabled: false,
-    plan: "zen",
-    limit: POPULAR_LIMIT_DEFAULT,
-    popular: false,
-    local: false,
+  let pool: PoolSourceMode = "auto"
+  let poolConfig: PoolSplitConfig | null = null
+  if (obj.pool === true) pool = "on"
+  else if (obj.pool === false) pool = "off"
+  else if (obj.pool && typeof obj.pool === "object" && !Array.isArray(obj.pool)) {
+    pool = "own"
+    poolConfig = parsePoolSplit(obj.pool, kind)
+  } else if (typeof obj.pool === "string") {
+    // Named pools are gone: inline the cut, or use `true` for the kind default.
+    // "auto" stays the implicit rule; any other string fails closed.
+    pool = obj.pool.trim() === "auto" ? "auto" : "off"
   }
-  const src = obj.opencode
-  if (src === true) {
-    opencode = {
-      enabled: true,
-      plan: "zen",
-      limit: POPULAR_LIMIT_DEFAULT,
-      popular: true,
-      local: false,
-    }
-  } else if (src && typeof src === "object" && !Array.isArray(src)) {
-    const planKnown = src.plan === undefined || src.plan === "zen" || src.plan === "go"
-    if (planKnown && isModeValue(src.popular) && isModeValue(src.local)) {
-      const local = src.local === true || (typeof src.local === "number" && Number.isFinite(src.local))
-      // Popular is on unless explicitly disabled or "local"-only was asked for.
-      const popularExplicit =
-        src.popular === true ||
-        src.popular === false ||
-        (typeof src.popular === "number" && Number.isFinite(src.popular))
-      const popular = popularExplicit ? src.popular !== false : !local
-      const limit =
-        typeof src.popular === "number" && Number.isFinite(src.popular)
-          ? parsePopularLimit(src.popular)
-          : parsePopularLimit(src.local)
-      opencode = {
-        enabled: popular || local,
-        plan: (src.plan as "zen" | "go") ?? "zen",
-        limit,
-        popular,
-        local,
-      }
-    }
-  }
-  return { favorites: obj.favorites === true, opencode }
+  return { favorites: obj.favorites === true, pool, poolConfig }
 }
 
 // ---------------------------------------------------------------------------
-// Routing meta models (`auto`): a record of pseudo-model entries. The built-in
+// Routing meta models (`routes`): a record of pseudo-model entries. The built-in
 // `default` and `review` entries keep their legacy picker ids (`auto`,
 // `auto-review`) so parked sessions and route pins survive; custom keys get
 // `opencode-decisions/<key>`. Every entry carries the same option surface.
@@ -361,12 +307,19 @@ export type RouteEntryKind = "default" | "review"
 export interface RouteEntryConfig {
   /** Default true. `false` on the entry value does the same thing. */
   enable?: boolean
-  /** Criteria and default-pool split. Defaults to "review" for the built-in
-   * `review` key and "default" everywhere else. */
+  /** Review criteria, review/default pool disjointness, and which built-in cut
+   * `pool: true` inherits. Independent of an inlined `pool` object; defaults to
+   * "review" for the built-in `review` key and "default" everywhere else. */
   kind?: RouteEntryKind
   name?: string
   aliases?: string[]
   candidates?: unknown
+  /** Merge the models starred in OpenCode's picker. */
+  favorites?: unknown
+  /** The Console pool source: `true`, `false`, or an inline cut object. */
+  pool?: unknown
+  /** Removed: candidate sources are the entry-level `pool`/`favorites`.
+   * Read only to warn. */
   sources?: unknown
   fallback?: unknown
   minConfidence?: number
@@ -379,17 +332,21 @@ export interface ParsedRouteEntry extends PseudoEntry {
   kind: RouteEntryKind
   /** Derived from `kind`, so existing call sites keep reading one field. */
   review: boolean
+  /** Set only by the `"routes": { "<id>": false }` shorthand (or `routes: false`). */
   enable: boolean
   candidates: Candidate[]
-  /** No explicit candidates and no enabled source: derive the pool from the
-   * Console catalog ranked by public usage. */
-  defaultPool: boolean
+  /** The Console pool feeds this entry: implicitly when it has no candidates
+   * and no enabled source, or explicitly via `pool`. */
+  usePool: boolean
+  /** The cut this entry draws from when `usePool`: its inlined `pool` shape,
+   * else its kind's built-in cut. */
+  poolConfig: PoolSplitConfig | null
   minConfidence: number
   fallback: Candidate | null
   sources: RouteSourcesConfig
 }
 
-export interface ParsedAutoEntries {
+export interface ParsedRouteEntries {
   entries: ParsedRouteEntry[]
   /** Deprecation and drop notices for the host to log once at setup. */
   warnings: string[]
@@ -404,11 +361,15 @@ export const BUILTIN_ROUTE_ORDER = ["default", "review"] as const
 const BUILTIN_ROUTE_NAMES: Record<string, string> = { default: "Auto", review: "Auto Review" }
 const ROUTE_KEY = /^[a-z][a-z0-9-]*$/
 const ROUTE_ENTRY_FIELDS = new Set([
+  // Not an entry field any more: kept so a legacy flat object that carries it
+  // is detected, and so the key stays reserved.
   "enable",
   "kind",
   "name",
   "aliases",
   "candidates",
+  "favorites",
+  "pool",
   "sources",
   "fallback",
   "minConfidence",
@@ -435,7 +396,11 @@ function routeEntryOf(key: string, raw: unknown): ParsedRouteEntry {
       ? [fallbackRaw]
       : fallbackRaw
   const candidates = parseCandidates(obj.candidates)
-  const sources = parseRouteSources(obj.sources)
+  const sources = parseRouteSources(obj, kind)
+  const usePool =
+    sources.pool === "on" ||
+    sources.pool === "own" ||
+    (sources.pool !== "off" && candidates.length === 0 && !sources.favorites)
   return {
     providerID: AUTO_PROVIDER,
     modelID: BUILTIN_ROUTE_MODEL_ID[key] ?? key,
@@ -443,52 +408,85 @@ function routeEntryOf(key: string, raw: unknown): ParsedRouteEntry {
     title: aliases.length > 0 ? `${name} (${aliases.join(", ")})` : name,
     kind,
     review: kind === "review",
-    enable: obj.enable !== false,
+    enable: true,
     candidates,
-    defaultPool: candidates.length === 0 && !sources.favorites && !sources.opencode.enabled,
+    usePool,
+    poolConfig: usePool ? (sources.poolConfig ?? DEFAULT_POOL_SPLITS[kind]) : null,
     minConfidence: clampThreshold(obj.minConfidence, 0.25, 0.99, 0.45),
     fallback: parseCandidates(fallbackList)[0] ?? null,
     sources,
   }
 }
 
-/** Parses the `auto` option into routing entries. Accepts the record shape,
- * the legacy flat entry (treated as `default`), a global boolean, and the
- * deprecated `autoReview` key as an alias for `auto.review`. Built-ins are
- * always present (disabled entries included, so `/jev-status` can print them)
- * and come first; custom entries keep declaration order. Never throws. */
-export function parseAutoEntries(raw: unknown, legacyReview?: unknown): ParsedAutoEntries {
+/** Deprecated top-level options the parser still accepts as aliases. */
+export interface RouteAliases {
+  /** The pre-rename `auto` key. */
+  auto?: unknown
+}
+
+/** Notices for removed source keys: `sources` (pool/favorites moved onto the
+ * entry) and the named-pool string form. A leftover `sources` object
+ * contributes nothing, matching the removed-key style: it never errors the
+ * entry, it just leaves the pool rules to the remaining keys. */
+function removedSourceWarnings(key: string, raw: unknown): string[] {
+  if (!isRouteObject(raw)) return []
   const warnings: string[] = []
-  const record: Record<string, unknown> = {}
-  if (isRouteObject(raw)) {
-    const flat = !("default" in raw) && !("review" in raw) && Object.keys(raw).some((key) => ROUTE_ENTRY_FIELDS.has(key))
-    if (flat) {
-      warnings.push('a flat "auto" object is now "auto.default"; the old shape still works')
-      record.default = raw
+  if ("sources" in raw) {
+    warnings.push(
+      `"routes.${key}.sources" was removed - set "pool" and "favorites" on the entry instead`,
+    )
+  }
+  if (typeof raw.pool === "string" && raw.pool.trim() !== "auto") {
+    warnings.push(
+      `"routes.${key}.pool" no longer names a pool - inline the cut as { "cheap": 1, "popular": 1, "strong": 1 }, or use true for the kind's built-in cut`,
+    )
+  }
+  return warnings
+}
+
+/** Parses the `routes` option into routing entries. Accepts the record shape,
+ * the legacy flat entry (treated as `default`), a global boolean, and the
+ * deprecated `auto` key as an alias for `routes`. Built-ins are always present
+ * (disabled entries included, so `/jev-status` can print them) and come first;
+ * custom entries keep declaration order. Never throws. */
+export function parseRouteEntries(raw: unknown, legacy: RouteAliases = {}): ParsedRouteEntries {
+  const warnings: string[] = []
+  let value = raw
+  if (legacy.auto !== undefined) {
+    if (raw !== undefined) {
+      warnings.push('"auto" is ignored because "routes" is set')
     } else {
-      Object.assign(record, raw)
+      warnings.push('"auto" is deprecated - use "routes"')
+      value = legacy.auto
     }
   }
-  if (legacyReview !== undefined) {
-    if ("review" in record) {
-      warnings.push('"autoReview" is ignored because "auto.review" is set')
+  const record: Record<string, unknown> = {}
+  if (isRouteObject(value)) {
+    const flat =
+      !("default" in value) &&
+      !("review" in value) &&
+      Object.keys(value).some((key) => ROUTE_ENTRY_FIELDS.has(key))
+    if (flat) {
+      warnings.push('a flat "routes" object is now "routes.default"; the old shape still works')
+      // `enable` is no longer an entry field; keep the deprecated flat shape's
+      // off switch working by mapping it to the `false` shorthand.
+      record.default = value.enable === false ? false : value
     } else {
-      warnings.push('"autoReview" is deprecated - use "auto.review"')
-      if (legacyReview === false || legacyReview === null) record.review = false
-      else if (isRouteObject(legacyReview)) record.review = legacyReview
+      Object.assign(record, value)
     }
   }
 
   const entries: ParsedRouteEntry[] = []
   const seenIDs = new Set<string>()
-  const take = (key: string, value: unknown): void => {
-    const entry = routeEntryOf(key, value)
+  const take = (key: string, entryValue: unknown): void => {
+    const entry = routeEntryOf(key, entryValue)
     if (seenIDs.has(entry.modelID)) {
       warnings.push(`routing entry "${key}" is dropped: model id ${entry.modelID} is already used`)
       return
     }
     seenIDs.add(entry.modelID)
-    if (raw === false || value === false) entry.enable = false
+    warnings.push(...removedSourceWarnings(key, entryValue))
+    if (value === false || entryValue === false) entry.enable = false
     entries.push(entry)
   }
   for (const key of BUILTIN_ROUTE_ORDER) take(key, key in record ? record[key] : {})
@@ -505,62 +503,6 @@ export function parseAutoEntries(raw: unknown, legacyReview?: unknown): ParsedAu
     take(key, value)
   }
   return { entries, warnings }
-}
-
-// Ranks usage rows into same-provider candidates: rows carry flattened
-// json_extract output ({ providerID, modelID, steps }), only the given
-// provider's models count, entries sort by steps (assistant-message count)
-// desc with modelID asc as the deterministic tiebreak, and the first `limit`
-// distinct models survive. Never throws, never returns duplicates.
-export function rankSourcePopular(
-  rows: Array<{ providerID?: unknown; modelID?: unknown; steps?: unknown }>,
-  providerID: string,
-  limit: number,
-): Candidate[] {
-  if (!Number.isFinite(limit) || limit < 1) return []
-  const scored = new Map<string, Candidate & { steps: number }>()
-  for (const row of rows) {
-    if (typeof row.providerID !== "string" || row.providerID !== providerID) continue
-    if (typeof row.modelID !== "string" || row.modelID.trim() === "") continue
-    const modelID = row.modelID.trim()
-    const steps = typeof row.steps === "number" && Number.isFinite(row.steps) ? row.steps : 1
-    const key = candidateKey({ providerID, modelID })
-    const prior = scored.get(key)
-    if (!prior || steps > prior.steps) scored.set(key, { providerID, modelID, steps })
-  }
-  return [...scored.values()]
-    .sort((a, b) => b.steps - a.steps || (a.modelID < b.modelID ? -1 : a.modelID > b.modelID ? 1 : 0))
-    .slice(0, limit)
-    .map(({ providerID, modelID }) => ({ providerID, modelID }))
-}
-
-// Ranks one provider's catalog models by the public usage leaderboard (the
-// model ids behind opencode.ai/data): only leaderboard models that exist in
-// the session catalog count, ordered by leaderboard position and truncated to
-// `limit`. Never throws, never returns duplicates.
-export function rankSourceLeaderboard(
-  models: Array<{ providerID?: unknown; modelID?: unknown }>,
-  leaderboard: readonly string[],
-  providerID: string,
-  limit: number,
-): Candidate[] {
-  if (!Number.isFinite(limit) || limit < 1) return []
-  const rank = new Map(leaderboard.map((id, index) => [id, index]))
-  const seen = new Set<string>()
-  const ranked: Array<Candidate & { at: number }> = []
-  for (const model of models) {
-    if (model.providerID !== providerID) continue
-    const modelID = typeof model.modelID === "string" ? model.modelID.trim() : ""
-    if (!modelID || seen.has(modelID)) continue
-    const at = rank.get(modelID)
-    if (at === undefined) continue
-    seen.add(modelID)
-    ranked.push({ providerID, modelID, at })
-  }
-  return ranked
-    .sort((a, b) => a.at - b.at)
-    .slice(0, limit)
-    .map(({ providerID, modelID }) => ({ providerID, modelID }))
 }
 
 // ---------------------------------------------------------------------------
@@ -641,26 +583,27 @@ export interface PoolModel {
   benchmarks?: BenchmarkScore[]
 }
 
-/** Default routing pool: window size plus the picks each entry gets.
+/** Default routing pool: window size plus the picks each kind gets.
  * Both pools are a union of the same three signals - lowest real token cost
  * (`cheap`), highest public usage (`popular`), highest benchmark strength
  * (`strong`, output price as the fallback when a model has no benchmark) - so
  * a model the community drives cannot fall out just for being fourth cheapest.
  * Review picks first: it is the reviewer, so it takes strength and usage and
- * no cost slot. Auto takes the remainder.
- * `autoMinContext` keeps auto's picks out of the toy-model class: the
- * leaderboard also lists small 262k-context tiers beside the 1M-context
+ * no cost slot. Default takes the remainder.
+ * `defaultMinContext` keeps the default-kind picks out of the toy-model class:
+ * the leaderboard also lists small 262k-context tiers beside the 1M-context
  * models people actually drive. It is a floor, not an exact-size test - a
  * model without a context window fails open. */
 export const DEFAULT_POOL = {
   topK: 18,
-  autoCheap: 1,
-  autoPopular: 1,
-  autoStrong: 1,
+  defaultCheap: 1,
+  defaultPopular: 1,
+  defaultStrong: 1,
   reviewCheap: 0,
   reviewPopular: 1,
   reviewStrong: 2,
-  autoMinContext: 500_000,
+  defaultMinContext: 500_000,
+  reviewMinContext: 0,
 } as const
 
 /** Slot counts for one split of the Console default pool. */
@@ -673,35 +616,31 @@ export interface PoolSplitCounts {
   strong: number
 }
 
-export interface PoolAutoSplit extends PoolSplitCounts {
-  /** Context floor for the default-kind split; 0 disables it. */
+/** One split: the slot counts plus that split's own window and floor. */
+export interface PoolSplitConfig extends PoolSplitCounts {
+  /** Leaderboard-ranked window considered before the slot picks. */
+  topK: number
+  /** Context floor for the split; 0 disables it. */
   minContext: number
 }
 
-/** The top-level `pool` option: the Console default pool, enabled by default
- * with the built-in shape. Explicit `candidates` and sources still win over
- * it. */
-export interface PoolOptions {
-  enable: boolean
-  /** Leaderboard-ranked window considered before the slot picks. */
-  topK: number
-  auto: PoolAutoSplit
-  review: PoolSplitCounts
-}
-
-export const DEFAULT_POOL_OPTIONS: PoolOptions = {
-  enable: true,
-  topK: DEFAULT_POOL.topK,
-  auto: {
-    cheap: DEFAULT_POOL.autoCheap,
-    popular: DEFAULT_POOL.autoPopular,
-    strong: DEFAULT_POOL.autoStrong,
-    minContext: DEFAULT_POOL.autoMinContext,
+/** Built-in cut per entry kind: what `pool: true` (or an implicit
+ * pool) draws from, and the defaults an inlined `pool` object merges
+ * over field by field. */
+export const DEFAULT_POOL_SPLITS: Record<RouteEntryKind, PoolSplitConfig> = {
+  default: {
+    cheap: DEFAULT_POOL.defaultCheap,
+    popular: DEFAULT_POOL.defaultPopular,
+    strong: DEFAULT_POOL.defaultStrong,
+    topK: DEFAULT_POOL.topK,
+    minContext: DEFAULT_POOL.defaultMinContext,
   },
   review: {
     cheap: DEFAULT_POOL.reviewCheap,
     popular: DEFAULT_POOL.reviewPopular,
     strong: DEFAULT_POOL.reviewStrong,
+    topK: DEFAULT_POOL.topK,
+    minContext: DEFAULT_POOL.reviewMinContext,
   },
 }
 
@@ -710,42 +649,39 @@ const poolCount = (value: unknown, fallback: number, hi: number): number =>
     ? Math.min(hi, Math.floor(value))
     : fallback
 
-/** Parses the top-level `pool` option. `false` (or `enable: false`) disables
- * the pool; missing or malformed values keep the built-in shape, and a
- * malformed count keeps its own default rather than silently disabling an
- * axis the user did not mention. `0` is a valid count. `topK` clamps 1-40
- * (one benchmark page is fetched per window model). */
-export function parsePoolOptions(raw: unknown): PoolOptions {
-  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {}
-  const enable = raw !== false && obj.enable !== false
-  const topK = Math.max(1, poolCount(obj.topK, DEFAULT_POOL.topK, 40))
-  const split = (value: unknown, defaults: PoolSplitCounts): PoolSplitCounts => {
-    const entry = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {}
-    return {
-      cheap: poolCount(entry.cheap, defaults.cheap, topK),
-      popular: poolCount(entry.popular, defaults.popular, topK),
-      strong: poolCount(entry.strong, defaults.strong, topK),
-    }
-  }
-  const autoRaw = obj.auto && typeof obj.auto === "object" && !Array.isArray(obj.auto) ? (obj.auto as Record<string, any>) : {}
+const poolMinContext = (value: unknown, fallback: number): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : fallback
+
+/** Parses one inlined pool cut (`pool` as an object). Missing or
+ * malformed fields keep the kind's built-in default, so a typo never silently
+ * disables an axis the user did not mention; `0` is a valid count. `topK`
+ * clamps 1-40 (one benchmark page is fetched per window model). */
+export function parsePoolSplit(raw: unknown, kind: RouteEntryKind = "default"): PoolSplitConfig {
+  const defaults = DEFAULT_POOL_SPLITS[kind]
+  const entry = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {}
+  const topK = Math.max(1, poolCount(entry.topK, defaults.topK, 40))
   return {
-    enable,
+    cheap: poolCount(entry.cheap, defaults.cheap, topK),
+    popular: poolCount(entry.popular, defaults.popular, topK),
+    strong: poolCount(entry.strong, defaults.strong, topK),
     topK,
-    auto: {
-      ...split(autoRaw, DEFAULT_POOL_OPTIONS.auto),
-      minContext:
-        typeof autoRaw.minContext === "number" && Number.isFinite(autoRaw.minContext) && autoRaw.minContext >= 0
-          ? Math.floor(autoRaw.minContext)
-          : DEFAULT_POOL.autoMinContext,
-    },
-    review: split(obj.review, DEFAULT_POOL_OPTIONS.review),
+    minContext: poolMinContext(entry.minContext, defaults.minContext),
   }
+}
+
+/** The widest window any of these cuts asks for: the benchmark warm-up fetches
+ * one page per ranked model, so it only needs this many. */
+export function maxPoolTopK(configs: Iterable<PoolSplitConfig>): number {
+  let max = 1
+  for (const cfg of configs) max = Math.max(max, cfg.topK)
+  return max
 }
 
 /** One split rendered for logs/status, omitting zero slots
  * ("1 cheap + 1 popular + 1 strong"). */
-export function poolShapeText(options: PoolOptions, split: "auto" | "review"): string {
-  const counts: PoolSplitCounts = split === "review" ? options.review : options.auto
+export function poolShapeText(counts: PoolSplitCounts): string {
   const parts: string[] = []
   if (counts.cheap > 0) parts.push(`${counts.cheap} cheap`)
   if (counts.popular > 0) parts.push(`${counts.popular} popular`)
@@ -1116,7 +1052,7 @@ export function poolRunCost(model: PoolModel): number | undefined {
 
 /** True when a model belongs to the small-model class the default `auto` pool
  * should avoid. A missing context window fails open. */
-export function isLargePoolModel(model: PoolModel, minContext: number = DEFAULT_POOL.autoMinContext): boolean {
+export function isLargePoolModel(model: PoolModel, minContext: number = DEFAULT_POOL.defaultMinContext): boolean {
   return model.contextTokens === undefined || model.contextTokens >= minContext
 }
 
@@ -1389,7 +1325,7 @@ export function modelFactsBlock(
 }
 
 export interface PoolSplit {
-  auto: PoolModel[]
+  default: PoolModel[]
   review: PoolModel[]
 }
 
@@ -1423,12 +1359,26 @@ function poolSlots(
   return [...cheap, ...popular, ...strong]
 }
 
+/** The ranked window one cut picks from: leaderboard order truncated to the
+ * cut's own `topK`, then its context floor (with the avoid-empty fallback). */
+function poolWindow(
+  usable: readonly PoolModel[],
+  leaderboard: readonly string[],
+  cfg: PoolSplitConfig,
+): PoolModel[] {
+  const window = rankDefaultPool(usable, leaderboard, cfg.topK)
+  if (cfg.minContext <= 0) return window
+  const large = window.filter((model) => isLargePoolModel(model, cfg.minContext))
+  return large.length > 0 ? large : window
+}
+
 /** Both default pools from one window, disjoint by construction: review takes
  * its union of slots first - `reviewPopular` highest usage plus
- * `reviewStrong` strongest, no cost slot - then auto takes the same union
- * (`autoCheap`, `autoPopular`, `autoStrong`) over the rest. Review therefore
- * keeps the best models while auto cannot miss one the community actually
- * drives and can still escalate to a capable one.
+ * `reviewStrong` strongest, no cost slot - then default-kind entries take the
+ * same union (`defaultCheap`, `defaultPopular`, `defaultStrong`) over the
+ * rest. Review therefore keeps the best models while the default kind cannot
+ * miss one the community actually drives and can still escalate to a capable
+ * one.
  *
  * The cheap axis prices in the observed cache mix (session cost first, then
  * cache-adjusted token cost). The strength axis percentiles the benchmark
@@ -1436,59 +1386,61 @@ function poolSlots(
  * and version; a model with no usable benchmark falls back to its measured
  * output price, so a catalog without benchmark pages ranks exactly as before.
  *
- * Auto's picks are filtered to the large-model class: an authenticated
+ * Default-kind picks are filtered to the large-model class: an authenticated
  * Console lists small free tiers (200k-262k context) beside the 1M-context
  * models people actually drive, and those tiny tiers otherwise win every
  * cheap slot. The filter falls back to the unfiltered remainder when it
- * would empty auto, so a small-window catalog still routes. Both pools skip
- * models the Console refuses under the workspace's training-consent switches
- * (`needsTrainingOptIn`): with the switches off, free tiers and
+ * would empty the default split, so a small-window catalog still routes. Both
+ * pools skip models the Console refuses under the workspace's training-consent
+ * switches (`needsTrainingOptIn`): with the switches off, free tiers and
  * `-contributor` models fail the turn with a data-policy error. `consent`
  * carries the live settings; when they are unknown every gated model is
  * excluded (the pre-settings default).
  * Review is otherwise unfiltered: a strong 200k-context model must remain
- * eligible, and quality outranks price there. */
+ * eligible, and quality outranks price there.
+ *
+ * The built-in pair is fed by the two built-in entries' inlined cuts: review
+ * takes its picks first, default takes the remainder. An entry that inlines
+ * its own cut outside the built-in pair uses `poolCut`, an independent cut
+ * over the same ranked window (review's slots included, since the user chose
+ * it). Disjointness between review-kind and default-kind entries stays a
+ * route-time rule. */
 export function defaultPoolSplit(
   models: readonly PoolModel[],
   leaderboard: readonly string[],
   options: {
-    topK?: number
-    autoCheap?: number
-    autoPopular?: number
-    autoStrong?: number
-    reviewCheap?: number
-    reviewPopular?: number
-    reviewStrong?: number
-    autoMinContext?: number
+    /** Cut for the `kind: "default"` pair; defaults to the built-in shape. */
+    default?: PoolSplitConfig
+    /** Cut for the `kind: "review"` pair; defaults to the built-in shape. */
+    review?: PoolSplitConfig
     consent?: TrainingConsent
-    /** The top-level `pool` option; flat keys above win when both are set. */
-    pool?: PoolOptions
   } = {},
 ): PoolSplit {
-  const pool = options.pool ?? DEFAULT_POOL_OPTIONS
-  if (!pool.enable) return { auto: [], review: [] }
-  const topK = options.topK ?? pool.topK
-  const autoCheap = options.autoCheap ?? pool.auto.cheap
-  const autoPopular = options.autoPopular ?? pool.auto.popular
-  const autoStrong = options.autoStrong ?? pool.auto.strong
-  const reviewCheap = options.reviewCheap ?? pool.review.cheap
-  const reviewPopular = options.reviewPopular ?? pool.review.popular
-  const reviewStrong = options.reviewStrong ?? pool.review.strong
-  const autoMinContext = options.autoMinContext ?? pool.auto.minContext
+  const defaultCfg = options.default ?? DEFAULT_POOL_SPLITS.default
+  const reviewCfg = options.review ?? DEFAULT_POOL_SPLITS.review
   const usable = models.filter((model) => !needsTrainingOptIn(model, options.consent))
-  const window = rankDefaultPool(usable, leaderboard, topK)
-  const strength = strengthScores(window)
-  const review = poolSlots(window, {
-    cheap: reviewCheap,
-    popular: reviewPopular,
-    strong: reviewStrong,
-  }, strength)
+  const reviewWindow = poolWindow(usable, leaderboard, reviewCfg)
+  const review = poolSlots(reviewWindow, reviewCfg, strengthScores(reviewWindow))
   const reviewKeys = new Set(review.map(candidateKey))
-  const rest = window.filter((model) => !reviewKeys.has(candidateKey(model)))
-  const large = rest.filter((model) => isLargePoolModel(model, autoMinContext))
-  const autoPool = large.length > 0 ? large : rest
-  const auto = poolSlots(autoPool, { cheap: autoCheap, popular: autoPopular, strong: autoStrong }, strength)
-  return { auto, review }
+  const defaultWindow = poolWindow(usable, leaderboard, defaultCfg).filter(
+    (model) => !reviewKeys.has(candidateKey(model)),
+  )
+  const defaultSplit = poolSlots(defaultWindow, defaultCfg, strengthScores(defaultWindow))
+  return { default: defaultSplit, review }
+}
+
+/** One independent cut over the ranked Console window: what an entry's inlined
+ * `pool` shape draws. Unlike the built-in pair it subtracts nothing,
+ * because the user chose that shape explicitly. */
+export function poolCut(
+  models: readonly PoolModel[],
+  leaderboard: readonly string[],
+  cfg: PoolSplitConfig,
+  options: { consent?: TrainingConsent } = {},
+): PoolModel[] {
+  const usable = models.filter((model) => !needsTrainingOptIn(model, options.consent))
+  const window = poolWindow(usable, leaderboard, cfg)
+  return poolSlots(window, cfg, strengthScores(window))
 }
 
 // Catalog entries can exist and still be unusable in the current session:

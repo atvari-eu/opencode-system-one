@@ -9,6 +9,7 @@ import {
   AUTO_PROVIDER,
   AUTO_REVIEW_MODEL,
   buildModelOptions,
+  DEFAULT_POOL_SPLITS,
   buildPairOptions,
   candidateKey,
   type Candidate,
@@ -19,7 +20,6 @@ import {
   parseRouteSources,
   pinMatches,
   pseudoEntryFor,
-  rankSourcePopular,
   refKey,
   resolveRouteAnswer,
   routeDecision,
@@ -666,7 +666,7 @@ describe("auto and auto-review entries", () => {
 })
 
 // ---------------------------------------------------------------------------
-// parseRouteSources: dynamic candidate sources (favorites + opencode usage).
+// parseRouteSources: dynamic candidate sources (favorites + shared pool).
 // ---------------------------------------------------------------------------
 
 describe("parseRouteSources", () => {
@@ -674,9 +674,7 @@ describe("parseRouteSources", () => {
     for (const raw of [undefined, null, true, "x", 7, [], {}]) {
       const cfg = parseRouteSources(raw)
       expect(cfg.favorites).toBe(false)
-      expect(cfg.opencode.enabled).toBe(false)
-      expect(cfg.opencode.plan).toBe("zen")
-      expect(cfg.opencode.limit).toBe(10)
+      expect(cfg.pool).toBe("auto")
     }
   })
 
@@ -686,133 +684,32 @@ describe("parseRouteSources", () => {
     expect(parseRouteSources({ favorites: 1 }).favorites).toBe(false)
   })
 
-  test("opencode: true enables popular mode on the zen plan by default", () => {
-    const on = parseRouteSources({ opencode: true })
-    expect(on.opencode).toEqual({ enabled: true, plan: "zen", limit: 10, popular: true, local: false })
+  test("a stale opencode source is ignored", () => {
+    expect(parseRouteSources({ opencode: true }).favorites).toBe(false)
+    expect(parseRouteSources({ opencode: { plan: "go", local: true } }).favorites).toBe(false)
+    expect(parseRouteSources({ opencode: { plan: "go", local: true } }).pool).toBe("auto")
   })
 
-  test("popular is the default mode; a count sets the top size", () => {
-    expect(parseRouteSources({ opencode: {} }).opencode).toEqual({
-      enabled: true,
-      plan: "zen",
-      limit: 10,
-      popular: true,
-      local: false,
-    })
-    expect(parseRouteSources({ opencode: { popular: true } }).opencode.enabled).toBe(true)
-    expect(parseRouteSources({ opencode: { popular: 5 } }).opencode).toEqual({
-      enabled: true,
-      plan: "zen",
-      limit: 5,
-      popular: true,
-      local: false,
-    })
+  test("pool selects the Console pool", () => {
+    expect(parseRouteSources({ pool: true }).pool).toBe("on")
+    expect(parseRouteSources({ pool: false }).pool).toBe("off")
+    expect(parseRouteSources({ pool: "auto" }).pool).toBe("auto")
+    expect(parseRouteSources({ pool: "yes" }).pool).toBe("off")
   })
 
-  test("local is a separate opt-in ranking", () => {
-    expect(parseRouteSources({ opencode: { local: true } }).opencode).toEqual({
-      enabled: true,
-      plan: "zen",
-      limit: 10,
-      popular: false,
-      local: true,
-    })
-    expect(parseRouteSources({ opencode: { popular: false, local: 3 } }).opencode).toEqual({
-      enabled: true,
-      plan: "zen",
-      limit: 3,
-      popular: false,
-      local: true,
-    })
-    expect(parseRouteSources({ opencode: { local: false } }).opencode.enabled).toBe(true)
+  test("an object inlines this entry's cut over the kind defaults", () => {
+    const cfg = parseRouteSources({ pool: { strong: 2 } }, "review")
+    expect(cfg.pool).toBe("own")
+    expect(cfg.poolConfig).toEqual({ ...DEFAULT_POOL_SPLITS.review, strong: 2 })
+    expect(parseRouteSources({ pool: {} }).poolConfig).toEqual(DEFAULT_POOL_SPLITS.default)
+    expect(parseRouteSources({ pool: 7 }).pool).toBe("auto")
+    expect(parseRouteSources({ pool: 7 }).poolConfig).toBeNull()
   })
 
-  test("plan selects zen or go; anything else disables", () => {
-    expect(parseRouteSources({ opencode: { plan: "go" } }).opencode).toEqual({
-      enabled: true,
-      plan: "go",
-      limit: 10,
-      popular: true,
-      local: false,
-    })
-    expect(parseRouteSources({ opencode: { plan: "zen" } }).opencode.plan).toBe("zen")
-    expect(parseRouteSources({ opencode: { plan: "copilot" } }).opencode.enabled).toBe(false)
-    expect(parseRouteSources({ opencode: { plan: 7 } }).opencode.enabled).toBe(false)
-  })
-
-  test("popular counts clamp (magnitudes never disable), garbage modes disable", () => {
-    expect(parseRouteSources({ opencode: { popular: 0 } }).opencode.limit).toBe(1)
-    expect(parseRouteSources({ opencode: { popular: -3 } }).opencode.limit).toBe(1)
-    expect(parseRouteSources({ opencode: { popular: 999 } }).opencode.limit).toBe(40)
-    expect(parseRouteSources({ opencode: { popular: 1.7 } }).opencode.limit).toBe(1)
-    expect(parseRouteSources({ opencode: { popular: false } }).opencode.enabled).toBe(false)
-    expect(parseRouteSources({ opencode: { popular: "all" } }).opencode.enabled).toBe(false)
-    expect(parseRouteSources({ opencode: { popular: Number.NaN } }).opencode.enabled).toBe(false)
-  })
-
-  test("sources compose independently", () => {
-    const cfg = parseRouteSources({ favorites: true, opencode: { plan: "go", popular: 3 } })
+  test("pool and favorites compose independently", () => {
+    const cfg = parseRouteSources({ favorites: true, pool: false })
     expect(cfg.favorites).toBe(true)
-    expect(cfg.opencode).toEqual({
-      enabled: true,
-      plan: "go",
-      limit: 3,
-      popular: true,
-      local: false,
-    })
-  })
-})
-
-describe("rankSourcePopular", () => {
-  const usageRows: Array<{ providerID?: unknown; modelID?: unknown; steps?: unknown }> = [
-    { providerID: "opencode-go", modelID: "glm-5.3-flash", steps: 1 },
-    { providerID: "opencode-go", modelID: "deepseek-v4.1-flash", steps: 775 },
-    { providerID: "delta", modelID: "zai-org/glm-5.3-flash", steps: 900_000 },
-    { providerID: "opencode-go", modelID: "beam-free", steps: 3 },
-    { providerID: "other", modelID: "irrelevant", steps: 9 },
-    { providerID: "opencode-go", modelID: "", steps: 5 },
-    { providerID: "opencode-go", modelID: null, steps: 5 },
-    { providerID: "opencode-go", modelID: "unlisted", steps: 2 },
-  ]
-
-  test("filters to one provider, ranks by steps desc, truncates to limit", () => {
-    const out = rankSourcePopular(usageRows, "opencode-go", 3)
-    expect(out.map((c) => `${c.providerID}/${c.modelID}`)).toEqual([
-      "opencode-go/deepseek-v4.1-flash",
-      "opencode-go/beam-free",
-      "opencode-go/unlisted",
-    ])
-  })
-
-  test("non-numeric steps defensively count as 1", () => {
-    const out = rankSourcePopular(
-      [{ providerID: "p", modelID: "m", steps: "9" as any }],
-      "p",
-      10,
-    )
-    expect(out).toEqual([{ providerID: "p", modelID: "m" }])
-  })
-
-  test("ties break deterministically by modelID ascending", () => {
-    const out = rankSourcePopular(
-      [
-        { providerID: "p", modelID: "zeta", steps: 4 },
-        { providerID: "p", modelID: "alpha", steps: 4 },
-        { providerID: "p", modelID: "mid", steps: 4 },
-      ],
-      "p",
-      10,
-    )
-    expect(out.map((c) => c.modelID)).toEqual(["alpha", "mid", "zeta"])
-  })
-
-  test("limits of zero or less yield nothing; duplicates collapse", () => {
-    expect(rankSourcePopular(usageRows, "opencode-go", 0)).toEqual([])
-    const duplicated = [
-      { providerID: "p", modelID: "m", steps: 3 },
-      { providerID: "p", modelID: "m", steps: 9 },
-    ]
-    expect(rankSourcePopular(duplicated, "p", 10)).toEqual([{ providerID: "p", modelID: "m" }])
+    expect(cfg.pool).toBe("off")
   })
 })
 

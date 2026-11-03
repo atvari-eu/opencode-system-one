@@ -40,7 +40,7 @@ export interface JevStatusPool {
   review: boolean
   /** Picker title (name plus aliases). Optional for older hosts. */
   name?: string
-  /** Default-pool cut ("1 cheap + 1 popular + 1 strong of the top 18"),
+  /** Console cut ("1 cheap + 1 popular + 1 strong of the top 18"),
    * present only for entries drawing the Console pool. */
   shape?: string
   enabled: boolean
