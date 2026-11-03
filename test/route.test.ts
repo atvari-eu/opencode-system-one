@@ -16,6 +16,7 @@ import {
   effortModeFromLegacy,
   effortRoutingEnabled,
   parseEffortMode,
+  resolveEffortMode,
   emergencyRealModel,
   isAvailableModel,
   MAX_OPTIONS,
@@ -816,6 +817,30 @@ describe("parseEffortMode", () => {
   test("accepts the string modes", () => {
     expect(parseEffortMode("always")).toBe("always")
     expect(parseEffortMode("off")).toBe("off")
+  })
+})
+
+describe("resolveEffortMode", () => {
+  test("defaults to pair without a warning", () => {
+    expect(resolveEffortMode(undefined)).toEqual({ mode: "pair" })
+    expect(resolveEffortMode({})).toEqual({ mode: "pair" })
+  })
+
+  test("mode wins over the deprecated auto flag", () => {
+    expect(resolveEffortMode({ mode: "off", auto: true })).toEqual({ mode: "off" })
+    expect(resolveEffortMode({ mode: "always", auto: false })).toEqual({ mode: "always" })
+  })
+
+  test("an unknown mode falls back to pair and warns", () => {
+    expect(resolveEffortMode({ mode: "alwyas" })).toEqual({
+      mode: "pair",
+      warning: `"mode" must be "pair", "always", or "off" - using "pair"`,
+    })
+  })
+
+  test("legacy auto maps when mode is absent", () => {
+    expect(resolveEffortMode({ auto: true })).toEqual({ mode: "always" })
+    expect(resolveEffortMode({ auto: false })).toEqual({ mode: "off" })
   })
 })
 

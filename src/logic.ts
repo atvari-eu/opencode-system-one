@@ -515,6 +515,23 @@ export function parseEffortMode(raw: unknown): EffortMode {
   return raw === "always" || raw === "off" ? raw : "pair"
 }
 
+/** Resolves the configured effort mode: `effort.mode` wins over the
+ * deprecated `effort.auto`, and an unknown `mode` falls back to `"pair"` with
+ * a warning. */
+export function resolveEffortMode(raw: { mode?: unknown; auto?: unknown } | undefined): {
+  mode: EffortMode
+  warning?: string
+} {
+  const mode = raw?.mode
+  if (mode !== undefined) {
+    const parsed = parseEffortMode(mode)
+    return parsed === mode
+      ? { mode: parsed }
+      : { mode: parsed, warning: `"mode" must be "pair", "always", or "off" - using "pair"` }
+  }
+  return { mode: effortModeFromLegacy(raw?.auto) ?? "pair" }
+}
+
 /** Maps the deprecated `effort.auto` boolean onto the mode: `true` meant
  * routing the effort variant of the current model, which is `"always"`. */
 export function effortModeFromLegacy(raw: unknown): EffortMode | undefined {

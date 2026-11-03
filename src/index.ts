@@ -120,7 +120,6 @@ import {
   doneVerdict,
   effectiveJevModel,
   emergencyRealModel,
-  effortModeFromLegacy,
   effortRoutingEnabled,
   type EffortMode,
   idleSessionID,
@@ -136,7 +135,6 @@ import {
   parseAuthExportMeta,
   parseToastFilters,
   parseAgentProfiles,
-  parseEffortMode,
   parseRouteEntries,
   parseCandidates,
   parseGates,
@@ -151,6 +149,7 @@ import {
   pinMatches,
   pseudoEntryFor,
   pseudoEntryOfRef,
+  resolveEffortMode,
   withoutSharedPool,
   CONSOLE_SYSTEMONE,
   credentialChain,
@@ -1676,16 +1675,11 @@ export default Plugin.define({
     // hand-picked model's effort), or `"off"`. The deprecated boolean
     // `effort.auto` still maps onto it (`true` → always, `false` → off);
     // `mode` wins when both are present.
-    const effortModeRaw = (o as any).effort?.mode
-    const legacyEffortAuto = (o as any).effort?.auto
-    const effortMode: EffortMode =
-      effortModeRaw !== undefined
-        ? parseEffortMode(effortModeRaw)
-        : (effortModeFromLegacy(legacyEffortAuto) ?? "pair")
-    if (effortModeRaw !== undefined && parseEffortMode(effortModeRaw) !== effortModeRaw) {
-      console.log(`[jev] effort: "mode" must be "pair", "always", or "off" - using "pair"`)
-    }
-    if (legacyEffortAuto !== undefined) {
+    const effortOption = (o as any).effort
+    const resolvedEffort = resolveEffortMode(effortOption)
+    const effortMode: EffortMode = resolvedEffort.mode
+    if (resolvedEffort.warning) console.log(`[jev] effort: ${resolvedEffort.warning}`)
+    if (effortOption?.auto !== undefined) {
       console.log(`[jev] effort: "auto" is deprecated - use "mode"`)
     }
     const effortAlways = effortMode === "always"

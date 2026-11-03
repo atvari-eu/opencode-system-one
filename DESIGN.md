@@ -77,9 +77,15 @@ Auto model routing and the older auto effort feature share one engine
 OpenCode-side I/O the outcome declares (catalog lookups, `session.switchModel`,
 pin storage). Rationale worth remembering when extending it:
 
-- **Pair mode**: `effort.mode` defaults to `"pair"`: effort routing is on for a routing entry and a hand-picked model is left alone. `"always"` extends it to a hand-picked model and `"off"` disables it everywhere; the old boolean `effort.auto` is a deprecated alias (`true` → `"always"`, `false` → `"off"`). When it is on and candidates exist, the `(model, level)` question is asked over those candidates, not two stacked judgments. Two separate calls would
-  race each other's switches and double the latency; one call also lets
-  the criteria state the cheaper-model-preference coherently.
+- **Pair mode**: `effort.mode` defaults to `"pair"`: effort routing is on
+  for a routing entry and a hand-picked model is left alone. `"always"`
+  extends it to a hand-picked model and `"off"` disables it everywhere; the
+  old boolean `effort.auto` is a deprecated alias (`true` → `"always"`,
+  `false` → `"off"`). When it is on and candidates exist, the
+  `(model, level)` question is asked over those candidates, not two stacked
+  judgments. Two separate calls would race each other's switches and double
+  the latency; one call also lets the criteria state the
+  cheaper-model-preference coherently.
 - **Record of entries, disjoint default pools**: `routes` is a record parsed
   by `parseRouteEntries` (`src/logic.ts`). `default` and `review` are built
   in and on by default; they keep the legacy picker ids

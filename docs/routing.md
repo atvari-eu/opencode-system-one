@@ -138,7 +138,7 @@ The window and the picks inside it are built in this order:
 | `agents.<id>.criteria` | `@build` for `build`, `@plan` for `plan`, `@explore` for `explore`, `@default` for other ids | Full routing instruction text for the agent's turns; replaces the entry kind's criteria. Each built-in defaults to its own named stance, and any other id defaults to `@default`; both `@build` and `@default` are the baseline, so the entry's text applies. A `@name` value references a named stance (`@review`, `@plan`, `@explore`); `@default`/`@build` restores the baseline. |
 | `agents.<id>.minContext` | `0` (`200000` for `plan`) | Additional Console pool context floor; only raises the entry's floor. |
 | `agents.<id>.effort` | none (`{ "min": "medium" }` for `plan`, `{ "min": "low", "max": "medium" }` for `explore`) | Effort band for offered options: `{ min, max }` or a level string (a floor). `false` clears it. |
-| `effort.mode` | `"pair"` | Effort routing. `"pair"` pairs the model with a level on entry turns and leaves a hand-picked model alone; `"always"` also routes the effort variant of a hand-picked model; `"off"` turns effort routing off everywhere. |
+| `effort.mode` | `"pair"` | Effort routing. `"pair"` pairs the model with a level on entry turns and leaves a hand-picked model alone; `"always"` also routes the effort variant of a hand-picked model; `"off"` turns effort routing off everywhere. An unknown value falls back to `"pair"` and logs a warning. |
 | `effort.minConfidence` | `0.45` | Minimum confidence required to switch the reasoning variant. |
 
 The routing options live under `routes` because `model` is the judgment-model override (a string); one key must never carry a string and an object meaning.
