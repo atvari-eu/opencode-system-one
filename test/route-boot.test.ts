@@ -257,4 +257,23 @@ describe("auto-entry routing right after boot", () => {
 
     expect(host.calls).toEqual([{ providerID: "review", id: "deep" }])
   })
+
+  test("the generated review pool excludes models marked deprecated by the catalog", async () => {
+    const host = await setup(
+      makeHost({
+        catalogAfterMs: 0,
+        auto: { default: {}, review: {} },
+        catalog: [
+          { providerID: "opencode", id: "mimo-v2.5", status: "deprecated", variants: [] },
+          { providerID: "opencode", id: "mimo-v2.6-flash", status: "active", variants: [] },
+        ],
+        model: AUTO_REVIEW,
+      }),
+    )
+
+    await host.firePrompt("review the change")
+
+    expect(host.calls.length).toBeGreaterThan(0)
+    expect(host.calls.every((model) => model.id !== "mimo-v2.5")).toBe(true)
+  })
 })
