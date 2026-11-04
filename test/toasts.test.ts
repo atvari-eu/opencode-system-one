@@ -52,14 +52,28 @@ describe("parseToastFilters", () => {
 })
 
 describe("toastVisible", () => {
-  test("defaults to error only", () => {
+  test("defaults to error only, except the warning event", () => {
     expect(DEFAULT_TOAST_FILTER).toBe("error")
     for (const event of TOAST_EVENTS) {
+      if (event === "warning") {
+        // The warning event exists to be seen: it toasts at its own severity.
+        expect(toastVisible({}, event, "warning")).toBe(true)
+        expect(toastVisible({}, event, "error")).toBe(true)
+        expect(toastVisible({}, event, "info")).toBe(false)
+        continue
+      }
       expect(toastVisible({}, event, "error")).toBe(true)
       expect(toastVisible({}, event, "warning")).toBe(false)
       expect(toastVisible({}, event, "info")).toBe(false)
       expect(toastVisible({}, event, "success")).toBe(false)
     }
+  })
+
+  test("a configured floor overrides the warning event's built-in floor", () => {
+    expect(toastVisible({ warning: false }, "warning", "warning")).toBe(false)
+    expect(toastVisible({ warning: "error" }, "warning", "warning")).toBe(false)
+    expect(toastVisible({ warning: "error" }, "warning", "error")).toBe(true)
+    expect(toastVisible({ warning: "info" }, "warning", "info")).toBe(true)
   })
 
   test("a configured floor includes that severity and everything above it", () => {

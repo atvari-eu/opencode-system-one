@@ -358,6 +358,12 @@ function Panel(props: {
         run: () => setFilter("approval"),
       },
       { id: "jev.audit.filter-scrub", title: "Jev audit filter: scrub", bind: "r", run: () => setFilter("scrub") },
+      {
+        id: "jev.audit.filter-warning",
+        title: "Jev audit filter: warnings",
+        bind: "w",
+        run: () => setFilter("warning"),
+      },
       { id: "jev.audit.filter-config", title: "Jev audit filter: config", bind: "x", run: () => setFilter("config") },
     ],
   }))

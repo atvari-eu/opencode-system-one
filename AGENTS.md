@@ -68,9 +68,10 @@ them here.
   row, no inline prefix) in every `screen.tools` / `annotation` combination.
   UI-only signals ride the `jev-config` RPC events instead: `screen` for
   verdicts, `error` event-first for failed judged calls, `config` for the
-  buffered init fault, `scrub` for counts-only redaction hits, and
-  `approval` for permission resolutions. Rows are the fallback only when
-  the host has no event surface. The init fault is persisted and replayed
+  buffered init fault, `warning` for a degraded source (the Go monthly-limit
+  page), `scrub` for counts-only redaction hits, and `approval` for permission
+  resolutions. Rows are the fallback only when the host has no event surface.
+  The init fault is persisted and replayed
   through `configFault` for late subscribers; TUI/panel subscriptions
   re-attach on `server.connected` (ctx.client changes across restarts). Only
   flagged/unsafe results, withheld unsafe content, approval hints, explicit

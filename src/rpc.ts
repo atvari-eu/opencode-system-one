@@ -347,6 +347,17 @@ const events = {
       additionalProperties: false,
     },
   },
+  warning: {
+    schema: {
+      type: "object",
+      properties: {
+        sessionID: STRING,
+        message: STRING,
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+  },
   scrub: {
     schema: {
       type: "object",

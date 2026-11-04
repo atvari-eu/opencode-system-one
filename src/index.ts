@@ -112,8 +112,8 @@ import {
   doneCheckStandDown,
   doneNudgeCapReached,
   DONE_NUDGE_CAP,
-  DEFAULT_TOAST_FILTER,
   TOAST_EVENTS,
+  toastFloor,
   awaitingUserInput,
   describeModelRows,
   doneTranscript,
@@ -138,6 +138,7 @@ import {
   parseRouteEntries,
   parseCandidates,
   parseGates,
+  parseGoMonthlyLimits,
   parseIdleAuto,
   parseDecisionIndex,
   parseProviderOption,
@@ -170,6 +171,7 @@ import {
   catalogModelFacts,
   modelCacheCost,
   modelCost,
+  modelNameKey,
   modelPrice,
   maxPoolTopK,
   poolCut,
@@ -957,6 +959,56 @@ async function loadLeaderboard(ctx: any): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// OpenCode Go monthly allowances (cheap-axis normalization)
+// ---------------------------------------------------------------------------
+
+// The Go plan is flat-priced, so a model's included monthly usage changes its
+// effective price: the same token costs less when the plan covers more of it.
+// The model catalog carries no allowance, so the docs page is the only source.
+// It is parsed once per process and remembered. A failed fetch or parse leaves
+// the map empty - routing then ranks by list price, exactly as before - and
+// raises one `warning` event so the degradation stays visible without writing
+// a transcript row.
+const GO_LIMITS_URL = "https://opencode.ai/v2/docs/console/go/"
+const GO_LIMITS_TTL = 24 * 60 * 60_000
+const GO_LIMITS_RETRY = 60 * 60_000
+let GO_LIMITS = new Map<string, number>()
+let GO_LIMITS_AT = 0
+let GO_LIMITS_FAILED_AT = 0
+let GO_LIMITS_INFLIGHT: Promise<void> | undefined = undefined
+
+/** Optional UI-only warning sink (the jev-config `warning` event). */
+type WarningSink = (message: string) => void
+
+async function loadGoLimits(warn?: WarningSink): Promise<void> {
+  const now = Date.now()
+  if (GO_LIMITS.size > 0 && now - GO_LIMITS_AT < GO_LIMITS_TTL) return
+  if (now - GO_LIMITS_FAILED_AT < GO_LIMITS_RETRY) return
+  if (GO_LIMITS_INFLIGHT) return GO_LIMITS_INFLIGHT
+  GO_LIMITS_INFLIGHT = (async () => {
+    try {
+      const response = await fetch(GO_LIMITS_URL, { signal: AbortSignal.timeout(10_000) })
+      if (!response.ok) throw new Error(`opencode.ai answered ${response.status}`)
+      const limits = parseGoMonthlyLimits(await response.text())
+      if (limits.size === 0) throw new Error("no monthly limits in the Go docs table")
+      GO_LIMITS = limits
+      GO_LIMITS_AT = Date.now()
+      console.log(`[jev] route: Go monthly limits live (${limits.size} models)`)
+    } catch (err) {
+      GO_LIMITS_FAILED_AT = Date.now()
+      const live = String((err as Error)?.message ?? err)
+      console.log(
+        `[jev] route: Go monthly limits unavailable (${live}) - ranking Go models by list price`,
+      )
+      warn?.(`Go monthly limits unavailable (${live}) - ranking Go models by list price`)
+    } finally {
+      GO_LIMITS_INFLIGHT = undefined
+    }
+  })()
+  return GO_LIMITS_INFLIGHT
+}
+
+// ---------------------------------------------------------------------------
 // Model benchmarks (the strong axis)
 // ---------------------------------------------------------------------------
 
@@ -1147,6 +1199,7 @@ function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
       cacheRatio: LEADERBOARD_CACHE.get(alias),
       usageRank: LEADERBOARD_RANKS.get(alias),
       benchmarks: BENCHMARK_SCORES.get(alias),
+      monthlyLimitUsd: GO_LIMITS.get(modelNameKey(modelID)),
     }
     // The leaderboard is provider-less: dedupe a model id offered by both
     // Console providers by effective price, not by provider name. The same
@@ -1888,6 +1941,12 @@ export default Plugin.define({
       }
     }
 
+    // A degraded-but-working source (e.g. the Go limits page) toasts at
+    // warning severity; UI-only, never a transcript row.
+    const emitJevWarning = (message: string): void => {
+      emitJevEvent("warning", { message })
+    }
+
     const surfaceJev = async (message: unknown, sessionID?: string): Promise<void> => {
       const title = surfaceTitle(message) || "jev: judgment failed - no diagnostic message"
       const lastSurfaced = surfacedAt.get(`${sessionID ?? ""}|${title}`)
@@ -2196,7 +2255,7 @@ export default Plugin.define({
       rows.push({
         name: "toasts",
         state: TOAST_EVENTS.map((event) => {
-          const filter = toastFilters[event] ?? DEFAULT_TOAST_FILTER
+          const filter = toastFloor(toastFilters, event)
           return `${event}:${filter === true ? "all" : filter === false ? "off" : filter}`
         }).join(" · "),
       })
@@ -2608,6 +2667,7 @@ export default Plugin.define({
         // leaderboard. Until it lands, pools rank by cost (fail-open) and
         // later prompts pick the ranking up from the module snapshot.
         if (sourceNeedsLeaderboard) void loadLeaderboard(ctx)
+        if (sourceNeedsLeaderboard) void loadGoLimits(emitJevWarning)
         if (sourceNeedsBenchmarks) void loadBenchmarks(ctx, widestPoolTopK())
         sourceFetched = true
         sourceCache = favorites
@@ -2639,6 +2699,7 @@ export default Plugin.define({
         await refreshListIndex()
         await loadConsoleConsent()
         if (sourceNeedsLeaderboard) await loadLeaderboard(ctx)
+        if (sourceNeedsLeaderboard) await loadGoLimits(emitJevWarning)
         if (sourceNeedsBenchmarks) await loadBenchmarks(ctx, widestPoolTopK())
         const rows: JevStatusInfo["pools"] = []
         for (const entry of routeEntries) {
@@ -2767,6 +2828,7 @@ export default Plugin.define({
             // cost instead of stalling on a remote request.
             void loadConsoleConsent()
             if (sourceNeedsLeaderboard) void loadLeaderboard(ctx)
+            if (sourceNeedsLeaderboard) void loadGoLimits(emitJevWarning)
             if (sourceNeedsBenchmarks) void loadBenchmarks(ctx, widestPoolTopK())
             let combined = uniqueCandidates([
               ...entry.candidates,

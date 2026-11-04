@@ -84,7 +84,7 @@ export function isIdleCompactionSkip(err: unknown): boolean {
 
 /** Severity variants the host's toast surface accepts. */
 export type ToastLevel = "info" | "success" | "warning" | "error"
-export type ToastEvent = "screen" | "error" | "config" | "scrub" | "approval"
+export type ToastEvent = "screen" | "error" | "config" | "warning" | "scrub" | "approval"
 /** Per-event minimum severity to toast at, `true` to toast every severity, or `false` to mute. */
 export type ToastFilter = ToastLevel | true | false
 export type ToastFilters = Partial<Record<ToastEvent, ToastFilter>>
@@ -93,6 +93,7 @@ export const TOAST_EVENTS: readonly ToastEvent[] = [
   "screen",
   "error",
   "config",
+  "warning",
   "scrub",
   "approval",
 ]
@@ -108,12 +109,20 @@ export const TOAST_RANK: Readonly<Record<ToastLevel, number>> = {
 /** Until configured otherwise, only error-severity events produce a toast. */
 export const DEFAULT_TOAST_FILTER: ToastFilter = "error"
 
+/** Per-event floors that differ from the global default. The `warning` event
+ * exists to make a degraded (but working) source visible, so it toasts at its
+ * own severity instead of staying quiet under the error floor. */
+export const DEFAULT_TOAST_FILTERS: Readonly<Partial<Record<ToastEvent, ToastFilter>>> = {
+  warning: "warning",
+}
+
 /**
  * Accepts the `toasts` option: an object keyed by event whose value is the
  * minimum severity that event must have to toast (`info` / `success` /
  * `warning` / `error`), `true` for every severity, or `false` to never toast
- * it. Missing keys use `DEFAULT_TOAST_FILTER`; unknown keys and invalid values
- * are ignored - a typo must not hide an error or crash the TUI.
+ * it. Missing keys use `DEFAULT_TOAST_FILTERS` (then `DEFAULT_TOAST_FILTER`);
+ * unknown keys and invalid values are ignored - a typo must not hide an error
+ * or crash the TUI.
  */
 export function parseToastFilters(raw: unknown): ToastFilters {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
@@ -129,13 +138,19 @@ export function parseToastFilters(raw: unknown): ToastFilters {
   return out
 }
 
-/** Whether an event at `severity` clears its configured floor (default: `error`). */
+/** The floor one event toasts at: the configured value, else its built-in
+ * default, else the global error floor. */
+export function toastFloor(filters: ToastFilters, event: ToastEvent): ToastFilter {
+  return filters[event] ?? DEFAULT_TOAST_FILTERS[event] ?? DEFAULT_TOAST_FILTER
+}
+
+/** Whether an event at `severity` clears its configured floor. */
 export function toastVisible(
   filters: ToastFilters,
   event: ToastEvent,
   severity: ToastLevel,
 ): boolean {
-  const filter = filters[event] ?? DEFAULT_TOAST_FILTER
+  const filter = toastFloor(filters, event)
   if (filter === false) return false
   if (filter === true) return true
   return TOAST_RANK[severity] >= TOAST_RANK[filter]
@@ -808,6 +823,10 @@ export interface PoolModel {
   /** Share of input tokens that hit the cache (0..1), from opencode.ai/data
    * ("Cache ratio"). Turns the listed input price into a real one. */
   cacheRatio?: number
+  /** OpenCode Go's monthly allowance for this model, in USD of list-price
+   * usage. The Go plan is flat-priced, so a larger allowance makes the same
+   * token cheaper; undefined when the docs table was unavailable. */
+  monthlyLimitUsd?: number
   /** 1-based position in the public top-models list, when ranked. */
   usageRank?: number
   /** Benchmark observations from the model's opencode.ai/data page. The
@@ -1019,6 +1038,76 @@ export function modelPrice(model: { inputCost?: number; outputCost?: number }): 
   if (model.inputCost === undefined) return model.outputCost
   if (model.outputCost === undefined) return model.inputCost
   return model.inputCost + model.outputCost
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode Go monthly allowances (docs parser)
+// ---------------------------------------------------------------------------
+
+/** What one month of the base Go plan costs (USD). The docs table states each
+ * model's included usage as a monthly dollar amount of list-price tokens, so
+ * a $10 plan buys `limit / 10` times the listed price for that model. */
+export const GO_PLAN_USD = 10
+
+/** A model name reduced to a comparable key: parenthetical qualifiers dropped
+ * (`(Off-Peak)`, `(≤ 100K tokens)`), punctuation collapsed to dashes. Catalog
+ * ids and docs labels normalize to the same key (`Claude Haiku 5.5` and
+ * `claude-haiku-5-5` both become `claude-haiku-5-5`). */
+export function modelNameKey(name: string): string {
+  return name
+    .replace(/\([^)]*\)/g, " ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
+
+const stripTags = (html: string): string =>
+  html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+/** Reads a `$12.34` cell; undefined for `-`, `Unlimited`, or anything else. */
+function usdCell(text: string): number | undefined {
+  const match = /^\$(\d+(?:\.\d+)?)$/.exec(text.replace(/\s+/g, ""))
+  if (!match) return undefined
+  const value = Number(match[1])
+  return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+/** Parses the Go plan's monthly limit table out of the console docs page
+ * (https://opencode.ai/v2/docs/console/go/). Returns model-name key ->
+ * monthly limit in USD. Only the base `go` plan panel is read (`go-plus` and
+ * `go-teams` carry the same prices with different limits). An unreadable page
+ * yields an empty map - the caller then ranks by list price, exactly as if no
+ * allowance data existed. */
+export function parseGoMonthlyLimits(html: string): Map<string, number> {
+  const limits = new Map<string, number>()
+  const marker = 'data-plan-panel="'
+  const start = html.indexOf(`${marker}go"`)
+  if (start < 0) return limits
+  const rest = html.slice(start + marker.length)
+  const next = rest.indexOf(marker)
+  const panel = next < 0 ? rest : rest.slice(0, next)
+  for (const row of panel.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) {
+    const cells = [...row[1]!.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((cell) => stripTags(cell[1]!))
+    // Model, input, output, cached read, cached write, monthly limit.
+    if (cells.length < 6) continue
+    const name = cells[0]!
+    const limit = usdCell(cells[5]!)
+    if (name === "" || limit === undefined) continue
+    const key = modelNameKey(name)
+    if (key !== "" && !limits.has(key)) limits.set(key, limit)
+  }
+  return limits
+}
+
+/** A model's monthly limit as a price multiplier: the flat plan price over the
+ * allowance. 1 means the allowance buys exactly the plan price in list-price
+ * tokens; below 1 the model is effectively cheaper than its list price. */
+export function goAllowanceFactor(monthlyLimitUsd: number | undefined): number {
+  if (monthlyLimitUsd === undefined || !Number.isFinite(monthlyLimitUsd) || monthlyLimitUsd <= 0) return 1
+  return GO_PLAN_USD / monthlyLimitUsd
 }
 
 /** Parses the public usage leaderboard behind opencode.ai/data
@@ -1273,14 +1362,19 @@ export function effectiveInputPrice(model: PoolModel): number | undefined {
  * opencode.ai/data reports it, otherwise the cache-adjusted token cost
  * (effective input plus output). Session cost is the real per-turn spend;
  * the token fallback still prices caching in, so a model with a steep cache
- * discount is not ranked by its list input price. */
+ * discount is not ranked by its list input price. A model with a known
+ * OpenCode Go allowance is scaled by the flat plan price over that allowance:
+ * the same token costs less when the plan includes more of it. */
 export function poolRunCost(model: PoolModel): number | undefined {
-  if (model.sessionCost !== undefined) return model.sessionCost
-  const input = effectiveInputPrice(model)
-  const output = modelOutputPrice(model)
-  if (input === undefined) return output
-  if (output === undefined) return input
-  return input + output
+  let raw: number | undefined
+  if (model.sessionCost !== undefined) raw = model.sessionCost
+  else {
+    const input = effectiveInputPrice(model)
+    const output = modelOutputPrice(model)
+    raw = input === undefined ? output : output === undefined ? input : input + output
+  }
+  if (raw === undefined) return undefined
+  return raw * goAllowanceFactor(model.monthlyLimitUsd)
 }
 
 /** True when a model belongs to the small-model class the default `auto` pool

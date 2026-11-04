@@ -243,6 +243,19 @@ export default {
         recordAudit("config", data)
         showConfigFault(data?.message)
       },
+      warning: (data) => {
+        recordAudit("warning", data)
+        const message = typeof data?.message === "string" ? data.message : ""
+        if (!message) return
+        if (!shouldToast("warning", "warning")) return
+        context.ui.toast.show({
+          title: "jev warning",
+          message,
+          variant: "warning",
+          duration: 12_000,
+          ...(typeof data?.sessionID === "string" ? { sessionID: data.sessionID } : {}),
+        })
+      },
       scrub: (data) => {
         recordAudit("scrub", data)
         const hits = typeof data?.hits === "number" ? data.hits : 0

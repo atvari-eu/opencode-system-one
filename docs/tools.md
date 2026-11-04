@@ -61,17 +61,18 @@ One read-only snapshot of the plugin, in sections:
 
 ## Event toasts (`toasts`)
 
-Each UI-only event has a severity. `toasts` sets a **minimum severity** per event: the event toasts when its severity is at or above the floor. The default floor is `error`, so by default only error-severity events show a toast; `/jev-audit` still records every event either way.
+Each UI-only event has a severity. `toasts` sets a **minimum severity** per event: the event toasts when its severity is at or above the floor. The default floor is `error`, so by default only error-severity events show a toast, except `warning`, which toasts at its own severity; `/jev-audit` still records every event either way.
 
 | Event | Severity | Fires on |
 | --- | --- | --- |
 | `screen` | `warning` for flagged, `error` for unsafe/unavailable | a non-pass screen |
 | `error` | `error` | a failed judged call (one per 60 s window per title) |
 | `config` | `error` | one init deployment fault per changed config |
+| `warning` | `warning` | a degraded source: the OpenCode Go monthly-limit page could not be fetched or parsed, so routing falls back to list price |
 | `scrub` | `warning` | secret-like tokens removed from a prompt or tool input |
 | `approval` | `error` for deny/gate, `warning` for a judgment failure | a refusal, gate hold, or failed judgment (allows/asks stay quiet) |
 
-Severities are ordered `info` < `success` < `warning` < `error`. A floor is inclusive and upward: `"warning"` means warning **and** error toast; `"info"` means everything. `true` shows every severity, `false` never toasts that event. Omitted events keep the `error` floor; unknown events and invalid values are ignored.
+Severities are ordered `info` < `success` < `warning` < `error`. A floor is inclusive and upward: `"warning"` means warning **and** error toast; `"info"` means everything. `true` shows every severity, `false` never toasts that event. Omitted events keep their built-in floor (`error`, except `warning` which defaults to `warning`); unknown events and invalid values are ignored.
 
 ```jsonc
 {

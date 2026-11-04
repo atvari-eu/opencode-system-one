@@ -1,9 +1,10 @@
 // Host-free audit model for the TUI event panel: every UI-only RPC event
-// (screen verdict, failed call, config fault, scrub hit, approval resolution)
-// is appended to one durable ring and rendered by src/audit-panel.tsx.
-// tui.ts owns the subscriptions and the store; this module only maps payloads.
+// (screen verdict, failed call, config fault, source warning, scrub hit,
+// approval resolution) is appended to one durable ring and rendered by
+// src/audit-panel.tsx. tui.ts owns the subscriptions and the store; this
+// module only maps payloads.
 
-export type AuditKind = "screen" | "error" | "config" | "scrub" | "approval"
+export type AuditKind = "screen" | "error" | "config" | "warning" | "scrub" | "approval"
 
 /** Panel filter values: one kind, everything, or the warn/error anomaly view. */
 export type AuditFilter = AuditKind | "all" | "anomaly"
@@ -34,7 +35,7 @@ export const AUDIT_STORE_KEY = "jev-audit"
 /** Ring size: the panel scrolls and filters over this, so it stays bounded. */
 export const AUDIT_CAP = 200
 
-export const AUDIT_KINDS: readonly AuditKind[] = ["screen", "error", "config", "scrub", "approval"]
+export const AUDIT_KINDS: readonly AuditKind[] = ["screen", "error", "config", "warning", "scrub", "approval"]
 
 /** Single-key filters shown in the panel header and bound in the TUI layer. */
 export const AUDIT_FILTERS: ReadonlyArray<{ key: string; kind: AuditFilter; label: string }> = [
@@ -44,6 +45,7 @@ export const AUDIT_FILTERS: ReadonlyArray<{ key: string; kind: AuditFilter; labe
   { key: "e", kind: "error", label: "errors" },
   { key: "p", kind: "approval", label: "approvals" },
   { key: "r", kind: "scrub", label: "scrub" },
+  { key: "w", kind: "warning", label: "warnings" },
   { key: "x", kind: "config", label: "config" },
 ]
 
@@ -115,6 +117,16 @@ export function auditEntryOf(
       detail = message
       summary = message
       tone = "error"
+      break
+    }
+    case "warning": {
+      const message = typeof data.message === "string" ? data.message : ""
+      if (!message) return undefined
+      decision = "warning"
+      subject = "source"
+      detail = message
+      summary = message
+      tone = "warn"
       break
     }
     case "scrub": {

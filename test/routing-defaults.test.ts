@@ -15,6 +15,10 @@ import {
   modelFactsBlock,
   modelOutputPrice,
   modelPrice,
+  modelNameKey,
+  GO_PLAN_USD,
+  goAllowanceFactor,
+  parseGoMonthlyLimits,
   needsTrainingOptIn,
   parseCacheRatio,
   parseLeaderboard,
@@ -851,6 +855,60 @@ describe("pool size and cost helpers", () => {
     expect(effectiveInputPrice(measured)).toBeCloseTo(0.11)
     expect(modelOutputPrice(measured)).toBe(0.4)
     expect(poolRunCost(measured)).toBeCloseTo(0.51)
+  })
+
+  test("a known Go allowance scales the run cost by the flat plan price", () => {
+    // $60 included for a $10 plan: the same token costs a sixth of its list price.
+    const flash = { ...poolModel("glm-5.3-flash", 0.15, 0.5), monthlyLimitUsd: 60 }
+    expect(GO_PLAN_USD).toBe(10)
+    expect(goAllowanceFactor(60)).toBeCloseTo(1 / 6)
+    expect(poolRunCost(flash)).toBeCloseTo(0.65 / 6)
+    // A smaller allowance makes an identically priced model look dearer.
+    const haiku = { ...poolModel("claude-haiku-5-5", 0.15, 0.5), monthlyLimitUsd: 15 }
+    expect(poolRunCost(haiku)).toBeCloseTo(0.65 * (10 / 15))
+    expect(poolRunCost(flash)!).toBeLessThan(poolRunCost(haiku)!)
+    // Unknown allowance leaves the price untouched; so does a nonsensical one.
+    expect(poolRunCost(poolModel("plain", 0.15, 0.5))).toBeCloseTo(0.65)
+    expect(goAllowanceFactor(undefined)).toBe(1)
+    expect(goAllowanceFactor(0)).toBe(1)
+  })
+
+  test("the Go docs table parses into model-name keys", () => {
+    const html = `
+      <div data-plan-panel="go"><div>
+        <table><thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
+        <tbody>
+          <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$60</strong></td></tr>
+          <tr><td>Claude Haiku 5.5 (≤ 100K tokens)</td><td>$0.10</td><td>$0.50</td><td>$0.01</td><td>$0.125</td><td><strong>$15</strong></td></tr>
+          <tr><td>DeepSeek V4.1 Flash (Off-Peak)</td><td>$0.15</td><td>$0.60</td><td>$0.003</td><td>-</td><td><strong>$100</strong></td></tr>
+          <tr><td>Beam Free</td><td>Free</td><td>Free</td><td>Free</td><td>-</td><td><strong>Unlimited</strong></td></tr>
+        </tbody></table>
+      </div></div>
+      <div data-plan-panel="go-plus"><div><table><tbody>
+        <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$180</strong></td></tr>
+      </tbody></table></div></div>`
+    const limits = parseGoMonthlyLimits(html)
+    // Catalog ids normalize to the same keys as the docs labels.
+    expect(limits.get(modelNameKey("glm-5.3-flash"))).toBe(60)
+    expect(limits.get(modelNameKey("claude-haiku-5-5"))).toBe(15)
+    expect(limits.get(modelNameKey("deepseek-v4.1-flash"))).toBe(100)
+    // Unlimited rows carry no dollar allowance, and only the base plan is read.
+    expect(limits.get(modelNameKey("beam-free"))).toBeUndefined()
+    expect(limits.size).toBe(3)
+  })
+
+  test("an unreadable Go docs page yields no allowances", () => {
+    expect(parseGoMonthlyLimits("")).toEqual(new Map())
+    expect(parseGoMonthlyLimits("<html><body>nope</body></html>")).toEqual(new Map())
+    expect(parseGoMonthlyLimits('<div data-plan-panel="go"><table></table></div>')).toEqual(new Map())
+  })
+
+  test("modelNameKey bridges catalog ids and docs labels", () => {
+    expect(modelNameKey("Claude Haiku 5.5")).toBe("claude-haiku-5-5")
+    expect(modelNameKey("claude-haiku-5-5")).toBe("claude-haiku-5-5")
+    expect(modelNameKey("GPT 6 Luna (≤ 272K tokens)")).toBe("gpt-6-luna")
+    expect(modelNameKey("Qwen3.8 Max")).toBe("qwen3-8-max")
+    expect(modelNameKey("  ")).toBe("")
   })
 
   test("modelCacheCost reads every catalog shape", () => {

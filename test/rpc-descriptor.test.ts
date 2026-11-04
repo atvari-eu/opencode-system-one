@@ -73,6 +73,15 @@ describe("makeJevRpc", () => {
     expect(approval.additionalProperties).toBe(false)
   })
 
+  test("declares the warning UI event", async () => {
+    const definition: any = await makeJevRpc()
+    const warning = definition.events?.warning?.schema
+    expect(warning).toBeDefined()
+    expect(warning.required).toEqual(["message"])
+    expect(warning.properties.sessionID).toBeDefined()
+    expect(warning.additionalProperties).toBe(false)
+  })
+
   test("hosts without the Rpc class fall back to the structural descriptor", async () => {
     mock.module("@opencode/plugin/rpc", () => ({ nothingHere: true }))
     try {
@@ -84,6 +93,7 @@ describe("makeJevRpc", () => {
       expect(definition.events.screen).toBeDefined()
       expect(definition.events.error).toBeDefined()
       expect(definition.events.config).toBeDefined()
+      expect(definition.events.warning).toBeDefined()
       expect(definition.events.scrub).toBeDefined()
       expect(definition.events.approval).toBeDefined()
     } finally {
