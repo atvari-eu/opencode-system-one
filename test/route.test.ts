@@ -26,6 +26,7 @@ import {
   pseudoEntryFor,
   refKey,
   resolveRouteAnswer,
+  routableEffortLevels,
   routeDecision,
   routeTurn,
   type RouteConfig,
@@ -165,6 +166,18 @@ describe("pair option building", () => {
     expect(levelsOf("m2")).toEqual(["medium", "low"])
     expect(levelsOf("m3")).toEqual(["medium"])
     expect(levelsOf("m4")).toEqual(["medium"])
+  })
+})
+
+describe("routableEffortLevels", () => {
+  test("drops the host's thinking-off toggle id", () => {
+    expect(routableEffortLevels(["none", "thinking", "low", "medium"])).toEqual(["low", "medium"])
+    expect(routableEffortLevels(["none"])).toEqual([])
+    expect(routableEffortLevels([])).toEqual([])
+  })
+
+  test("keeps catalog order and ignores ids that are not effort levels", () => {
+    expect(routableEffortLevels(["max", "thinking", "minimal", "high"])).toEqual(["minimal", "high", "max"])
   })
 })
 

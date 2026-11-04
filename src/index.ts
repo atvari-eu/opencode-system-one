@@ -80,7 +80,7 @@ import {
 import { runFind } from "./find"
 import { readStoreDbCredential, storeDbCandidates } from "./store-db"
 import {
-  EFFORT_ORDER,
+  routableEffortLevels,
   AUTO_PROVIDER,
   JEVS_ERROR_MARK,
   JEV_CONFIG_ERROR_MARK,
@@ -2586,7 +2586,7 @@ export default Plugin.define({
         const listed = (info?.variants ?? []).map((variant: any) =>
           typeof variant?.id === "string" ? variant.id : String(variant),
         )
-        return EFFORT_ORDER.filter((level) => listed.includes(level))
+        return routableEffortLevels(listed)
       }
 
       // Candidate sources (routes.<id>.favorites / routes.<id>.pool) - the

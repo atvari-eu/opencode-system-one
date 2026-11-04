@@ -173,6 +173,15 @@ export interface QuestionLike {
 
 export const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
+/** The levels the router may switch to. `none` is the host's thinking-off
+ * toggle id, not an effort value: OpenCode replays a switch away from it as
+ * `output_config.effort: "none"` on the next request, which Anthropic
+ * rejects (valid: low/medium/high/xhigh/max). Routing to it would trigger
+ * that host bug, so it stays out of the routable set; `EFFORT_ORDER` keeps
+ * it for band parsing and criteria. */
+export const routableEffortLevels = (listed: readonly string[]): string[] =>
+  EFFORT_ORDER.filter((level) => level !== "none" && listed.includes(level))
+
 export const EFFORT_CRITERIA: Record<string, string> = {
   none: "No reasoning needed: a trivial lookup, formatting, one-line edit, or a follow-up with an obvious next action",
   minimal:
