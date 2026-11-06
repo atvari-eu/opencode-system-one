@@ -795,6 +795,10 @@ export interface ModelFacts {
   cacheReadCost?: number
   /** Observed cache-hit share (0..1) from opencode.ai/data. */
   cacheRatio?: number
+  /** OpenCode Go monthly allowance in USD of list-price usage (see PoolModel). */
+  monthlyLimitUsd?: number
+  /** Monthly price of the Go plan whose allowance `monthlyLimitUsd` states. */
+  goPlanUsd?: number
   /** 1-based position in the public top-models list. */
   usageRank?: number
   /** Release date, epoch ms. */
@@ -836,6 +840,9 @@ export interface PoolModel {
    * usage. The Go plan is flat-priced, so a larger allowance makes the same
    * token cheaper; undefined when the docs table was unavailable. */
   monthlyLimitUsd?: number
+  /** Monthly price of the Go plan whose allowance `monthlyLimitUsd` states;
+   * set whenever that is, so the factor uses the subscribed plan's price. */
+  goPlanUsd?: number
   /** 1-based position in the public top-models list, when ranked. */
   usageRank?: number
   /** Benchmark observations from the model's opencode.ai/data page. The
@@ -1053,10 +1060,26 @@ export function modelPrice(model: { inputCost?: number; outputCost?: number }): 
 // OpenCode Go monthly allowances (docs parser)
 // ---------------------------------------------------------------------------
 
-/** What one month of the base Go plan costs (USD). The docs table states each
- * model's included usage as a monthly dollar amount of list-price tokens, so
- * a $10 plan buys `limit / 10` times the listed price for that model. */
-export const GO_PLAN_USD = 10
+/** The OpenCode Go plans, keyed by the docs page's panel id, with each plan's
+ * monthly price (USD): Go $10, Go Plus $40, Go Teams $20 per member. Every
+ * plan's table states a model's included usage as a monthly dollar amount of
+ * list-price tokens, so a plan priced at `GO_PLANS[plan]` buys
+ * `limit / GO_PLANS[plan]` times the listed price for that model. */
+export type GoPlan = "go" | "go-plus" | "go-teams"
+
+export const GO_PLANS: Record<GoPlan, number> = { go: 10, "go-plus": 40, "go-teams": 20 }
+
+/** The base Go plan's price, the default plan price for the allowance factor. */
+export const GO_PLAN_USD = GO_PLANS.go
+
+/** Parses the `goPlan` plugin option. Anything but the three panel ids returns
+ * undefined - the plugin keeps the base plan and logs a hint, never guesses. */
+export function parseGoPlanOption(raw: unknown): GoPlan | undefined {
+  if (typeof raw !== "string") return undefined
+  const value = raw.trim()
+  if (value === "go" || value === "go-plus" || value === "go-teams") return value
+  return undefined
+}
 
 /** A model name reduced to a comparable key: parenthetical qualifiers dropped
  * (`(Off-Peak)`, `(≤ 100K tokens)`), punctuation collapsed to dashes. Catalog
@@ -1084,19 +1107,19 @@ function usdCell(text: string): number | undefined {
   return Number.isFinite(value) && value > 0 ? value : undefined
 }
 
-/** Parses the Go plan's monthly limit table out of the console docs page
- * (https://opencode.ai/v2/docs/console/go/). Returns model-name key ->
- * monthly limit in USD. Only the base `go` plan panel is read (`go-plus` and
- * `go-teams` carry the same prices with different limits). An unreadable page
- * yields an empty map - the caller then ranks by list price, exactly as if no
- * allowance data existed. */
-export function parseGoMonthlyLimits(html: string): Map<string, number> {
+/** Parses the selected Go plan's monthly limit table out of the console docs
+ * page (https://opencode.ai/v2/docs/console/go/). Returns model-name key ->
+ * monthly limit in USD. Only the selected plan's panel is read (the three
+ * plans carry the same token prices with different limits). An unreadable
+ * page yields an empty map - the caller then ranks by list price, exactly as
+ * if no allowance data existed. */
+export function parseGoMonthlyLimits(html: string, plan: GoPlan = "go"): Map<string, number> {
   const limits = new Map<string, number>()
-  const marker = 'data-plan-panel="'
-  const start = html.indexOf(`${marker}go"`)
+  const marker = `data-plan-panel="${plan}"`
+  const start = html.indexOf(marker)
   if (start < 0) return limits
   const rest = html.slice(start + marker.length)
-  const next = rest.indexOf(marker)
+  const next = rest.indexOf('data-plan-panel="')
   const panel = next < 0 ? rest : rest.slice(0, next)
   for (const row of panel.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) {
     const cells = [...row[1]!.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((cell) => stripTags(cell[1]!))
@@ -1111,12 +1134,16 @@ export function parseGoMonthlyLimits(html: string): Map<string, number> {
   return limits
 }
 
-/** A model's monthly limit as a price multiplier: the flat plan price over the
+/** A model's monthly limit as a price multiplier: the plan price over the
  * allowance. 1 means the allowance buys exactly the plan price in list-price
- * tokens; below 1 the model is effectively cheaper than its list price. */
-export function goAllowanceFactor(monthlyLimitUsd: number | undefined): number {
+ * tokens; below 1 the model is effectively cheaper than its list price.
+ * `planUsd` defaults to the base Go plan's price. */
+export function goAllowanceFactor(
+  monthlyLimitUsd: number | undefined,
+  planUsd: number = GO_PLAN_USD,
+): number {
   if (monthlyLimitUsd === undefined || !Number.isFinite(monthlyLimitUsd) || monthlyLimitUsd <= 0) return 1
-  return GO_PLAN_USD / monthlyLimitUsd
+  return planUsd / monthlyLimitUsd
 }
 
 /** Parses the public usage leaderboard behind opencode.ai/data
@@ -1372,7 +1399,7 @@ export function effectiveInputPrice(model: PoolModel): number | undefined {
  * (effective input plus output). Session cost is the real per-turn spend;
  * the token fallback still prices caching in, so a model with a steep cache
  * discount is not ranked by its list input price. A model with a known
- * OpenCode Go allowance is scaled by the flat plan price over that allowance:
+ * OpenCode Go allowance is scaled by its plan's price over that allowance:
  * the same token costs less when the plan includes more of it. */
 export function poolRunCost(model: PoolModel): number | undefined {
   let raw: number | undefined
@@ -1383,7 +1410,7 @@ export function poolRunCost(model: PoolModel): number | undefined {
     raw = input === undefined ? output : output === undefined ? input : input + output
   }
   if (raw === undefined) return undefined
-  return raw * goAllowanceFactor(model.monthlyLimitUsd)
+  return raw * goAllowanceFactor(model.monthlyLimitUsd, model.goPlanUsd)
 }
 
 /** True when a model belongs to the small-model class the default `auto` pool
@@ -1595,6 +1622,10 @@ const modelFactsRow = (facts: ModelFacts, strength: { score: number; groups: num
   if (facts.inputCost !== undefined) price.push(`in ${fmtFactPrice(facts.inputCost)}/Mtok`)
   if (facts.outputCost !== undefined) price.push(`out ${fmtFactPrice(facts.outputCost)}/Mtok`)
   if (price.length > 0) parts.push(price.join(", "))
+  if (facts.monthlyLimitUsd !== undefined) {
+    const factor = Number(goAllowanceFactor(facts.monthlyLimitUsd, facts.goPlanUsd).toPrecision(2))
+    parts.push(`Go plan ${fmtFactPrice(facts.monthlyLimitUsd)}/mo allowance (x${factor} list price)`)
+  }
   if (facts.cacheRatio !== undefined) parts.push(`cache-hit ${Math.round(facts.cacheRatio * 100)}%`)
   if (facts.usageRank !== undefined) parts.push(`usage #${facts.usageRank}`)
   if (strength && strength.groups > 0) {

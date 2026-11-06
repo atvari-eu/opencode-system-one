@@ -7,6 +7,7 @@ import {
   DEFAULT_POOL,
   DEFAULT_POOL_SPLITS,
   effectiveInputPrice,
+  GO_PLANS,
   isFreePoolModel,
   isLargePoolModel,
   MODEL_FACTS_MAX_ROWS,
@@ -19,6 +20,7 @@ import {
   GO_PLAN_USD,
   goAllowanceFactor,
   parseGoMonthlyLimits,
+  parseGoPlanOption,
   needsTrainingOptIn,
   parseCacheRatio,
   parseLeaderboard,
@@ -482,6 +484,20 @@ describe("modelFactsBlock", () => {
     expect(block.match(/- acme\/base:/g)?.length).toBe(1)
   })
 
+  test("renders the Go plan allowance as a multiple of list price", () => {
+    const table = new Map([["acme/haiku", facts("haiku", { inputCost: 0.15, outputCost: 0.5, monthlyLimitUsd: 15 })]])
+    const block = modelFactsBlock(modelsFor(["acme/haiku"]), (p, m) => table.get(`${p}/${m}`))
+    expect(block).toContain("Go plan $15/mo allowance (x0.67 list price)")
+  })
+
+  test("the rendered allowance factor follows the plan price", () => {
+    const table = new Map([
+      ["acme/flash", facts("flash", { inputCost: 0.15, outputCost: 0.5, monthlyLimitUsd: 180, goPlanUsd: 40 })],
+    ])
+    const block = modelFactsBlock(modelsFor(["acme/flash"]), (p, m) => table.get(`${p}/${m}`))
+    expect(block).toContain("Go plan $180/mo allowance (x0.22 list price)")
+  })
+
   test("strength is emitted only when the model reports benchmark groups", () => {
     const bench = (modelID: string, score: number) =>
       facts(modelID, { benchmarks: [{ name: "DeepSWE", version: "1.1", score }] })
@@ -871,6 +887,10 @@ describe("pool size and cost helpers", () => {
     expect(poolRunCost(poolModel("plain", 0.15, 0.5))).toBeCloseTo(0.65)
     expect(goAllowanceFactor(undefined)).toBe(1)
     expect(goAllowanceFactor(0)).toBe(1)
+    // The factor follows the selected plan's price, not always the base one.
+    const plus = { ...poolModel("glm-5.3-flash", 0.15, 0.5), monthlyLimitUsd: 180, goPlanUsd: 40 }
+    expect(goAllowanceFactor(180, 40)).toBeCloseTo(40 / 180)
+    expect(poolRunCost(plus)).toBeCloseTo(0.65 * (40 / 180))
   })
 
   test("the Go docs table parses into model-name keys", () => {
@@ -895,6 +915,33 @@ describe("pool size and cost helpers", () => {
     // Unlimited rows carry no dollar allowance, and only the base plan is read.
     expect(limits.get(modelNameKey("beam-free"))).toBeUndefined()
     expect(limits.size).toBe(3)
+  })
+
+  test("the plan argument reads that plan's panel", () => {
+    const html = `
+      <div data-plan-panel="go"><div><table><tbody>
+        <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$60</strong></td></tr>
+      </tbody></table></div></div>
+      <div data-plan-panel="go-plus"><div><table><tbody>
+        <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$180</strong></td></tr>
+      </tbody></table></div></div>`
+    expect(parseGoMonthlyLimits(html, "go").get(modelNameKey("glm-5.3-flash"))).toBe(60)
+    expect(parseGoMonthlyLimits(html, "go-plus").get(modelNameKey("glm-5.3-flash"))).toBe(180)
+    // A panel the page does not carry leaves the map empty (fail closed).
+    expect(parseGoMonthlyLimits(html, "go-teams").size).toBe(0)
+  })
+
+  test("goPlan parses only the three plan ids", () => {
+    expect(parseGoPlanOption("go")).toBe("go")
+    expect(parseGoPlanOption(" go-plus ")).toBe("go-plus")
+    expect(parseGoPlanOption("go-teams")).toBe("go-teams")
+    expect(parseGoPlanOption("go-plus-2")).toBeUndefined()
+    expect(parseGoPlanOption(40)).toBeUndefined()
+    expect(parseGoPlanOption(undefined)).toBeUndefined()
+  })
+
+  test("the plan prices match the docs pricing table", () => {
+    expect(GO_PLANS).toEqual({ go: 10, "go-plus": 40, "go-teams": 20 })
   })
 
   test("an unreadable Go docs page yields no allowances", () => {

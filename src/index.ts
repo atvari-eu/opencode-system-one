@@ -99,6 +99,7 @@ import {
   contextRows,
   DECISION_CATALOG_URL,
   deploymentFingerprint,
+  GO_PLANS,
   inlineScreenFailure,
   lookupPermission,
   normalizePickerModels,
@@ -122,6 +123,7 @@ import {
   emergencyRealModel,
   effortRoutingEnabled,
   type EffortMode,
+  type GoPlan,
   idleSessionID,
   idleCompactionDue,
   idleCompactionSkip,
@@ -139,6 +141,7 @@ import {
   parseCandidates,
   parseGates,
   parseGoMonthlyLimits,
+  parseGoPlanOption,
   parseIdleAuto,
   parseDecisionIndex,
   parseProviderOption,
@@ -460,6 +463,9 @@ let OPTIONS_MODEL: string | undefined = undefined
 // http(s) option value is the endpoint itself. Until resolution runs, the
 // chain and endpoint are the default Console deployment's.
 let OPTIONS_PROVIDER: ProviderOption | undefined = undefined
+/** The selected OpenCode Go plan (the `goPlan` plugin option, base plan by
+ * default). Decides which docs table the monthly allowances come from. */
+let OPTIONS_GO_PLAN: GoPlan = "go"
 let RESOLVED_ENDPOINT: string | undefined = CONSOLE_ENDPOINT
 let RESOLVED_CHAIN: CredentialChain = credentialChain(undefined)
 // One-shot guard for post-boot re-resolution of a host id that missed plugin
@@ -965,14 +971,16 @@ async function loadLeaderboard(ctx: any): Promise<void> {
 // The Go plan is flat-priced, so a model's included monthly usage changes its
 // effective price: the same token costs less when the plan covers more of it.
 // The model catalog carries no allowance, so the docs page is the only source.
-// It is parsed once per process and remembered. A failed fetch or parse leaves
-// the map empty - routing then ranks by list price, exactly as before - and
-// raises one `warning` event so the degradation stays visible without writing
-// a transcript row.
+// It carries one table per plan; the `goPlan` plugin option selects one (the
+// base Go plan by default). The page is parsed once per process and remembered
+// per plan. A failed fetch or parse leaves the map empty - routing then ranks
+// by list price, exactly as before - and raises one `warning` event so the
+// degradation stays visible without writing a transcript row.
 const GO_LIMITS_URL = "https://opencode.ai/v2/docs/console/go/"
 const GO_LIMITS_TTL = 24 * 60 * 60_000
 const GO_LIMITS_RETRY = 60 * 60_000
 let GO_LIMITS = new Map<string, number>()
+let GO_LIMITS_PLAN: GoPlan | undefined = undefined
 let GO_LIMITS_AT = 0
 let GO_LIMITS_FAILED_AT = 0
 let GO_LIMITS_INFLIGHT: Promise<void> | undefined = undefined
@@ -981,26 +989,28 @@ let GO_LIMITS_INFLIGHT: Promise<void> | undefined = undefined
 type WarningSink = (message: string) => void
 
 async function loadGoLimits(warn?: WarningSink): Promise<void> {
+  const plan = OPTIONS_GO_PLAN
   const now = Date.now()
-  if (GO_LIMITS.size > 0 && now - GO_LIMITS_AT < GO_LIMITS_TTL) return
-  if (now - GO_LIMITS_FAILED_AT < GO_LIMITS_RETRY) return
+  if (GO_LIMITS.size > 0 && GO_LIMITS_PLAN === plan && now - GO_LIMITS_AT < GO_LIMITS_TTL) return
+  if (GO_LIMITS_PLAN === plan && now - GO_LIMITS_FAILED_AT < GO_LIMITS_RETRY) return
   if (GO_LIMITS_INFLIGHT) return GO_LIMITS_INFLIGHT
   GO_LIMITS_INFLIGHT = (async () => {
     try {
       const response = await fetch(GO_LIMITS_URL, { signal: AbortSignal.timeout(10_000) })
       if (!response.ok) throw new Error(`opencode.ai answered ${response.status}`)
-      const limits = parseGoMonthlyLimits(await response.text())
-      if (limits.size === 0) throw new Error("no monthly limits in the Go docs table")
+      const limits = parseGoMonthlyLimits(await response.text(), plan)
+      if (limits.size === 0) throw new Error(`no monthly limits in the ${plan} docs table`)
       GO_LIMITS = limits
+      GO_LIMITS_PLAN = plan
       GO_LIMITS_AT = Date.now()
-      console.log(`[jev] route: Go monthly limits live (${limits.size} models)`)
+      console.log(`[jev] route: Go monthly limits live (${plan}: ${limits.size} models)`)
     } catch (err) {
       GO_LIMITS_FAILED_AT = Date.now()
       const live = String((err as Error)?.message ?? err)
       console.log(
-        `[jev] route: Go monthly limits unavailable (${live}) - ranking Go models by list price`,
+        `[jev] route: Go ${plan} monthly limits unavailable (${live}) - ranking Go models by list price`,
       )
-      warn?.(`Go monthly limits unavailable (${live}) - ranking Go models by list price`)
+      warn?.(`Go ${plan} monthly limits unavailable (${live}) - ranking Go models by list price`)
     } finally {
       GO_LIMITS_INFLIGHT = undefined
     }
@@ -1184,6 +1194,9 @@ function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
       typeof context === "number" && Number.isFinite(context) && context > 0 ? context : undefined
     const alias = poolAlias(modelID)
     const tokenCost = LEADERBOARD_TOKEN_COSTS.get(alias)
+    // Go allowances ride only `opencode-go` entries: the same model id served
+    // by the pay-as-you-go `opencode` provider has no plan to price against.
+    const goAllowance = providerID === "opencode-go" ? GO_LIMITS.get(modelNameKey(modelID)) : undefined
     const next: PoolModel = {
       providerID,
       modelID,
@@ -1199,10 +1212,11 @@ function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
       cacheRatio: LEADERBOARD_CACHE.get(alias),
       usageRank: LEADERBOARD_RANKS.get(alias),
       benchmarks: BENCHMARK_SCORES.get(alias),
-      monthlyLimitUsd: GO_LIMITS.get(modelNameKey(modelID)),
+      monthlyLimitUsd: goAllowance,
+      goPlanUsd: goAllowance === undefined ? undefined : GO_PLANS[OPTIONS_GO_PLAN],
     }
     // The leaderboard is provider-less: dedupe a model id offered by both
-    // Console providers by effective price, not by provider name. The same
+    // Console providers by listed price, not by provider name. The same
     // model is often cheaper on `opencode-go`, and the old "prefer opencode"
     // rule silently picked the expensive entry for every shared id.
     const prior = byID.get(modelID)
@@ -1657,6 +1671,19 @@ export default Plugin.define({
       console.log(
         `[jev] provider: ${providerOptionText(providerOption)} (from plugin options)`,
       )
+    }
+    const goPlanOption = parseGoPlanOption(o.goPlan)
+    if (o.goPlan !== undefined && !goPlanOption) {
+      console.log(
+        `[jev] goPlan: ${JSON.stringify(o.goPlan)} is not one of "go", "go-plus", "go-teams" - keeping "${OPTIONS_GO_PLAN}"`,
+      )
+    } else if (goPlanOption && goPlanOption !== OPTIONS_GO_PLAN) {
+      // A plan switch must not keep serving the previous plan's table when the
+      // refresh fails: drop the cache so consumption falls back to list price.
+      GO_LIMITS = new Map()
+      GO_LIMITS_AT = 0
+      OPTIONS_GO_PLAN = goPlanOption
+      console.log(`[jev] goPlan: ${goPlanOption} (from plugin options)`)
     }
 
     // -- init: resolve + check the deployment once per process ---------------
@@ -3024,9 +3051,15 @@ export default Plugin.define({
                   const catalog = catalogModelFacts(providerID, modelID, info)
                   if (!catalog) return undefined
                   const alias = poolAlias(modelID)
+                  // Go allowances ride only `opencode-go` entries; see
+                  // consoleCatalogModels.
+                  const goAllowance =
+                    providerID === "opencode-go" ? GO_LIMITS.get(modelNameKey(modelID)) : undefined
                   return {
                     ...catalog,
                     cacheRatio: LEADERBOARD_CACHE.get(alias),
+                    monthlyLimitUsd: goAllowance,
+                    goPlanUsd: goAllowance === undefined ? undefined : GO_PLANS[OPTIONS_GO_PLAN],
                     usageRank: LEADERBOARD_RANKS.get(alias),
                     benchmarks: BENCHMARK_SCORES.get(alias),
                   }
