@@ -623,6 +623,29 @@ describe("auto pseudo-model entry", () => {
     expect(outcome.mode).toBe("model")
     expect(outcome.switchTo).toBeUndefined()
   })
+
+  test("a session parked on a real model is still judged as the auto entry, not as current", async () => {
+    const criteriaKeys: string[] = []
+    await turn(PAIR_CONFIG, {
+      current: { providerID: "acme", modelID: "base", variant: "low" },
+      autoEntry: AUTO,
+      base: AUTO,
+      levelsFor,
+      judge: async (questions: any) => {
+        criteriaKeys.push(...Object.keys(questions[0].criteria))
+        return { answers: { route: { choice: "acme/fast#low", confidence: 0.9 } } }
+      },
+    })
+    expect(criteriaKeys).toEqual([
+      "acme/fast#none",
+      "acme/fast#low",
+      "acme/fast#medium",
+      "acme/fast#high",
+      "zeta/flagship#medium",
+      "zeta/flagship#high",
+      "zeta/flagship#xhigh",
+    ])
+  })
 })
 
 describe("auto and auto-review entries", () => {
@@ -808,6 +831,23 @@ describe("emergencyRealModel", () => {
       { type: "model-switched", model: { providerID: PSEUDO, id: "auto" } },
     ]
     expect(emergencyRealModel(rows, PSEUDO, null)).toEqual({ providerID: "acme", modelID: "fast" })
+  })
+
+  test("with an allowed pool, only a pool member is restored", () => {
+    const rows = [
+      { type: "model-switched", model: { providerID: "acme", id: "fast" } },
+      { type: "model-switched", model: { providerID: "zeta", id: "gone" } },
+    ]
+    const pool = new Set(["acme/fast"])
+    expect(emergencyRealModel(rows, PSEUDO, null, pool)).toEqual({ providerID: "acme", modelID: "fast" })
+    expect(emergencyRealModel(rows, PSEUDO, null, new Set(["acme/other"]))).toBeUndefined()
+    expect(emergencyRealModel(rows, PSEUDO, null, new Set())).toBeUndefined()
+  })
+
+  test("an allowed pool also filters the pin's parked-from ref", () => {
+    const pin = { to: { providerID: PSEUDO, id: "auto" }, from: { providerID: "zeta", id: "gone" } }
+    const rows = [{ type: "model-switched", model: { providerID: "acme", id: "fast" } }]
+    expect(emergencyRealModel(rows, PSEUDO, pin, new Set(["acme/fast"]))).toEqual({ providerID: "acme", modelID: "fast" })
   })
 
   test("undefined when nothing real is known and accepts both ref spellings", () => {

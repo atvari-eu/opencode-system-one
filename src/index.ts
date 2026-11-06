@@ -100,6 +100,8 @@ import {
   DECISION_CATALOG_URL,
   deploymentFingerprint,
   GO_PLANS,
+  goAllowanceFactor,
+  inputPriceHint,
   inlineScreenFailure,
   lookupPermission,
   normalizePickerModels,
@@ -205,7 +207,7 @@ import {
   unwrapEnvelope,
   userRowCount,
 } from "./logic"
-import { BUILTIN_AGENT_PROFILES, type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type DecisionProviderEntry, type DeploymentFault, type AgentRouteProfile, type ParsedRouteEntry, type PoolModel, type ProviderOption, type TokenCost, type TrainingConsent } from "./logic"
+import { BUILTIN_AGENT_PROFILES, type ApprovalStatsEvent, type BenchmarkScore, type Candidate, type CredentialChain, type PickSlot, type DecisionProviderEntry, type DeploymentFault, type AgentRouteProfile, type ParsedRouteEntry, type PoolModel, type ProviderOption, type TokenCost, type TrainingConsent } from "./logic"
 import {
   SCREEN_FLAGGED_BAND,
   SCREEN_QUESTIONS as SCREEN_QUESTIONS_SHARED,
@@ -1194,9 +1196,6 @@ function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
       typeof context === "number" && Number.isFinite(context) && context > 0 ? context : undefined
     const alias = poolAlias(modelID)
     const tokenCost = LEADERBOARD_TOKEN_COSTS.get(alias)
-    // Go allowances ride only `opencode-go` entries: the same model id served
-    // by the pay-as-you-go `opencode` provider has no plan to price against.
-    const goAllowance = providerID === "opencode-go" ? GO_LIMITS.get(modelNameKey(modelID)) : undefined
     const next: PoolModel = {
       providerID,
       modelID,
@@ -1212,8 +1211,7 @@ function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
       cacheRatio: LEADERBOARD_CACHE.get(alias),
       usageRank: LEADERBOARD_RANKS.get(alias),
       benchmarks: BENCHMARK_SCORES.get(alias),
-      monthlyLimitUsd: goAllowance,
-      goPlanUsd: goAllowance === undefined ? undefined : GO_PLANS[OPTIONS_GO_PLAN],
+      ...goAllowanceFacts(providerID, modelID),
     }
     // The leaderboard is provider-less: dedupe a model id offered by both
     // Console providers by listed price, not by provider name. The same
@@ -1226,7 +1224,7 @@ function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
 }
 
 function poolCandidates(picks: readonly PoolModel[]): Candidate[] {
-  return picks.map(({ providerID, modelID }) => ({ providerID, modelID }))
+  return picks.map(({ providerID, modelID, poolSlot }) => ({ providerID, modelID, poolSlot }))
 }
 
 function uniqueCandidates(candidates: readonly Candidate[]): Candidate[] {
@@ -1791,6 +1789,9 @@ export default Plugin.define({
     const agentProfiles = new Map(parsedAgents.profiles.map((profile) => [profile.id, profile]))
     const allRouteEntries = parsedRoutes.entries
     const routeEntries = allRouteEntries.filter((entry) => entry.enable)
+    // Usable pool keys per auto entry, recorded by the prompt hook. The
+    // history restores (emergency move, wake) may only target these models.
+    const routePoolKeys = new Map<string, Set<string>>()
     // A kind's built-in cut comes from that kind's built-in entry, so inlining
     // `pool` on `default`/`review` shapes the pair every `pool: true` entry
     // draws from; a disabled entry still owns it.
@@ -1835,7 +1836,7 @@ export default Plugin.define({
       }
       if (!entry.fallback) {
         console.log(
-          `[jev] ${entry.modelID}: enabled without fallback - an unroutable turn falls back to the session's last real model, else the first candidate; with neither it fails visibly on the pseudo-model`,
+          `[jev] ${entry.modelID}: enabled without fallback - an unroutable turn falls back to the session's last real model when that model is in the entry's pool, else the first candidate; with neither it fails visibly on the pseudo-model`,
         )
       }
     }
@@ -2951,6 +2952,11 @@ export default Plugin.define({
               await new Promise((resolve) => setTimeout(resolve, ROUTE_CATALOG_DELAY_MS * (attempt + 1)))
               await refreshListIndex()
             }
+            const poolKeys = new Set(usableCandidates.map((c) => candidateKey(c)))
+            routePoolKeys.set(candidateKey(entry), poolKeys)
+            try {
+              await (ctx as any).storage.set(`route-pool/${candidateKey(entry)}`, [...poolKeys])
+            } catch {}
             if (usableCandidates.length === 0) {
               console.log("[jev] route: no usable candidates - effort handling continues without routing")
             }
@@ -2985,7 +2991,12 @@ export default Plugin.define({
           // resting reset re-parks afterwards.
           let parkedEntry = atAutoEntry
           if (parkedEntry && entry) {
-            const emergency = emergencyRealModel(rows, AUTO_PROVIDER, pin)
+            const emergency = emergencyRealModel(
+              rows,
+              AUTO_PROVIDER,
+              pin,
+              routePoolKeys.get(candidateKey(entry)) ?? new Set(),
+            )
             if (emergency) {
               try {
                 await (ctx as any).session.switchModel({
@@ -3013,6 +3024,10 @@ export default Plugin.define({
             }
           }
 
+          const poolSlotOf = new Map<string, PickSlot>()
+          for (const candidate of usableCandidates) {
+            if (candidate.poolSlot) poolSlotOf.set(candidateKey(candidate), candidate.poolSlot)
+          }
           const outcome: any = await routeTurn(
             {
               effort: effortEnabled,
@@ -3028,6 +3043,7 @@ export default Plugin.define({
               lastSwitch: last ?? null,
               pin: pin ?? null,
               autoEntry: entry ?? null,
+              base: entry ? { providerID: entry.providerID, modelID: entry.modelID } : null,
               review: entry?.review === true,
               profile: agentProfile,
               // Transcript tail so the judge weighs the turn's actual work
@@ -3039,7 +3055,7 @@ export default Plugin.define({
               }).text,
               tier: (providerID: any, modelID: any) => {
                 const cached = infoCache.get(`${providerID}/${modelID}`)
-                return cached ? tierOf(cached) : ""
+                return cached ? inputPriceHint(cached, goAllowanceFacts(providerID, modelID)) : ""
               },
               // Catalog facts plus opencode.ai/data stats for the offered
               // models, read from the per-process snapshots. Missing data
@@ -3051,15 +3067,12 @@ export default Plugin.define({
                   const catalog = catalogModelFacts(providerID, modelID, info)
                   if (!catalog) return undefined
                   const alias = poolAlias(modelID)
-                  // Go allowances ride only `opencode-go` entries; see
-                  // consoleCatalogModels.
-                  const goAllowance =
-                    providerID === "opencode-go" ? GO_LIMITS.get(modelNameKey(modelID)) : undefined
+                  const poolSlot = poolSlotOf.get(candidateKey({ providerID, modelID }))
                   return {
                     ...catalog,
+                    ...(poolSlot ? { poolSlot } : {}),
                     cacheRatio: LEADERBOARD_CACHE.get(alias),
-                    monthlyLimitUsd: goAllowance,
-                    goPlanUsd: goAllowance === undefined ? undefined : GO_PLANS[OPTIONS_GO_PLAN],
+                    ...goAllowanceFacts(providerID, modelID),
                     usageRank: LEADERBOARD_RANKS.get(alias),
                     benchmarks: BENCHMARK_SCORES.get(alias),
                   }
@@ -3098,7 +3111,12 @@ export default Plugin.define({
               }
             }
             if (!outcome?.switchTo) {
-              const emergency = emergencyRealModel(rows, AUTO_PROVIDER, pin)
+              const emergency = emergencyRealModel(
+                rows,
+                AUTO_PROVIDER,
+                pin,
+                routePoolKeys.get(candidateKey(entry)) ?? new Set(),
+              )
               if (emergency) {
                 const variantLabel = emergency.variant ? `@${emergency.variant}` : ""
                 outcome.logs.push(
@@ -4426,6 +4444,21 @@ export default Plugin.define({
     // ConnectionRefused mid-wake. Returns true when the post is safe (already
     // off the entry, or moved); false when the session is on an entry and no
     // real model is known - posting then would guarantee a dead turn.
+    const routePoolKeysOf = async (entry: { providerID: string; modelID: string }): Promise<Set<string>> => {
+      const key = candidateKey(entry)
+      const known = routePoolKeys.get(key)
+      if (known) return known
+      try {
+        const stored = await (ctx as any).storage.get(`route-pool/${key}`)
+        if (Array.isArray(stored)) {
+          const keys = new Set<string>(stored.filter((value: unknown) => typeof value === "string"))
+          routePoolKeys.set(key, keys)
+          return keys
+        }
+      } catch {}
+      return new Set()
+    }
+
     const ensureOffEntry = async (sessionID: string, messages: ReadonlyArray<any>): Promise<boolean> => {
       try {
         const model = (unwrapEnvelope(await (ctx as any).session.get({ sessionID })) as any)?.model
@@ -4435,7 +4468,7 @@ export default Plugin.define({
         try {
           wakePin = await (ctx as any).storage.get(`route-pin/${String(sessionID)}`)
         } catch {}
-        const emergency = emergencyRealModel(messages, AUTO_PROVIDER, wakePin)
+        const emergency = emergencyRealModel(messages, AUTO_PROVIDER, wakePin, await routePoolKeysOf(entry))
         if (!emergency) return false
         await (ctx as any).session.switchModel({
           sessionID,
@@ -5157,12 +5190,14 @@ export default Plugin.define({
 // Optional price hint woven into routing option criteria. The catalog's
 // `cost` is a tier array in OpenCode 2 (one entry per context tier), so the
 // reader picks the lowest listed input price instead of assuming an object.
-function tierOf(info: any): string {
-  const input = modelCost(info, "input")
-  return typeof input === "number" && input > 0
-    ? `$${input >= 1 ? input.toFixed(2) : input.toPrecision(2)}/Mtok input`
-    : ""
+// Go allowances ride only `opencode-go` entries: the same model id served by
+// the pay-as-you-go `opencode` provider has no plan to price against.
+function goAllowanceFacts(providerID: string, modelID: string): { monthlyLimitUsd?: number; goPlanUsd?: number } {
+  const monthlyLimitUsd = providerID === "opencode-go" ? GO_LIMITS.get(modelNameKey(modelID)) : undefined
+  return monthlyLimitUsd === undefined ? {} : { monthlyLimitUsd, goPlanUsd: GO_PLANS[OPTIONS_GO_PLAN] }
 }
+
+
 
 function fmt(v: unknown): string {
   return typeof v === "number" ? v.toFixed(2) : "?"

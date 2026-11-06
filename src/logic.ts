@@ -201,11 +201,17 @@ const levelCriteria = (level: string): string => EFFORT_CRITERIA[level] ?? level
 // over one option list per turn; the caller applies switches and pins.
 // ---------------------------------------------------------------------------
 
+/** The default-pool slot a pick was drawn for: `cheap` (lowest real cost),
+ * `popular` (highest public usage), or `strong` (benchmark strength). */
+export type PickSlot = "cheap" | "popular" | "strong"
+
 export interface Candidate {
   providerID: string
   modelID: string
   /** Optional human hint that rides into the option criteria ("cheap workhorse"). */
   label?: string
+  /** Set on picks a routing pool supplied; explicit candidates have none. */
+  poolSlot?: PickSlot
 }
 
 // Accepts "provider/model" strings or {providerID, modelID, label?} objects.
@@ -783,6 +789,8 @@ export interface BenchmarkScore {
 export interface ModelFacts {
   providerID: string
   modelID: string
+  /** The default-pool slot the model was picked for, when a pool supplied it. */
+  poolSlot?: PickSlot
   /** Context window in tokens. */
   contextTokens?: number
   /** Maximum output tokens. */
@@ -814,6 +822,8 @@ export interface ModelFacts {
 export interface PoolModel {
   providerID: string
   modelID: string
+  /** The slot this model was picked for, set once a pool has picked it. */
+  poolSlot?: PickSlot
   /** The catalog's canonical model id (`deepseek/deepseek-v4.1-flash`),
    * shared by every provider that serves the same model. */
   canonicalID?: string
@@ -1144,6 +1154,20 @@ export function goAllowanceFactor(
 ): number {
   if (monthlyLimitUsd === undefined || !Number.isFinite(monthlyLimitUsd) || monthlyLimitUsd <= 0) return 1
   return planUsd / monthlyLimitUsd
+}
+
+/** The per-option price hint: the catalog's list input price, or the effective
+ * price on the Go plan when the model has a known allowance. */
+export function inputPriceHint(
+  info: unknown,
+  go: { monthlyLimitUsd?: number; goPlanUsd?: number } = {},
+): string {
+  const input = modelCost(info, "input")
+  if (typeof input !== "number" || input <= 0) return ""
+  const effective = go.monthlyLimitUsd === undefined ? undefined : input * goAllowanceFactor(go.monthlyLimitUsd, go.goPlanUsd)
+  const shown = effective ?? input
+  const price = `$${shown >= 1 ? shown.toFixed(2) : shown.toPrecision(2)}/Mtok input`
+  return effective === undefined ? price : `${price} on the Go plan`
 }
 
 /** Parses the public usage leaderboard behind opencode.ai/data
@@ -1594,7 +1618,7 @@ export function strongestModels(
  * offer (`MAX_OPTIONS`), so no option is judged without its facts. An
  * over-long row is trimmed at a field boundary; rows are never dropped. */
 export const MODEL_FACTS_MAX_ROWS = 12
-export const MODEL_FACTS_MAX_ROW_CHARS = 240
+export const MODEL_FACTS_MAX_ROW_CHARS = 360
 
 const fmtFactTokens = (value: number): string => {
   if (value >= 1_000_000) {
@@ -1614,6 +1638,7 @@ const fmtFactMonth = (value: number): string => {
 
 const modelFactsRow = (facts: ModelFacts, strength: { score: number; groups: number } | undefined): string => {
   const parts: string[] = []
+  if (facts.poolSlot) parts.push(`pool pick: ${facts.poolSlot}`)
   const size: string[] = []
   if (facts.contextTokens !== undefined) size.push(`ctx ${fmtFactTokens(facts.contextTokens)}`)
   if (facts.outputTokens !== undefined) size.push(`max out ${fmtFactTokens(facts.outputTokens)}`)
@@ -1623,8 +1648,14 @@ const modelFactsRow = (facts: ModelFacts, strength: { score: number; groups: num
   if (facts.outputCost !== undefined) price.push(`out ${fmtFactPrice(facts.outputCost)}/Mtok`)
   if (price.length > 0) parts.push(price.join(", "))
   if (facts.monthlyLimitUsd !== undefined) {
-    const factor = Number(goAllowanceFactor(facts.monthlyLimitUsd, facts.goPlanUsd).toPrecision(2))
-    parts.push(`Go plan ${fmtFactPrice(facts.monthlyLimitUsd)}/mo allowance (x${factor} list price)`)
+    const multiple = goAllowanceFactor(facts.monthlyLimitUsd, facts.goPlanUsd)
+    parts.push(
+      `Go plan ${fmtFactPrice(facts.monthlyLimitUsd)}/mo allowance (x${Number(multiple.toPrecision(2))} list price)`,
+    )
+    const effective: string[] = []
+    if (facts.inputCost !== undefined) effective.push(`in ${fmtFactPrice(facts.inputCost * multiple)}/Mtok`)
+    if (facts.outputCost !== undefined) effective.push(`out ${fmtFactPrice(facts.outputCost * multiple)}/Mtok`)
+    if (effective.length > 0) parts.push(`Go plan effective ${effective.join(", ")}`)
   }
   if (facts.cacheRatio !== undefined) parts.push(`cache-hit ${Math.round(facts.cacheRatio * 100)}%`)
   if (facts.usageRank !== undefined) parts.push(`usage #${facts.usageRank}`)
@@ -1733,7 +1764,8 @@ function poolSlots(
     slots.strong,
     (model) => strength.get(candidateKey(model)),
   )
-  return [...cheap, ...popular, ...strong]
+  const tag = (slot: PickSlot) => (model: PoolModel): PoolModel => ({ ...model, poolSlot: slot })
+  return [...cheap.map(tag("cheap")), ...popular.map(tag("popular")), ...strong.map(tag("strong"))]
 }
 
 /** The ranked window one cut picks from: leaderboard order truncated to the
@@ -1893,15 +1925,18 @@ export function pinMatches(last: { to: any; from: any } | undefined | null, pin:
 // transcript. Both are history, not intent, so neither needs a fresh
 // availability check - the model ran on this session seconds ago. Pure
 // over rows + pin; refs accept either spelling (pins store "id" like
-// OpenCode emits it, some sources use "modelID").
+// OpenCode emits it, some sources use "modelID"). `allowed` (candidate keys)
+// restricts the target to the entry's pool, so history never routes outside it.
 export function emergencyRealModel(
   rows: ReadonlyArray<any>,
   pseudoProviderID: string,
   pin?: { to?: any; from?: any } | null,
+  allowed?: ReadonlySet<string>,
 ): { providerID: string; modelID: string; variant?: string } | undefined {
   const consider = (ref: any): { providerID: string; modelID: string; variant?: string } | undefined => {
     const modelID = ref?.id ?? ref?.modelID
     if (!ref?.providerID || !modelID || ref.providerID === pseudoProviderID) return undefined
+    if (allowed && !allowed.has(candidateKey({ providerID: ref.providerID, modelID }))) return undefined
     const variant =
       typeof ref?.variant === "string" && ref.variant.trim() !== "" && ref.variant !== "default"
         ? ref.variant.trim()

@@ -19,6 +19,7 @@ import {
   modelNameKey,
   GO_PLAN_USD,
   goAllowanceFactor,
+  inputPriceHint,
   parseGoMonthlyLimits,
   parseGoPlanOption,
   needsTrainingOptIn,
@@ -488,6 +489,15 @@ describe("modelFactsBlock", () => {
     const table = new Map([["acme/haiku", facts("haiku", { inputCost: 0.15, outputCost: 0.5, monthlyLimitUsd: 15 })]])
     const block = modelFactsBlock(modelsFor(["acme/haiku"]), (p, m) => table.get(`${p}/${m}`))
     expect(block).toContain("Go plan $15/mo allowance (x0.67 list price)")
+    // List prices stay in the row; the effective prices sit beside them.
+    expect(block).toContain("in $0.15/Mtok, out $0.5/Mtok")
+    expect(block).toContain("Go plan effective in $0.1/Mtok, out $0.33/Mtok")
+  })
+
+  test("a pool pick names its slot in the facts row", () => {
+    const table = new Map([["acme/haiku", facts("haiku", { inputCost: 0.15, outputCost: 0.5, poolSlot: "cheap" })]])
+    const block = modelFactsBlock(modelsFor(["acme/haiku"]), (p, m) => table.get(`${p}/${m}`))
+    expect(block).toContain("- acme/haiku: pool pick: cheap; ")
   })
 
   test("the rendered allowance factor follows the plan price", () => {
@@ -496,6 +506,7 @@ describe("modelFactsBlock", () => {
     ])
     const block = modelFactsBlock(modelsFor(["acme/flash"]), (p, m) => table.get(`${p}/${m}`))
     expect(block).toContain("Go plan $180/mo allowance (x0.22 list price)")
+    expect(block).toContain("Go plan effective in $0.033/Mtok, out $0.11/Mtok")
   })
 
   test("strength is emitted only when the model reports benchmark groups", () => {
@@ -769,6 +780,12 @@ describe("defaultPoolSplit", () => {
     expect(split.default.map((m) => m.modelID)).toEqual(["session-cheap"])
   })
 
+  test("each pick records the slot it was drawn for", () => {
+    const split = defaultPoolSplit(catalog, leaderboard)
+    expect(split.default.map((m) => m.poolSlot)).toEqual(["cheap", "popular", "strong"])
+    expect(split.review.map((m) => m.poolSlot)).toEqual(["popular", "strong", "strong"])
+  })
+
   test("a popular slot keeps the models people actually drive", () => {
     const models = [
       sizedModel("deepseek-v4.1-flash", 0.3, 1.2, 1_000_000, 0.0487),
@@ -891,6 +908,14 @@ describe("pool size and cost helpers", () => {
     const plus = { ...poolModel("glm-5.3-flash", 0.15, 0.5), monthlyLimitUsd: 180, goPlanUsd: 40 }
     expect(goAllowanceFactor(180, 40)).toBeCloseTo(40 / 180)
     expect(poolRunCost(plus)).toBeCloseTo(0.65 * (40 / 180))
+  })
+
+  test("the price hint shows list input price, or the Go-plan effective price", () => {
+    const info = { cost: { input: 0.15, output: 0.5 } }
+    expect(inputPriceHint(info)).toBe("$0.15/Mtok input")
+    expect(inputPriceHint(info, { monthlyLimitUsd: 60 })).toBe("$0.025/Mtok input on the Go plan")
+    expect(inputPriceHint({ cost: { input: 2 } }, { monthlyLimitUsd: 15 })).toBe("$1.33/Mtok input on the Go plan")
+    expect(inputPriceHint({ cost: { output: 0.5 } })).toBe("")
   })
 
   test("the Go docs table parses into model-name keys", () => {

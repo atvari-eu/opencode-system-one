@@ -295,7 +295,8 @@ pin storage). Rationale worth remembering when extending it:
   restart notice) bypass the prompt hook entirely, so nothing downstream
   guarantees anything for them. The adapter now fails safe before
   judging: at the entry every prompt first switches to the last real
-  model the session itself ran (`emergencyRealModel` - the pin's
+  model the session itself ran, when that model is in the entry's usable
+  pool (`emergencyRealModel` with the pool as `allowed` - the pin's
   parked-from ref, else the newest `model-switched` row; history, not
   intent, so no availability re-check is possible or needed), the judge
   refines on top of that placement, and one shared adapter helper
@@ -322,8 +323,11 @@ pin storage). Rationale worth remembering when extending it:
   when both `routes.<id>.fallback` and history are absent, and a `switchModel`
   the host rejects falls through the remaining usable candidates instead
   of leaving the session parked on the entry. Ordering stays: configured
-  fallback > last-used real model > first candidate. The same remainder
-  bit synthetic wakes: with no history to fall back to, `ensureOffEntry`
+  fallback > last-used real model (only when it is in the entry's pool) >
+  first candidate; apart from the configured fallback, an auto entry never
+  runs a model outside its pool. The same remainder bit synthetic wakes:
+  with no history or usable pool keys to fall back to (keys persist in
+  `route-pool/<entry>` storage across restarts), `ensureOffEntry`
   used to return silently and the done-check notice still posted into a
   guaranteed ConnectionRefused. It now reports "not safe", and the notice
   is skipped (logged) instead of waking a dead turn.
